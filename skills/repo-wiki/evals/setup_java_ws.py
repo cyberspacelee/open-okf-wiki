@@ -5,6 +5,7 @@
 """Create the two-source Java live-eval workspace."""
 
 import argparse
+import json
 import pathlib
 import subprocess
 import time
@@ -17,8 +18,8 @@ SOURCES = {
 }
 
 
-def call(cwd: pathlib.Path, *args: str) -> None:
-    subprocess.run(args, cwd=cwd, check=True)
+def call(cwd: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True)
 
 
 def main() -> int:
@@ -49,7 +50,7 @@ def main() -> int:
             "--ref",
             "HEAD",
         )
-    call(
+    started = call(
         ws,
         "uv",
         "run",
@@ -60,7 +61,31 @@ def main() -> int:
         "repo-wiki/live-eval",
         "--session",
         "live-writer",
+        "--json",
     )
+    status = json.loads(started.stdout)
+    ready = {
+        item["id"] if isinstance(item, dict) else item
+        for item in status.get("ready_targets", [])
+    }
+    if ready != {"plan:workspace"}:
+        raise RuntimeError(f"live fixture must start with one planner: {status}")
+    indexes = sorted(
+        pathlib.Path(status["run_dir"]).joinpath("drafts/index").glob("*.md")
+    )
+    if len(indexes) != len(SOURCES):
+        raise RuntimeError(
+            "live fixture did not create one Source outline per Revision"
+        )
+    for index in indexes:
+        text = index.read_text(encoding="utf-8")
+        if (
+            index.stat().st_size > 64 * 1024
+            or "inventory complete" not in text
+            or "[build-module]" not in text
+            or "[source-set:" not in text
+        ):
+            raise RuntimeError(f"unbounded or non-navigable Source outline: {index}")
     print(ws)
     return 0
 

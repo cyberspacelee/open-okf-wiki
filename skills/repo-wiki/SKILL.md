@@ -6,153 +6,150 @@ description: Generate or incrementally refresh a thin, evidence-anchored reposit
 # Repo Wiki
 
 Produce an OKF v0.2 Wiki from frozen Git revisions and selected OpenGauss
-catalogs. `scripts/okf.py` owns all state, validation and publication — never
-edit `.okf-wiki` JSON by hand. Requires Git, Python 3.12+ and `uv` on PATH.
+catalogs. `scripts/okf.py` owns Run state, validation and Publication; never
+edit `.okf-wiki` state by hand. Requires Git, Python 3.12+ and `uv` on PATH.
 
-Run every command from the workspace root. `<skill>` is this directory; the
-short form `okf` below always means:
+Run every command from the Workspace root. `<skill>` is this directory; the
+short form `okf` below means:
 
     uv run <skill>/scripts/okf.py
 
-`okf --help` and `okf <command> --help` document every command.
+Use `okf --help` and `okf <command> --help` for the current command contract.
 
-## Start here — on entry, resume, or any uncertainty
+## Start here
+
+On entry, resume or uncertainty:
 
 1. Run `okf run status --json`.
-2. If a run exists, perform exactly its `next_actions`. Disk state wins over
-   conversation memory; completed tasks are immutable unless review reopens
-   them.
-3. If there is no workspace: `okf workspace init --lang en|zh
-   --freshness-days 90`, register every Source explicitly (next section),
-   then `okf run start --producer repo-wiki/<model> --session <unique-id>`.
+2. If a Run exists, perform its `next_actions`. Disk state wins over
+   conversation memory; a completed Target changes only through State Gate
+   invalidation.
+3. If there is no Workspace, run `okf workspace init --lang en|zh
+   --freshness-days 90`, register every Source explicitly, then run
+   `okf run start --producer repo-wiki/<model> --session <unique-id>`.
 
-Drive the run to publication without pausing for permission: the gates are
-the checkpoints, and a rejected completion is a repair task, not a question
-for the user. Stop and ask only when something genuinely needs a human —
-missing credentials, an ambiguous source selection, or a review verdict a
-human must ratify.
+Drive the Run to Publication. A rejected completion is a worker repair, not a
+reason to bypass the gate. Stop only for a genuine human dependency such as
+missing credentials or ambiguous Source selection.
+
+Legacy phase-based Runs are not migrated. Start a new Run against the
+registered Sources; the OKF version stays unchanged.
 
 ## Sources
 
-Add each Source explicitly before starting a run:
+Register each Source before starting a Run:
 
     okf source add link ../API --name API
     okf source add clone https://host/web.git --name web --ref main
+    okf source add files ../contracts --name contracts
     okf source add opengauss --name appdb --url-env DATABASE_URL --schema public --table orders --table customers
 
-`link` accepts any local Git worktree; targets outside the workspace are
-mounted at `<workspace>/<name>/` (symlink on POSIX, junction on Windows).
-`clone` fetches a URL to the same place. `source add files` registers a
-directory of contracts or docs the same way. The workspace is a hub — do not
-`link .`. Use `okf db tables` / `okf db describe` to choose OpenGauss
-tables from the live database before `source add`. After `run start`, workers
-read captured catalogs from the dispatch packet's `catalogs` paths or with
-`okf catalog show` / `okf catalog describe` — never `state.json` or the full
-`catalog.json`. Only selected tables become evidence; credentials never enter
-state or citations.
+The Workspace is a hub, not a Source. `link` mounts an external worktree at
+`<workspace>/<name>/`; `clone` places a clone there. Use `okf db tables` and
+`okf db describe` before selecting database tables. Credentials never enter
+Run state or citations.
 
-`run start` records each Git Source's HEAD and materializes a Pin under
-`.okf-wiki/pins/<run>/<name>`. Workers read the Pin. The live tree may
-receive new commits; `source refresh --name` updates one Pin, rebuilds that
-Source's Index and Triage, then rebuilds all downstream derived phases.
-Submodules are rejected. Citations resolve from the recorded commit.
+`run start` records each Git/files Source Revision, materializes its Pin and
+captures selected Catalogs. Workers read Pins and captured Catalog shards, not
+live Sources or databases. `source refresh --name` may reopen the current
+active, paused or approved Run: it replaces one Pin and Index, then
+invalidates pages whose scopes use that Source and their dependent parent
+pages. Unrelated branches of the Page DAG remain complete.
 
-## The task loop
+## Target loop
 
-A run is a fixed phase sequence: index (CLI) → triage → survey →
-connect (multi Git/files only) → plan shards → write → review
-batches → publish. `run start` writes a structural index per Git/files
-source, then one `triage:<source>` Target per source. Triage assigns exact,
-non-overlapping coverage: `inventory` stays in the Coverage Ledger while
-`standard` and `deep` each become one survey Target. A `survey` block on a
-source entry in workspace.json (`"survey": {"split": ["src/core"],
-"exclude": ["vendor"]}`) is the only exclusion policy; split paths must be
-independent scopes and cannot be inside an excluded path. Propose is an
-optional post-publish command, not a phase.
-The Index collapses empty single-child directory chains; its per-directory
-counts are disjoint (each file counted once) and the byte budget coarsens
-entries into their parent (`collapsed_dirs`) instead of dropping them.
-Triage reads it once and uses the packet's bounded `ls_command` only on
-coarsened or unclear directories. Survey packets do not carry the Index;
-workers use `ls_command` to browse only their captured task scope, then
-perform targeted source reads.
-`run status` lists the current phase's tasks; task ids are `<phase>:<name>`
-(e.g. `triage:api`, `survey:api`, `write:overview.md`). For each task:
+Capture and Index are deterministic setup; Publication is deterministic
+finalization. Agent work has only three Target kinds:
 
-    okf task start <phase>:<name> --json    # returns a dispatch packet
-    # dispatch ONE worker session with the packet (paths, never pasted content)
+    plan:workspace -> page:<path> -> review:<path>
 
-The worker owns its task end to end: it writes the artifact, runs the
-packet's `complete_command` from the packet's `workdir`, and if the gate
-rejects it, fixes the artifact and completes again — repeating until the
-gate passes or the failure genuinely needs the coordinator (e.g. the page
-plan itself is wrong). The worker's handoff reports the final gate verdict.
-The coordinator never validates artifacts, never edits artifact JSON, and
-never runs `task complete` on a worker's behalf — its job is dispatching
-tasks and reacting to `run status`. If a worker returns artifact content
-instead of writing the file, treat the task as failed and redispatch.
+There is no global phase cursor. `run status --json` returns the ready set:
+every pending or failed Target whose dependencies are satisfied. Independent
+branches may run concurrently. For each ready Target:
 
-Targets never batch: each has one canonical artifact and completes
-independently. To amortize startup cost, the coordinator may reuse one worker
-session for a short sequence of same-source standard survey Targets or
-same-owner write Targets, starting and completing each packet in order. This
-session affinity is not persisted in Run state.
+    okf task start <target-id> --json
+    # dispatch one short-lived worker with the returned packet
 
-## Coordinator and workers
+The packet's `artifact` path is inside an attempt-specific temporary directory;
+it also carries exact dependency inputs and bounded navigation commands. The
+worker:
 
-The coordinator (this session) must stay small enough to steer a long run,
-so it never reads source files, drafts, candidate pages or Wiki bodies. It
-consumes only: `run status --json`, `task start` dispatch packets, worker
-handoffs, and validator issue lists. Every content task runs in a worker
-session. If workers are unavailable, `okf run pause` and say so; the coordinator
-taking over content work defeats the design. Resume with `okf run resume`.
+1. Reads the packet's `reference` and `references/contract.md`.
+2. Uses only the named inputs, Page Scope, Pins/Catalogs and bounded
+   `outline`, `search` and `read` commands.
+3. Writes the Attempt Artifact at the packet's `artifact` path.
+4. Runs `complete_command` from `workdir`.
+5. Repairs gate issues and completes again, or runs `task fail` when the
+   failure cannot be repaired inside the Target.
 
-What goes where:
+On success the State Gate promotes the Attempt Artifact to its canonical
+plan, Candidate page or review location. On rejection it remains attempt-local
+and cannot affect downstream Targets.
 
-- **Long-form content** (concept pages, proposals): the worker writes
-  Markdown directly to the packet's `artifact` path. It never travels
-  through JSON or chat.
-- **Structured decisions** (triage, survey, connect, plan, review): small
-  JSON artifacts at the `artifact` path, shaped per the phase reference and
-  hard-capped by the gate (e.g. 32 findings, 64 KiB per survey) so no single
-  file outgrows what a model can produce reliably. After survey passes, the
-  kernel derives a Pin-bound Evidence Cache under `drafts/evidence/`;
-  downstream workers may consume it, and the kernel may rebuild it at any
-  time.
-- **Worker → coordinator handoff**: at most 10 lines / 2 KiB — the artifact
-  path, the gate verdict from `complete_command`, item ids when the
-  reference asks for them, and a gap count. Never artifact bodies.
+The worker Handoff contains only the artifact path, gate verdict, item or gap
+counts requested by the reference, and any blocking reason. It never repeats
+artifact bodies.
 
-Each phase reference (`references/<phase>.md`, named in the dispatch packet)
-tells the worker what to read, do, write and return. Read it before working.
+## Plan and pages
 
-The plan phase partitions ownership: each shard plans pages only under its
-own path prefix and assigns each finding exactly once run-wide; page count
-follows the Grep Test (see `references/contract.md`), not a quota.
-Unchanged pages from the previous publication are reused automatically when
-their plan entry, cited Git blobs and `stale_after` all still hold.
+`plan:workspace` is one bounded planning Target. It navigates the Index as
+`Source -> build module -> source set -> package cluster`, then writes the
+smallest Page Plan that passes the Grep Test. Package clusters are navigation
+scopes, not automatic Targets; the plan need not classify every file or
+package.
 
-## Review, publish, verify
+The State Gate validates the complete Page DAG before creating page Targets.
+Leaf pages research and write directly from their `scopes`. A parent page
+becomes ready only after every child is Machine-confirmed, and receives those
+approved child pages as inputs. Each page Target still reopens Pin or Catalog
+evidence for every load-bearing claim; child pages are synthesis inputs, not
+provenance.
 
-Review runs in a fresh session, never the producer's:
+Page boundaries are fixed by the Page Plan. Record an honest partial gap when
+evidence is incomplete. A routing or ownership error belongs to plan repair,
+not an invented page or dynamic split.
+
+## Coordinator conservation
+
+The host coordinator consumes only `run status --json`, dispatch packets,
+Handoffs and validator issue lists. It does not read Pins, plan bodies,
+Candidate pages or review reports. Every content Target runs in a worker
+session. If workers are unavailable, use `okf run pause`; resume with
+`okf run resume`.
+
+Long-form Markdown stays on disk. Structured plan and review decisions are
+bounded JSON Attempt Artifacts. Dispatch packets contain paths and counts,
+never copied file bodies or whole-repository JSON. Weigh every packet field
+against coordinator context.
+
+## Review and Publication
+
+Bind an independent review session when review Targets first become ready:
 
     okf review start --actor repo-wiki/<reviewer> --session <new-session> --json
-    # one review:<owner> task per owner; each worker writes its report
-    # and runs the packet's complete_command
 
-All batches must approve. Then:
+Review is per page, not per owner batch. Each review Target binds the exact
+page digest, reopens its Locator evidence from Pins/Catalogs and writes one
+verdict. Approval stamps that page Machine-confirmed and may unlock its parent.
+A page repair invalidates its review and dependent parents; plan repair applies
+the new Page Plan and preserves unaffected branches.
 
-    okf publication publish            # immutable generation + atomic pointer switch
-    okf publication export --to wiki   # optional Git-managed copy
-    okf publication rollback           # switch back to the previous generation
+When every required root page is Machine-confirmed, status exposes:
 
-Reserved `index.md` and `log.md` are generated by publish — never author them.
-After a human actually inspects pages, record it as a new generation:
+    okf publication publish
 
+Publication validates the approved Candidate, writes reserved `index.md` and
+`log.md`, installs an immutable content-addressed generation and atomically
+switches the current pointer. Optional operations remain:
+
+    okf publication export --to wiki
+    okf publication rollback
     okf publication verify --actor human:<identity> --page overview.md
 
-Optional source-facing proposals after publish:
+Human verification creates a new Publication generation; it is distinct from
+Machine-confirmed review.
+
+Optional source-facing proposals run only after Publication:
 
     okf propose start --json
-    # worker writes proposals/; zero files is allowed
     okf propose complete --json

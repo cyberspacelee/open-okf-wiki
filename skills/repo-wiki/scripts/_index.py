@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
 import re
 from collections import Counter
+from xml.etree import ElementTree
 
-from _files import atomic_json, atomic_text
+import _workspace
+from _files import atomic_text
 
 ENTRY_NAMES = (
     "readme.md",
@@ -56,7 +59,8 @@ ENTRY_BASENAMES = {
     "server.ts",
 }
 TEST_TOKEN = re.compile(
-    r"(^|/)(tests?|spec|__tests__)(/|$)|(^|[/._-])tests?\.|_test\.|\.spec\.", re.I
+    r"(^|/)(tests?|spec|__tests__)(/|$)|(^|[/._-])tests?\.|_test\.|\.spec\.",
+    re.IGNORECASE,
 )
 BINARY_EXT = {
     ".png",
@@ -84,39 +88,45 @@ BINARY_EXT = {
 VERSION = 2
 MAX_INDEX_BYTES = 64 * 1024
 MAX_LS_BYTES = 16 * 1024
-WINDOW = 20
-MAX_EXCERPT_LINE_CHARS = 500
-EXCERPT_CLIP_MARK = "…[clipped]"
 MAX_ENTRY_POINTS = 16
 MAX_EXTENSIONS = 20
-GENERATED_TOKEN = re.compile(r"(^|/)(generated|vendor|dist|build)(/|$)", re.I)
-GENERATED_MARKER = re.compile(rb"generated (by|file)|do not edit", re.I)
-PROTECTED_TOKEN = re.compile(
-    r"(^|/)(auth|security|migrations?|api|public|contracts?)(/|$)", re.I
+GENERATED_TOKEN = re.compile(r"(^|/)(generated|vendor|dist|build)(/|$)", re.IGNORECASE)
+GENERATED_MARKER = re.compile(rb"generated (by|file)|do not edit", re.IGNORECASE)
+SOURCE_SET = re.compile(
+    r"^(?:(?P<module>.+)/)?src/(?P<set>main|test|integrationTest|it)/"
+    r"(?P<language>java|kotlin|scala|groovy|resources)(?:/|$)"
 )
+LANGUAGE_NAMES = {
+    ".java": "Java",
+    ".kt": "Kotlin",
+    ".kts": "Kotlin",
+    ".scala": "Scala",
+    ".groovy": "Groovy",
+    ".py": "Python",
+    ".ts": "TypeScript",
+    ".tsx": "TypeScript",
+    ".js": "JavaScript",
+    ".jsx": "JavaScript",
+    ".go": "Go",
+    ".rs": "Rust",
+    ".xml": "XML",
+    ".yaml": "YAML",
+    ".yml": "YAML",
+    ".json": "JSON",
+}
 
 
 def index_path(base: pathlib.Path, source: str) -> pathlib.Path:
     return base / "drafts" / "index" / f"{source.lower()}.md"
 
 
-def evidence_path(base: pathlib.Path, target: str) -> pathlib.Path:
-    return base / "drafts" / "evidence" / f"{target}.json"
-
-
-def write_source_index(
-    root: pathlib.Path, run_id: str, source, revision: dict
-) -> dict:
+def write_source_index(root: pathlib.Path, run_id: str, source, revision: dict) -> dict:
     import _state
     import _workspace
 
     pin = _workspace.pin_dir(root, run_id, source.name)
-    files = _workspace.scoped_files(
-        _workspace.captured_files(source, pin, revision),
-        ["."],
-        source.survey_exclude,
-    )
-    payload = build_index(source.name, pin, files, source.survey_split)
+    files = _workspace.captured_files(source, pin, revision)
+    payload = build_index(source.name, pin, files)
     path = index_path(_state.run_dir(root, run_id), source.name)
     rendered = render_index(payload)
     if len(rendered.encode("utf-8")) > MAX_INDEX_BYTES:
@@ -126,57 +136,170 @@ def write_source_index(
 
 
 def render_index(payload: dict) -> str:
-    """Render the bounded structural payload for one-pass model reading."""
+    """Render a bounded tree used to choose the next scope to inspect."""
 
-    def compact(value) -> str:
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    records = {item["path"]: item for item in payload["directories"]}
+    semantic = {".", *payload.get("build_modules", []), *payload.get("source_sets", [])}
+    visible = _ancestor_closure({*records, *semantic})
+    while True:
+        rendered = _render_tree(payload, records, visible)
+        if len(rendered.encode("utf-8")) <= MAX_INDEX_BYTES:
+            return rendered
+        removable = [path for path in visible if path != "." and path not in semantic]
+        if not removable:
+            removable = [path for path in visible if path != "."]
+        if not removable:
+            raise AssertionError("source index header exceeds the index byte budget")
+        victim = max(
+            removable,
+            key=lambda path: (
+                path.count("/"),
+                not records.get(path, {}).get("entry_points"),
+                path,
+            ),
+        )
+        visible.remove(victim)
 
+
+def _render_tree(payload: dict, records: dict[str, dict], visible: set[str]) -> str:
+    modules = set(payload.get("build_modules", []))
+    source_sets = set(payload.get("source_sets", []))
+    globally_truncated = payload["truncated"] or any(
+        path not in visible for path in _ancestor_closure(set(records))
+    )
     lines = [
-        "# Source Index",
+        f"# {payload['source']}",
         "",
-        f"- version: {payload['version']}",
-        f"- source: {compact(payload['source'])}",
-        f"- file_count: {payload['file_count']}",
-        f"- truncated: {str(payload['truncated']).lower()}",
+        (
+            f"{payload['file_count']} files | inventory complete | "
+            f"outline truncated: {str(globally_truncated).lower()}"
+        ),
         "",
-        "## Directories",
-        "",
-        "Each record is `stats | extensions | entry_points | representative_files`.",
-        "Stats columns are `[path, files, bytes, lines, test_files, generated_files, "
-        "entry_points_omitted, extensions_other, collapsed_dirs, subtree_files]`.",
+        "## Repository outline",
         "",
     ]
-    for item in payload["directories"]:
-        stats = [
-            item["path"],
-            item["files"],
-            item["bytes"],
-            item["lines"],
-            item["test_files"],
-            item["generated_files"],
-            item["entry_points_omitted"],
-            item["extensions_other"],
-            item["collapsed_dirs"],
-            item["subtree_files"],
-        ]
-        lines.append(
-            f"- {compact(stats)} | {compact(item['extensions'])} | "
-            f"{compact(item['entry_points'])} | {compact(item['representative_files'])}"
+    for path in sorted(
+        visible,
+        key=lambda value: (value != ".", pathlib.PurePosixPath(value).parts),
+    ):
+        stats = _subtree_stats(path, records)
+        kind = _navigation_kind(path, modules, source_sets)
+        indent = "  " * (0 if path == "." else path.count("/") + 1)
+        label = "." if path == "." else path + "/"
+        details = [f"{stats['files']} files"]
+        languages = _main_languages(stats["extensions"])
+        if languages:
+            details.append("/".join(languages))
+        if stats["test_files"]:
+            details.append(f"test {stats['test_files']}")
+        if stats["generated_files"]:
+            details.append(f"generated {stats['generated_files']}")
+        hidden = sum(
+            1
+            for candidate in records
+            if candidate != path
+            and _is_descendant(candidate, path)
+            and candidate not in visible
+        )
+        folded = stats["collapsed_dirs"] + hidden
+        if folded:
+            details.append(f"folded {folded}")
+        lines.append(f"{indent}- `{label}` [{kind}] - " + " | ".join(details))
+        entries = stats["entry_points"][:3]
+        if entries:
+            lines.append(
+                f"{indent}  entry: " + ", ".join(f"`{item}`" for item in entries)
+            )
+    if globally_truncated:
+        lines.extend(
+            [
+                "",
+                (
+                    "The outline is folded to its byte budget; use bounded directory "
+                    "listing to expand a relevant path."
+                ),
+            ]
         )
     return "\n".join(lines) + "\n"
+
+
+def _ancestor_closure(paths: set[str]) -> set[str]:
+    result = {"."}
+    for path in paths:
+        current = "" if path == "." else path.strip("/")
+        while current:
+            result.add(current)
+            current = _parent_dir(current)
+    return result
+
+
+def _is_descendant(path: str, parent: str) -> bool:
+    return parent == "." or path.startswith(parent.rstrip("/") + "/")
+
+
+def _subtree_stats(path: str, records: dict[str, dict]) -> dict:
+    extensions: Counter = Counter()
+    result = {
+        "files": 0,
+        "test_files": 0,
+        "generated_files": 0,
+        "collapsed_dirs": 0,
+        "entry_points": [],
+        "extensions": extensions,
+    }
+    for candidate, item in records.items():
+        if candidate != path and not _is_descendant(candidate, path):
+            continue
+        for key in ("files", "test_files", "generated_files", "collapsed_dirs"):
+            result[key] += item[key]
+        extensions.update(item["extensions"])
+        result["entry_points"].extend(item["entry_points"])
+    result["entry_points"] = sorted(set(result["entry_points"]))
+    return result
+
+
+def _navigation_kind(path: str, modules: set[str], source_sets: set[str]) -> str:
+    if path in modules:
+        return "build-module"
+    if path in source_sets:
+        match = SOURCE_SET.match(path + "/")
+        return (
+            f"source-set:{match.group('set')}/{match.group('language')}"
+            if match
+            else "source-set"
+        )
+    if any(_is_descendant(path, root) and path != root for root in source_sets):
+        return "package-cluster"
+    return "directory"
+
+
+def _main_languages(extensions: Counter) -> list[str]:
+    languages: Counter = Counter()
+    for extension, count in extensions.items():
+        name = LANGUAGE_NAMES.get(extension)
+        if name:
+            languages[name] += count
+    return [name for name, _ in languages.most_common(3)]
 
 
 def build_index(
     source: str,
     pin: pathlib.Path,
     files: list[str],
-    forced_splits: tuple[str, ...] = (),
 ) -> dict:
-    required = {"", *(item.strip("/") for item in forced_splits)}
-    direct_files, child_dirs = _directory_shape(files)
-    visible = required | direct_files | {
-        path for path, children in child_dirs.items() if len(children) > 1
+    build_modules = _maven_modules(pin, files)
+    source_sets = _source_sets(files)
+    required = {
+        "",
+        *("" if item == "." else item for item in build_modules),
+        *source_sets,
     }
+    direct_files, child_dirs = _directory_shape(files)
+    visible = (
+        required
+        | direct_files
+        | {path for path, children in child_dirs.items() if len(children) > 1}
+    )
     stats = {path: _new_stats() for path in visible}
     for rel in files:
         size, raw = _file_data(pin, rel)
@@ -185,21 +308,36 @@ def build_index(
         (path for path in stats if path not in required),
         key=lambda path: _keep_priority(path, stats[path]),
     )
-    full = _assemble(source, files, stats, required, candidates, len(candidates))
+    full = _assemble(
+        source,
+        files,
+        stats,
+        required,
+        candidates,
+        len(candidates),
+        build_modules,
+        source_sets,
+    )
     if _json_size(full) <= MAX_INDEX_BYTES:
         return full
-    floor = _assemble(source, files, stats, required, candidates, 0)
+    floor = _assemble(
+        source, files, stats, required, candidates, 0, build_modules, source_sets
+    )
     if _json_size(floor) > MAX_INDEX_BYTES:
-        raise ValueError("configured survey.split entries exceed the index byte budget")
+        raise ValueError("required structural anchors exceed the index byte budget")
     lo, hi = 0, len(candidates)
     while hi - lo > 1:
         mid = (lo + hi) // 2
-        probe = _assemble(source, files, stats, required, candidates, mid)
+        probe = _assemble(
+            source, files, stats, required, candidates, mid, build_modules, source_sets
+        )
         if _json_size(probe) <= MAX_INDEX_BYTES:
             lo = mid
         else:
             hi = mid
-    return _assemble(source, files, stats, required, candidates, lo)
+    return _assemble(
+        source, files, stats, required, candidates, lo, build_modules, source_sets
+    )
 
 
 def _assemble(
@@ -209,6 +347,8 @@ def _assemble(
     required: set[str],
     candidates: list[str],
     keep_count: int,
+    build_modules: list[str],
+    source_sets: list[str],
 ) -> dict:
     kept = required | set(candidates[:keep_count])
     working = {path: _copy_stats(item) for path, item in stats.items()}
@@ -234,12 +374,88 @@ def _assemble(
         "source": source,
         "file_count": len(files),
         "directories": records,
+        "build_modules": build_modules,
+        "source_sets": source_sets,
         "truncated": keep_count < len(candidates),
     }
     total = sum(item["files"] for item in records)
     if total != len(files) or subtree.get("", 0) != len(files):
         raise AssertionError("index partition lost files during assembly")
     return payload
+
+
+def _maven_modules(pin: pathlib.Path, files: list[str]) -> list[str]:
+    pom_paths = sorted(
+        path for path in files if pathlib.PurePosixPath(path).name == "pom.xml"
+    )
+    modules = {"." if path == "pom.xml" else _parent_of(path) for path in pom_paths}
+    for pom in pom_paths:
+        disk = pin.joinpath(*pathlib.PurePosixPath(pom).parts)
+        try:
+            root = ElementTree.fromstring(disk.read_bytes())
+        except (OSError, ElementTree.ParseError):
+            continue
+        base = _parent_of(pom)
+        for item in root.findall("./{*}modules/{*}module"):
+            value = (item.text or "").strip().replace("\\", "/").strip("/")
+            pure = pathlib.PurePosixPath(value)
+            if not value or pure.is_absolute() or ".." in pure.parts:
+                continue
+            path = "/".join(part for part in (base, pure.as_posix()) if part)
+            if f"{path}/pom.xml" in files:
+                modules.add(path)
+    return sorted(modules, key=lambda path: (path != ".", path))
+
+
+def _source_sets(files: list[str]) -> list[str]:
+    result = set()
+    for path in files:
+        match = SOURCE_SET.match(path)
+        if match:
+            prefix = f"{match.group('module')}/" if match.group("module") else ""
+            result.add(f"{prefix}src/{match.group('set')}/{match.group('language')}")
+    return sorted(result)
+
+
+def scope_digest(
+    pin: pathlib.Path, files: list[str], roots: list[str] | tuple[str, ...]
+) -> str:
+    """Hash the inventory and contents selected by relative scope roots."""
+
+    if not roots:
+        raise ValueError("at least one scope root is required")
+    normalized = []
+    for root in roots:
+        pure = pathlib.PurePosixPath(root)
+        if not root or pure.is_absolute() or ".." in pure.parts or "\\" in root:
+            raise ValueError("scope roots must be relative POSIX paths")
+        normalized.append("." if root == "." else pure.as_posix().strip("/"))
+    selected = sorted(
+        path
+        for path in files
+        if any(
+            root == "." or path == root or path.startswith(root + "/")
+            for root in normalized
+        )
+    )
+    digest = hashlib.sha256()
+    for root in sorted(set(normalized)):
+        digest.update(b"root\0" + root.encode("utf-8") + b"\0")
+    for rel in selected:
+        candidate = pin.joinpath(*pathlib.PurePosixPath(rel).parts)
+        digest.update(b"file\0" + rel.encode("utf-8") + b"\0")
+        if candidate.is_symlink():
+            digest.update(b"symlink\0" + os.fsencode(os.readlink(candidate)))
+            continue
+        disk = _workspace.resolve_pin_file(pin, rel)
+        if disk is None:
+            digest.update(b"missing")
+            continue
+        try:
+            digest.update(hashlib.sha256(disk.read_bytes()).digest())
+        except OSError:
+            digest.update(b"missing")
+    return digest.hexdigest()
 
 
 def _keep_priority(path: str, stats: dict) -> tuple:
@@ -297,24 +513,21 @@ def list_directory(
     source: str,
     path: str,
     files: list[str],
-    forced_splits: tuple[str, ...] = (),
     after: str | None = None,
 ) -> dict:
     direct_files, child_dirs = _directory_shape(files)
     owner = "" if path == "." else path
-    forced = {item.strip("/") for item in forced_splits}
     items = [
         {"path": rel, "kind": "file"}
         for rel in files
         if (pathlib.PurePosixPath(rel).parent.as_posix() == owner)
-        or (owner == "" and pathlib.PurePosixPath(rel).parent == pathlib.PurePosixPath("."))
+        or (
+            owner == ""
+            and pathlib.PurePosixPath(rel).parent == pathlib.PurePosixPath(".")
+        )
     ]
     for child in child_dirs.get(owner, set()):
-        while (
-            child not in forced
-            and child not in direct_files
-            and len(child_dirs.get(child, ())) == 1
-        ):
+        while child not in direct_files and len(child_dirs.get(child, ())) == 1:
             child = next(iter(child_dirs[child]))
         items.append({"path": child, "kind": "directory"})
     items.sort(key=lambda item: item["path"])
@@ -382,7 +595,13 @@ def _merge_stats(parent: dict, child: dict) -> None:
 
 
 def _file_data(pin: pathlib.Path, rel: str) -> tuple[int, bytes | None]:
-    disk = pin.joinpath(*pathlib.PurePosixPath(rel).parts) if pin.is_dir() else None
+    if not pin.is_dir():
+        return 0, None
+    candidate = pin.joinpath(*pathlib.PurePosixPath(rel).parts)
+    if candidate.is_symlink():
+        raw = os.fsencode(os.readlink(candidate))
+        return len(raw), raw
+    disk = _workspace.resolve_pin_file(pin, rel)
     if disk is None or not disk.is_file():
         return 0, None
     try:
@@ -397,21 +616,6 @@ def _file_data(pin: pathlib.Path, rel: str) -> tuple[int, bytes | None]:
 def is_entry_point(rel: str) -> bool:
     name = pathlib.PurePosixPath(rel).name.lower()
     return name in ENTRY_NAMES or name in ENTRY_BASENAMES
-
-
-def is_protected(rel: str) -> bool:
-    return is_entry_point(rel) or bool(PROTECTED_TOKEN.search(rel))
-
-
-def is_generated(pin: pathlib.Path, rel: str) -> bool:
-    if GENERATED_TOKEN.search(rel):
-        return True
-    disk = pin.joinpath(*pathlib.PurePosixPath(rel).parts)
-    try:
-        with disk.open("rb") as handle:
-            return bool(GENERATED_MARKER.search(handle.read(2048)))
-    except OSError:
-        return False
 
 
 def _accumulate_file(stats: dict, rel: str, size: int, raw: bytes | None) -> None:
@@ -451,7 +655,9 @@ def _representatives(stats: dict) -> list[str]:
 
 
 def _finalize(path: str, stats: dict) -> dict:
-    extensions = sorted(stats["extensions"].items(), key=lambda item: (-item[1], item[0]))
+    extensions = sorted(
+        stats["extensions"].items(), key=lambda item: (-item[1], item[0])
+    )
     entry_points = sorted(stats["entry_points"])
     return {
         "path": path or ".",
@@ -467,99 +673,3 @@ def _finalize(path: str, stats: dict) -> dict:
         "extensions_other": sum(count for _, count in extensions[MAX_EXTENSIONS:]),
         "collapsed_dirs": stats["collapsed_dirs"],
     }
-
-
-def excerpt(content: bytes, lo: int | None, hi: int | None, window: int = WINDOW) -> str:
-    text = content.decode("utf-8")
-    lines = text.splitlines()
-    if lo is None:
-        start, end = 1, min(len(lines), window * 2)
-    else:
-        start = max(1, lo - window)
-        end = min(len(lines), (hi or lo) + window)
-    numbered = []
-    for index in range(start, end + 1):
-        line = lines[index - 1]
-        if len(line) > MAX_EXCERPT_LINE_CHARS:
-            line = line[:MAX_EXCERPT_LINE_CHARS] + EXCERPT_CLIP_MARK
-        numbered.append(f"{index}|{line}")
-    return "\n".join(numbered) + ("\n" if numbered else "")
-
-
-def _survey_cache(root: pathlib.Path, state: dict, task: dict, survey) -> dict:
-    import _validate
-
-    findings = []
-    for finding in survey.findings:
-        excerpts = []
-        for locator in finding.evidence:
-            resolved = _validate._resolve_resource(root, state, locator)
-            if resolved is None:
-                raise ValueError(f"unresolved locator after survey validation: {locator}")
-            text = excerpt(*resolved)
-            excerpts.append(
-                {
-                    "locator": locator,
-                    "digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                    "text": text,
-                }
-            )
-        findings.append({"id": finding.id, "excerpts": excerpts})
-    return {
-        "version": VERSION,
-        "target": task["name"],
-        "source": survey.source,
-        "pin": _pin_digest(state, survey.source),
-        "window": {"version": 2, "lines": WINDOW},
-        "findings": findings,
-    }
-
-
-def materialize_survey(root: pathlib.Path, state: dict, task: dict) -> pathlib.Path:
-    """Rebuild one disposable evidence cache from a completed Survey and its Pins."""
-    import _state
-    from _models import Survey
-
-    base = _state.run_dir(root, state["run_id"])
-    survey = Survey.model_validate_json(
-        (base / task["artifact"]).read_text(encoding="utf-8"), strict=True
-    )
-    path = evidence_path(base, task["name"])
-    atomic_json(path, _survey_cache(root, state, task, survey))
-    return path
-
-
-def _pin_digest(state: dict, source: str) -> str:
-    revision = next(item for item in state["revisions"] if item["name"] == source)
-    return revision.get("commit") or revision["content_hash"]
-
-
-def _cache_valid(
-    root: pathlib.Path, path: pathlib.Path, base: pathlib.Path, state: dict, task: dict
-) -> bool:
-    from _models import Survey
-
-    try:
-        cache = json.loads(path.read_text(encoding="utf-8"))
-        survey = Survey.model_validate_json(
-            (base / task["artifact"]).read_text(encoding="utf-8"),
-            strict=True,
-        )
-        return cache == _survey_cache(root, state, task, survey)
-    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
-        return False
-
-
-def ensure_evidence_cache(root: pathlib.Path, state: dict) -> list[pathlib.Path]:
-    base = root / ".okf-wiki" / "runs" / state["run_id"]
-    result = []
-    for task in state["tasks"].values():
-        if task["phase"] != "survey" or task["status"] != "complete":
-            continue
-        path = evidence_path(base, task["name"])
-        result.append(
-            path
-            if _cache_valid(root, path, base, state, task)
-            else materialize_survey(root, state, task)
-        )
-    return result

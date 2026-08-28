@@ -3,7 +3,7 @@ import hashlib
 import json
 import pathlib
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import unquote, urlparse
 
@@ -12,11 +12,8 @@ from _frontmatter import parse_file, render
 from _markdown import extract
 from _models import (
     ConceptFrontmatter,
-    Connect,
     PagePlan,
     ReviewReport,
-    Survey,
-    Triage,
     model_errors,
 )
 from pydantic import ValidationError
@@ -27,16 +24,7 @@ CAUSAL = re.compile(
 )
 _INLINE_REF = re.compile(r"\[\^[^\]]+\]")
 _LFS_PREFIX = b"version https://git-lfs.github.com/spec/v1"
-SURVEY_MAX_BYTES = 64 * 1024
-
-
-def survey_budget(state: dict) -> int:
-    """Per-survey byte budget; wider for zh (UTF-8 ~3 bytes/char).
-
-    The whole-set budget is implied: each survey is capped, and the task
-    count bounds the file count, so no separate set-level check exists.
-    """
-    return SURVEY_MAX_BYTES * 2 if state.get("language") == "zh" else SURVEY_MAX_BYTES
+MAX_STRUCTURED_ARTIFACT_BYTES = 256 * 1024
 
 
 @dataclasses.dataclass(frozen=True)
@@ -107,7 +95,9 @@ def _resolve_resource(
         return None
     if registered.kind == "files" or revision.get("kind") == "files":
         pin = _workspace.pin_dir(root, state["run_id"], source)
-        pinned = dataclasses.replace(registered, path=pin) if pin.is_dir() else registered
+        pinned = (
+            dataclasses.replace(registered, path=pin) if pin.is_dir() else registered
+        )
         content = _workspace.files_blob(pinned, rel)
     else:
         content = _workspace.git_blob(registered, revision["commit"], rel)
@@ -143,9 +133,10 @@ def _catalog_record_valid(root: pathlib.Path, entry) -> bool:
     if not isinstance(entry, dict):
         return False
     content_hash = entry.get("content_hash")
-    if not isinstance(content_hash, str) or re.fullmatch(
-        r"[0-9a-f]{64}", content_hash
-    ) is None:
+    if (
+        not isinstance(content_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", content_hash) is None
+    ):
         return False
     capture = root / ".okf-wiki" / "catalogs" / content_hash / "catalog.json"
     try:
@@ -214,9 +205,23 @@ def _check_range(
     return []
 
 
-def _model_issues(
-    path: pathlib.Path, model, raw: str
-) -> tuple[object | None, list[Issue]]:
+def _model_issues(path: pathlib.Path, model) -> tuple[object | None, list[Issue]]:
+    size = path.stat().st_size
+    if size > MAX_STRUCTURED_ARTIFACT_BYTES:
+        return None, [
+            issue(
+                "error",
+                "artifact-too-large",
+                str(path),
+                f"structured artifact is {size} bytes; limit is "
+                f"{MAX_STRUCTURED_ARTIFACT_BYTES}; remove repeated items or "
+                "embedded source text",
+            )
+        ]
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, [issue("error", "artifact-invalid", str(path), str(exc))]
     try:
         return model.model_validate_json(raw, strict=True), []
     except ValidationError as exc:
@@ -235,814 +240,190 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[Issue]:
                 "error", "artifact-missing", str(path), "target artifact does not exist"
             )
         ]
-    phase = task["phase"]
-    if phase == "triage":
-        return _validate_triage(root, state, task, path)
-    if phase == "survey":
-        return _validate_survey(root, state, task, path)
-    if phase == "connect":
-        value, issues = _model_issues(path, Connect, path.read_text(encoding="utf-8"))
+    kind = task["kind"]
+    if kind == "plan":
+        value, issues = _model_issues(path, PagePlan)
         if value:
-            if value.source != task["spec"]["source"]:
+            issues.extend(_validate_page_plan(root, state, value, path))
+        return issues
+    if kind == "page":
+        return _validate_page_target(root, state, task, path)
+    if kind == "review":
+        value, issues = _model_issues(path, ReviewReport)
+        if value:
+            if value.page != task["name"]:
+                issues.append(
+                    issue("error", "review-target-invalid", str(path), value.page)
+                )
+            expected = state["targets"][task["depends_on"][0]].get("output_digest")
+            if value.page_digest != expected:
                 issues.append(
                     issue(
                         "error",
-                        "connect-mismatch",
+                        "review-digest-invalid",
                         str(path),
-                        "connect source does not match target",
+                        "review does not bind the dispatched page digest",
                     )
                 )
-            known = {item["name"] for item in state["revisions"]}
-            taken = _sibling_connection_ids(base, state, task)
-            for connection in value.connections:
-                if connection.id in taken:
-                    issues.append(
-                        issue(
-                            "error",
-                            "connection-id-taken",
-                            str(path),
-                            f"connection id {connection.id!r} is already used by"
-                            f" connect:{taken[connection.id]}; connection ids are global",
-                        )
+            if any(
+                item.reopen == "plan" and item.target != "plan:workspace"
+                for item in value.issues
+            ):
+                issues.append(
+                    issue(
+                        "error",
+                        "review-target-invalid",
+                        str(path),
+                        "plan issues must target plan:workspace",
                     )
-                names = {item.source for item in connection.participants}
-                if names - known:
-                    issues.append(
-                        issue(
-                            "error",
-                            "connection-source-invalid",
-                            str(path),
-                            connection.id,
-                        )
-                    )
-                if value.source not in names:
-                    issues.append(
-                        issue(
-                            "error",
-                            "connection-source-invalid",
-                            str(path),
-                            f"{connection.id} must include {value.source}",
-                        )
-                    )
-                elif not (names - known):
-                    owner = min(names, key=str.casefold)
-                    if value.source != owner:
-                        issues.append(
-                            issue(
-                                "error",
-                                "connection-owner-invalid",
-                                str(path),
-                                f"{connection.id} belongs to connect:{owner.lower()}"
-                                " (lowest participant declares the edge)",
-                            )
-                        )
-                for participant in connection.participants:
-                    for locator in participant.evidence:
-                        resolved = _resolve_resource(root, state, locator)
-                        if resolved is None or not locator.startswith(
-                            participant.source + "/"
-                        ):
-                            issues.append(
-                                issue(
-                                    "error",
-                                    "connection-evidence-invalid",
-                                    str(path),
-                                    locator,
-                                )
-                            )
-                        elif resolved:
-                            issues.extend(_check_range(*resolved, locator))
-                for locator in connection.contract_evidence:
-                    resolved = _resolve_resource(root, state, locator)
-                    if resolved is None:
-                        issues.append(
-                            issue(
-                                "error",
-                                "connection-evidence-invalid",
-                                str(path),
-                                locator,
-                            )
-                        )
-                    else:
-                        issues.extend(_check_range(*resolved, locator))
+                )
         return issues
-    if phase == "plan":
-        return _validate_plan(root, state, task, path, base)
-    if phase == "review":
-        value, issues = _model_issues(
-            path, ReviewReport, path.read_text(encoding="utf-8")
-        )
-        if value:
-            allowed = set(task["spec"].get("pages", []))
-            for item in value.issues:
-                if item.reopen == "page" and item.target not in allowed:
-                    issues.append(
-                        issue(
-                            "error",
-                            "review-target-invalid",
-                            str(path),
-                            item.target,
-                        )
-                    )
-                elif item.reopen == "plan":
-                    slug = (
-                        "workspace"
-                        if item.target in ("workspace", "plan:workspace")
-                        else item.target.removeprefix("plan:").lower()
-                    )
-                    if f"plan:{slug}" not in state["tasks"]:
-                        issues.append(
-                            issue(
-                                "error",
-                                "review-target-invalid",
-                                str(path),
-                                f"{item.target} does not name a plan shard",
-                            )
-                        )
-        return issues
-    if phase == "write":
-        return _validate_write(root, state, task, path)
-    return [issue("error", "phase-unknown", str(path), f"unknown phase {phase}")]
+    return [issue("error", "target-kind-unknown", str(path), f"unknown kind {kind}")]
 
-def _validate_triage(
-    root: pathlib.Path, state: dict, task: dict, path: pathlib.Path
+
+def _path_in_scope(path: str, roots: list[str]) -> bool:
+    return any(
+        root in ("", ".")
+        or path == root.rstrip("/")
+        or path.startswith(root.rstrip("/") + "/")
+        for root in roots
+    )
+
+
+def _validate_page_plan(
+    root: pathlib.Path, state: dict, plan: PagePlan, path: pathlib.Path
 ) -> list[Issue]:
-    import _index
     import _workspace
 
-    value, issues = _model_issues(path, Triage, path.read_text(encoding="utf-8"))
-    if not value:
-        return issues
-    expected_source = task["spec"]["source"]
-    if value.source != expected_source:
-        return issues + [
+    issues = []
+    workspace = _workspace.load(root)
+    known = set(workspace.sources)
+    planned_paths = {page.path for page in plan.pages}
+    if "overview.md" not in planned_paths:
+        issues.append(
+            issue(
+                "error", "overview-missing", str(path), "plan must include overview.md"
+            )
+        )
+    if "architecture.md" not in planned_paths:
+        issues.append(
             issue(
                 "error",
-                "triage-source-mismatch",
+                "architecture-missing",
                 str(path),
-                f"triage source must be {expected_source}",
+                "plan must include architecture.md",
             )
-        ]
-    workspace = _workspace.load(root)
-    source = workspace.sources[expected_source]
-    revision = next(
-        item for item in state["revisions"] if item["name"] == expected_source
-    )
-    pin = _workspace.pin_dir(root, state["run_id"], expected_source)
-    files = _workspace.captured_files(source, pin, revision)
-    expected = set(_workspace.scoped_files(files, ["."], source.survey_exclude))
-    claimed: set[str] = set()
-    for scope in value.scopes:
-        covered = set(
-            _workspace.scoped_files(files, scope.paths, source.survey_exclude)
         )
-        if not covered:
+    for page in plan.pages:
+        if pathlib.PurePosixPath(page.path).name in {"index.md", "log.md"}:
+            issues.append(issue("error", "reserved-page", str(path), page.path))
+        if page.owner != "workspace" and not page.path.startswith(
+            f"data/{page.owner.lower()}/"
+        ):
             issues.append(
                 issue(
                     "error",
-                    "triage-path-invalid",
+                    "page-owner-path-invalid",
                     str(path),
-                    f"paths select no files: {list(scope.paths)}",
+                    f"{page.path} must live under data/{page.owner.lower()}/",
                 )
             )
-            continue
-        overlap = claimed & covered
-        if overlap:
-            issues.append(
-                issue(
-                    "error",
-                    "triage-overlap",
-                    str(path),
-                    f"paths overlap: {sorted(overlap)[:8]}",
-                )
-            )
-        claimed.update(covered)
-        if scope.tier != "inventory":
-            continue
-        if not scope.reason:
-            issues.append(
-                issue("error", "inventory-reason-missing", str(path), str(scope.paths))
-            )
-        protected = {item for item in covered if _index.is_protected(item)}
-        if protected:
-            issues.append(
-                issue(
-                    "error",
-                    "inventory-protected-path",
-                    str(path),
-                    f"entry points require semantic survey: {sorted(protected)}",
-                )
-            )
-        generated = all(_index.is_generated(pin, item) for item in covered)
-        if not scope.samples and not generated:
-            issues.append(
-                issue("error", "inventory-sample-missing", str(path), str(scope.paths))
-            )
-        for locator in scope.samples:
-            parsed = parse_resource(locator)
-            if parsed is None or parsed[0] != expected_source or parsed[1] not in covered:
+        for scope in page.scopes:
+            if scope.source not in known:
                 issues.append(
-                    issue("error", "inventory-sample-invalid", str(path), locator)
+                    issue("error", "scope-source-invalid", str(path), scope.source)
                 )
                 continue
-            resolved = _resolve_resource(root, state, locator)
-            if resolved is None:
-                issues.append(
-                    issue("error", "inventory-sample-invalid", str(path), locator)
+            source = workspace.sources[scope.source]
+            if source.kind in ("opengauss", "postgres"):
+                catalog = next(
+                    (
+                        item
+                        for item in state["catalogs"]
+                        if item["name"] == scope.source
+                    ),
+                    None,
                 )
-            else:
-                issues.extend(_check_range(*resolved, locator))
-    missing = expected - claimed
-    if missing:
-        issues.append(
-            issue(
-                "error",
-                "triage-coverage-invalid",
-                str(path),
-                f"{expected_source} leaves {len(missing)} files unscoped",
-            )
-        )
-    for split in source.survey_split:
-        if not any(list(scope.paths) == [split] for scope in value.scopes):
-            issues.append(
-                issue(
-                    "error",
-                    "triage-split-missing",
-                    str(path),
-                    f"configured split must be an independent scope: {split}",
-                )
-            )
-    return issues
-
-
-def _validate_survey(root: pathlib.Path, state: dict, task: dict, path: pathlib.Path) -> list[Issue]:
-    max_bytes = survey_budget(state)
-    base = root / ".okf-wiki" / "runs" / state["run_id"]
-    if path.stat().st_size > max_bytes:
-        return [
-            issue(
-                "error",
-                "survey-too-large",
-                str(path),
-                f"survey exceeds {max_bytes} bytes; split or prioritize findings",
-            )
-        ]
-    value, issues = _model_issues(path, Survey, path.read_text(encoding="utf-8"))
-    if value:
-        if value.source != task["spec"]["source"] or value.target != task["name"]:
-            issues.append(
-                issue(
-                    "error",
-                    "survey-mismatch",
-                    str(path),
-                    "survey identity does not match target",
-                )
-            )
-        taken = _sibling_finding_ids(base, state, task)
-        for finding in value.findings:
-            if finding.id in taken:
-                issues.append(
-                    issue(
-                        "error",
-                        "finding-id-taken",
-                        str(path),
-                        f"finding id {finding.id!r} is already used by survey"
-                        f" {taken[finding.id]!r}; finding ids are global",
+                allowed = {"."}
+                if catalog:
+                    allowed.update(table["page_slug"] for table in catalog["tables"])
+                    allowed.update(table["name"] for table in catalog["tables"])
+                for scope_path in scope.paths:
+                    if scope_path not in allowed:
+                        issues.append(
+                            issue(
+                                "error",
+                                "scope-path-invalid",
+                                str(path),
+                                f"{scope.source}/{scope_path}",
+                            )
+                        )
+                continue
+            pin = _workspace.pin_dir(root, state["run_id"], scope.source)
+            for scope_path in scope.paths:
+                candidate = pin if scope_path == "." else pin / scope_path
+                if not candidate.exists():
+                    issues.append(
+                        issue(
+                            "error",
+                            "scope-path-invalid",
+                            str(path),
+                            f"{scope.source}/{scope_path}",
+                        )
                     )
-                )
-            for locator in finding.evidence:
-                resolved = _resolve_resource(root, state, locator)
-                if resolved is None:
-                    issues.append(issue("error", "locator-unresolved", str(path), locator))
-                else:
-                    issues.extend(_check_range(*resolved, locator))
-    return issues
-
-
-def _sibling_finding_ids(
-    base: pathlib.Path, state: dict, task: dict
-) -> dict[str, str]:
-    """Finding ids claimed by completed sibling surveys, id -> survey name."""
-    taken: dict[str, str] = {}
-    for sibling in state["tasks"].values():
-        if (
-            sibling["phase"] != "survey"
-            or sibling["status"] != "complete"
-            or sibling["id"] == task["id"]
+        if page.owner != "workspace" and any(
+            scope.source != page.owner for scope in page.scopes
         ):
-            continue
-        artifact = base / sibling["artifact"]
-        if not artifact.is_file():
-            continue
-        survey = Survey.model_validate_json(
-            artifact.read_text(encoding="utf-8"), strict=True
-        )
-        for finding in survey.findings:
-            taken.setdefault(finding.id, sibling["name"])
-    return taken
-
-
-def _sibling_connection_ids(
-    base: pathlib.Path, state: dict, task: dict
-) -> dict[str, str]:
-    """Connection ids claimed by completed sibling connect tasks, id -> task name."""
-    taken: dict[str, str] = {}
-    for sibling in state["tasks"].values():
-        if (
-            sibling["phase"] != "connect"
-            or sibling["status"] != "complete"
-            or sibling["id"] == task["id"]
-        ):
-            continue
-        artifact = base / sibling["artifact"]
-        if not artifact.is_file():
-            continue
-        connect = Connect.model_validate_json(
-            artifact.read_text(encoding="utf-8"), strict=True
-        )
-        for connection in connect.connections:
-            taken.setdefault(connection.id, sibling["name"])
-    return taken
-
-
-
-def _validate_write(root: pathlib.Path, state: dict, task: dict, path: pathlib.Path) -> list[Issue]:
-    issues = validate_page(
-        root, state, path, owner=task["spec"]["owner"], published=False
-    )
-    if task["spec"]["type"] == "Table":
-        parsed = parse_file(path)
-        expected = next(
-            (
-                table["resource"]
-                for catalog in state["catalogs"]
-                for table in catalog["tables"]
-                if f"data/{catalog['name'].lower()}/{table['page_slug']}.md"
-                == task["name"]
-            ),
-            None,
-        )
-        if expected is None or parsed.meta.get("resource") != expected:
             issues.append(
                 issue(
                     "error",
-                    "table-resource-invalid",
+                    "page-owner-scope-invalid",
                     str(path),
-                    f"Table resource must be {expected}",
+                    f"{page.path} includes a scope outside owner {page.owner}",
                 )
             )
     return issues
 
 
-def _finding_id_list(base: pathlib.Path) -> list[str]:
-    result = []
-    survey_dir = base / "drafts" / "survey"
-    if not survey_dir.is_dir():
-        return result
-    for path in sorted(survey_dir.rglob("*.json")):
-        survey = Survey.model_validate_json(
-            path.read_text(encoding="utf-8"), strict=True
-        )
-        result.extend(item.id for item in survey.findings)
-    return result
-
-
-def _finding_sources(base: pathlib.Path) -> dict[str, str]:
-    """Map every finding id to the Source whose survey produced it."""
-    result: dict[str, str] = {}
-    survey_dir = base / "drafts" / "survey"
-    if not survey_dir.is_dir():
-        return result
-    for path in sorted(survey_dir.rglob("*.json")):
-        survey = Survey.model_validate_json(
-            path.read_text(encoding="utf-8"), strict=True
-        )
-        for item in survey.findings:
-            result.setdefault(item.id, survey.source)
-    return result
-
-
-def _sibling_plan_claims(
-    base: pathlib.Path, state: dict, task: dict
-) -> dict[str, str]:
-    """Finding ids assigned or excluded by completed sibling plan shards."""
-    taken: dict[str, str] = {}
-    for sibling in state["tasks"].values():
-        if (
-            sibling["phase"] != "plan"
-            or sibling["status"] != "complete"
-            or sibling["id"] == task["id"]
-        ):
-            continue
-        artifact = base / sibling["artifact"]
-        if not artifact.is_file():
-            continue
-        plan = PagePlan.model_validate_json(
-            artifact.read_text(encoding="utf-8"), strict=True
-        )
-        for page in plan.pages:
-            for fid in page.finding_ids:
-                taken.setdefault(fid, sibling["name"])
-        for exclusion in plan.exclusions:
-            taken.setdefault(exclusion.finding_id, sibling["name"])
-    return taken
-
-
-def _validate_plan(
-    root: pathlib.Path,
-    state: dict,
-    task: dict,
-    path: pathlib.Path,
-    base: pathlib.Path,
+def _validate_page_target(
+    root: pathlib.Path, state: dict, task: dict, path: pathlib.Path
 ) -> list[Issue]:
-    """Gate one plan shard as the single writer of its page namespace.
-
-    Partition rules checked here, on the shard's own gate:
-    - a shard's pages live only under its own path prefix, so page paths
-      cannot collide across shards by construction;
-    - source-owned pages cite only their own Source's findings; workspace
-      pages compose and may cite any finding;
-    - connections are assigned only by plan:workspace, which must assign
-      all of them;
-    - required pages (core, per-source architecture, table pages) are
-      checked on the shard that owns them.
-    Global exactly-once finding coverage spans shards and is checked at
-    compose with per-shard attribution.
-    """
-    value, issues = _model_issues(path, PagePlan, path.read_text(encoding="utf-8"))
-    if not value:
-        return issues
-    expected_source = task["spec"].get("source")
-    if value.source != expected_source:
-        issues.append(
-            issue(
-                "error",
-                "plan-source-mismatch",
-                str(path),
-                "plan shard source does not match target",
-            )
-        )
-        return issues
-    owner = expected_source or "workspace"
-    slug = owner.lower()
-    catalog = next(
-        (item for item in state["catalogs"] if item["name"] == owner), None
+    issues = validate_page(
+        root, state, path, owner=task["spec"].get("owner"), published=False
     )
-    source_slugs = {
-        item["name"].lower() for item in (*state["revisions"], *state["catalogs"])
-    }
-    finding_owner = _finding_sources(base)
-    known_connections = _connection_ids(base)
-    sibling_claims = _sibling_plan_claims(base, state, task)
-    assigned: dict[str, str] = {}
-    assigned_connections: dict[str, str] = {}
-    page_by_path = {page.path: page for page in value.pages}
-
-    for page in value.pages:
-        if page.owner != owner:
-            issues.append(
-                issue(
-                    "error",
-                    "page-owner-invalid",
-                    str(path),
-                    f"{page.path} owner must be {owner}",
-                )
-            )
-        head = page.path.split("/", 1)[0]
-        if owner == "workspace":
-            if "/" in page.path and (head in source_slugs or head == "data"):
-                issues.append(
-                    issue(
-                        "error",
-                        "page-path-foreign",
-                        str(path),
-                        f"{page.path} lives in a source-owned namespace",
-                    )
-                )
-        elif catalog is not None:
-            if not page.path.startswith(f"data/{slug}/"):
-                issues.append(
-                    issue(
-                        "error",
-                        "page-path-foreign",
-                        str(path),
-                        f"{page.path} must live under data/{slug}/",
-                    )
-                )
-        elif not page.path.startswith(f"{slug}/"):
-            issues.append(
-                issue(
-                    "error",
-                    "page-path-foreign",
-                    str(path),
-                    f"{page.path} must live under {slug}/",
-                )
-            )
-        for fid in page.finding_ids:
-            fowner = finding_owner.get(fid)
-            if fowner is None:
-                issues.append(
-                    issue(
-                        "error",
-                        "finding-unknown",
-                        str(path),
-                        f"{page.path} cites unknown finding {fid}",
-                    )
-                )
-            elif owner != "workspace" and fowner != owner:
-                issues.append(
-                    issue(
-                        "error",
-                        "finding-foreign",
-                        str(path),
-                        f"{page.path} cites finding {fid} owned by {fowner};"
-                        " source-owned pages cite only their owner",
-                    )
-                )
-            elif fid in assigned:
-                issues.append(
-                    issue(
-                        "error",
-                        "finding-reassigned",
-                        str(path),
-                        f"finding {fid} is assigned to both {assigned[fid]}"
-                        f" and {page.path}",
-                    )
-                )
-            elif fid in sibling_claims:
-                issues.append(
-                    issue(
-                        "error",
-                        "finding-reassigned",
-                        str(path),
-                        f"finding {fid} is already claimed by"
-                        f" plan:{sibling_claims[fid]}",
-                    )
-                )
-            else:
-                assigned[fid] = page.path
-        if owner == "workspace":
-            for cid in page.connection_ids:
-                if cid not in known_connections:
-                    issues.append(
-                        issue(
-                            "error",
-                            "connection-unknown",
-                            str(path),
-                            f"{page.path} cites unknown connection {cid}",
-                        )
-                    )
-                elif cid in assigned_connections:
-                    issues.append(
-                        issue(
-                            "error",
-                            "connection-reassigned",
-                            str(path),
-                            f"connection {cid} is assigned to both"
-                            f" {assigned_connections[cid]} and {page.path}",
-                        )
-                    )
-                else:
-                    assigned_connections[cid] = page.path
-        elif page.connection_ids:
-            issues.append(
-                issue(
-                    "error",
-                    "connection-foreign",
-                    str(path),
-                    f"{page.path} assigns connections;"
-                    " plan:workspace owns connection assignment",
-                )
-            )
-
-    excluded: set[str] = set()
-    for exclusion in value.exclusions:
-        fid = exclusion.finding_id
-        fowner = finding_owner.get(fid)
-        if fowner is None:
-            issues.append(
-                issue(
-                    "error",
-                    "finding-unknown",
-                    str(path),
-                    f"exclusion names unknown finding {fid}",
-                )
-            )
-        elif owner != "workspace" and fowner != owner:
-            issues.append(
-                issue(
-                    "error",
-                    "finding-foreign",
-                    str(path),
-                    f"exclusion of {fid} belongs to plan:{fowner.lower()}"
-                    " or plan:workspace",
-                )
-            )
-        elif fid in assigned or fid in excluded:
-            issues.append(
-                issue(
-                    "error",
-                    "finding-reassigned",
-                    str(path),
-                    f"finding {fid} is both assigned and excluded",
-                )
-            )
-        elif fid in sibling_claims:
-            issues.append(
-                issue(
-                    "error",
-                    "finding-reassigned",
-                    str(path),
-                    f"finding {fid} is already claimed by"
-                    f" plan:{sibling_claims[fid]}",
-                )
-            )
-        else:
-            excluded.add(fid)
-
-    git_or_files = [
-        item["name"]
-        for item in state["revisions"]
-        if item.get("kind") in ("git", "files", None)
-    ]
-    if owner == "workspace":
-        required = [("overview.md", "Overview"), ("architecture.md", "Architecture")]
-        if state["catalogs"]:
-            required.append(("data-model.md", "DataModel"))
-        for core_path, core_type in required:
-            entry = page_by_path.get(core_path)
-            if entry is None or entry.type != core_type:
-                issues.append(
-                    issue(
-                        "error",
-                        "core-page-invalid",
-                        str(path),
-                        f"{core_path} must be a workspace-owned {core_type}",
-                    )
-                )
-        unassigned = sorted(known_connections - set(assigned_connections))
-        if unassigned:
-            issues.append(
-                issue(
-                    "error",
-                    "connection-coverage-invalid",
-                    str(path),
-                    f"connections not assigned to any page: {unassigned[:8]}",
-                )
-            )
-    elif catalog is not None:
-        for table in catalog["tables"]:
-            table_path = f"data/{slug}/{table['page_slug']}.md"
-            entry = page_by_path.get(table_path)
-            if entry is None or entry.type != "Table":
-                issues.append(
-                    issue(
-                        "error",
-                        "data-page-invalid",
-                        str(path),
-                        f"{table_path} must be a Table owned by {owner}",
-                    )
-                )
-    elif len(git_or_files) > 1:
-        arch_path = f"{slug}/architecture.md"
-        entry = page_by_path.get(arch_path)
-        if entry is None or entry.type != "Architecture":
-            issues.append(
-                issue(
-                    "error",
-                    "source-architecture-invalid",
-                    str(path),
-                    f"{arch_path} must be an Architecture owned by {owner}",
-                )
-            )
-    return issues
-
-
-def _connection_entries(base: pathlib.Path) -> list[tuple[str, object]]:
-    result = []
-    connect_dir = base / "drafts" / "connect"
-    if not connect_dir.is_dir():
-        return result
-    for path in sorted(connect_dir.glob("*.json")):
-        connect = Connect.model_validate_json(
-            path.read_text(encoding="utf-8"), strict=True
-        )
-        result.extend((connect.source, item) for item in connect.connections)
-    return result
-
-
-def _connection_ids(base: pathlib.Path) -> set[str]:
-    return {item.id for _, item in _connection_entries(base)}
-
-
-def validate_composed_plan(root: pathlib.Path, state: dict) -> list[Issue]:
-    """Re-run every plan shard gate, then check the cross-shard contracts.
-
-    Every issue carries the artifact path of the shard that must change, so
-    a compose failure is always attributable and repairable: page paths are
-    disjoint by the per-shard prefix rule, and each finding must be assigned
-    or excluded exactly once across all shards.
-    """
-    base = root / ".okf-wiki" / "runs" / state["run_id"]
-    plan_dir = base / "drafts" / "plan"
-    issues: list[Issue] = []
-    shard_tasks = [
-        task for task in state["tasks"].values() if task["phase"] == "plan"
-    ]
-    for task in shard_tasks:
-        path = base / task["artifact"]
-        if not path.is_file():
-            issues.append(
-                issue(
-                    "error",
-                    "artifact-missing",
-                    str(path),
-                    "plan shard artifact does not exist",
-                )
-            )
-            continue
-        issues.extend(_validate_plan(root, state, task, path, base))
-    if issues:
+    parsed = parse_file(path)
+    if parsed.errors:
         return issues
-    shards: list[tuple[str, object]] = []
-    for task in shard_tasks:
-        path = base / task["artifact"]
-        plan = PagePlan.model_validate_json(
-            path.read_text(encoding="utf-8"), strict=True
-        )
-        shards.append((str(path), plan))
-    pages = [page for _, plan in shards for page in plan.pages]
-    paths = [page.path for page in pages]
-    if len(paths) != len(set(paths)):
-        issues.append(
-            issue(
-                "error",
-                "page-path-duplicate",
-                str(plan_dir),
-                "page paths must be unique across plan shards",
-            )
-        )
-    finding_owner = _finding_sources(base)
-    touched: dict[str, list[str]] = {}
-    for shard_path, plan in shards:
-        for page in plan.pages:
-            for fid in page.finding_ids:
-                touched.setdefault(fid, []).append(shard_path)
-        for exclusion in plan.exclusions:
-            touched.setdefault(exclusion.finding_id, []).append(shard_path)
-    owner_shard = {
-        (task["spec"].get("source") or "workspace"): str(base / task["artifact"])
-        for task in shard_tasks
-    }
-    for fid, fowner in sorted(finding_owner.items()):
-        if fid not in touched:
-            shard_path = owner_shard.get(fowner) or owner_shard["workspace"]
+    roots: dict[str, list[str]] = {}
+    for scope in task["spec"].get("scopes", []):
+        roots.setdefault(scope["source"], []).extend(scope["paths"])
+    cited_sources = set()
+    for source in parsed.meta.get("sources", []):
+        resource = source.get("resource", "") if isinstance(source, dict) else ""
+        locator = parse_resource(resource)
+        if locator is None:
+            if _catalog_resource(state, resource):
+                cited_sources.update(
+                    name
+                    for name in roots
+                    if any(item["name"] == name for item in state["catalogs"])
+                )
+            continue
+        source_name, rel, _, _ = locator
+        cited_sources.add(source_name)
+        if source_name not in roots or not _path_in_scope(rel, roots[source_name]):
+            issues.append(issue("error", "evidence-outside-scope", str(path), resource))
+    if task["spec"].get("owner") == "workspace" and len(roots) > 1:
+        missing = set(roots) - cited_sources
+        if missing:
             issues.append(
                 issue(
                     "error",
-                    "finding-coverage-invalid",
-                    shard_path,
-                    f"finding {fid} ({fowner}) is neither assigned nor excluded",
+                    "cross-source-evidence-missing",
+                    str(path),
+                    f"workspace page does not cite scoped sources: {sorted(missing)}",
                 )
             )
-    connection_entries = _connection_entries(base)
-    connection_list_all = [item.id for _, item in connection_entries]
-    if len(connection_list_all) != len(set(connection_list_all)):
-        issues.append(
-            issue(
-                "error",
-                "connection-id-duplicate",
-                str(plan_dir),
-                "connection ids must be unique across connect tasks",
-            )
-        )
-    declared_by: dict[frozenset, set[str]] = {}
-    for declaring, item in connection_entries:
-        participants = frozenset(part.source for part in item.participants)
-        declared_by.setdefault(participants, set()).add(declaring)
-    for participants, declarers in sorted(
-        declared_by.items(), key=lambda entry: sorted(entry[0])
-    ):
-        if len(declarers) > 1:
-            issues.append(
-                issue(
-                    "error",
-                    "connection-duplicate-edge",
-                    str(plan_dir),
-                    f"edge between {sorted(participants)} is declared by"
-                    f" {sorted(declarers)}; one connect task owns an edge",
-                )
-            )
-    finding_list = _finding_id_list(base)
-    if len(finding_list) != len(set(finding_list)):
-        issues.append(
-            issue(
-                "error",
-                "finding-id-duplicate",
-                str(plan_dir),
-                "finding ids must be globally unique",
-            )
-        )
     return issues
 
 
@@ -1089,29 +470,6 @@ def render_generated_page(
         enriched.append(source)
     meta["sources"] = enriched
     return render(meta, parsed.body)
-
-
-def render_approved_pages(
-    root: pathlib.Path, state: dict, actor: str
-) -> list[tuple[pathlib.Path, str]]:
-    now = datetime.now(timezone.utc)
-    stale = now.date() + timedelta(days=state["freshness_days"])
-    rendered = []
-    for path in sorted(
-        (root / ".okf-wiki" / "runs" / state["run_id"] / "candidate").rglob("*.md")
-    ):
-        parsed = parse_file(path)
-        if parsed.errors:
-            continue
-        meta = dict(parsed.meta)
-        verified = meta.get("verified") or []
-        if isinstance(verified, dict):
-            verified = [verified]
-        meta["verified"] = [*verified, {"by": actor, "at": now}]
-        meta["status"] = "stable"
-        meta["stale_after"] = stale
-        rendered.append((path, render(meta, parsed.body)))
-    return rendered
 
 
 def validate_page(
@@ -1244,9 +602,9 @@ def validate_candidate(
     issues = []
     page_set = {path.relative_to(candidate).as_posix() for path in pages}
     task_by_path = {
-        task["name"]: task
-        for task in state["tasks"].values()
-        if task["phase"] == "write"
+        target["name"]: target
+        for target in state["targets"].values()
+        if target["kind"] == "page"
     }
     if page_set != set(task_by_path):
         issues.append(
@@ -1445,7 +803,11 @@ def validate_publication(root: pathlib.Path, path: pathlib.Path) -> list[Issue]:
             continue
         catalogs.append(entry)
 
-    state = {"revisions": revisions, "catalogs": catalogs}
+    state = {
+        "run_id": manifest.get("producer_run_id") or manifest.get("run_id"),
+        "revisions": revisions,
+        "catalogs": catalogs,
+    }
     concepts = sorted(
         page for page in path.rglob("*.md") if page.name not in ("index.md", "log.md")
     )

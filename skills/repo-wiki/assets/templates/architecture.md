@@ -18,7 +18,7 @@ the surface it exposes to others.
 Ownership, allowed dependency directions, trust or process boundaries, and
 the contracts that cross them.
 
-For every cross-source connection, link to both source-owned pages. Markdown
+For every cross-source boundary, link to both source-owned pages. Markdown
 links are graph edges; do not duplicate either page's content here.
 
 ## Failure and change propagation

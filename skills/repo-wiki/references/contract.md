@@ -1,92 +1,94 @@
 # Writing Contract
 
-Read this before writing or reviewing any survey, plan or concept page.
+Read this before planning, writing or reviewing a page.
 
-## Admission — the Grep Test
+## Admission: the Grep Test
 
 If grep plus reading two or three files can rebuild a fact in about a minute,
-write a source pointer instead of prose. Admit: cross-module architecture,
+write a source pointer instead of prose. Admit cross-module architecture,
 enforced invariants, lifecycle and failure propagation, decisions with written
-rationale, task routing. Do not admit: inventories, signatures, directory
-trees, config lists, restated comments.
+rationale and task routing. Exclude inventories, signatures, directory trees,
+configuration lists and restated comments.
+
+## Page Scope
+
+A Page Scope entry pairs one registered Source with relative paths; a page
+stores one or more entries in `scopes`. Git/files paths are normalized POSIX
+paths inside the captured Pin; `.` selects the eligible Source root. Catalog
+paths name selected table page slugs. Planning may group sibling packages or
+split a build module by concept, but no file or package receives a page merely
+to prove structural coverage.
+
+Page workers navigate and cite only inside their Page Scope. A source-owned
+page's `scopes` all name its owner. A workspace-owned page may span Sources;
+it names every participant in `scopes` and evidences each side of a boundary.
+Parent pages may also read their exact Machine-confirmed child inputs.
 
 ## Locators
 
-A locator names evidence as a plain source-relative path with an optional
-line range:
+A Locator names evidence as a plain Source-relative path with an optional line
+range:
 
     src/service/UserService.java
     src/service/UserService.java#L42-L68
 
-In multi-source workspaces, prefix the registered Source name:
-`API/src/service/UserService.java#L42-L68`. The same format is used
-everywhere — draft evidence and concept `sources:` entries alike. No URI
-scheme, no commit hash: the run already records each Source's revision, and
-the validator resolves every locator from that recorded Git commit. Line
-ranges must exist in the file at that revision.
+In a multi-source Workspace, prefix the registered Source name:
+`API/src/service/UserService.java#L42-L68`. No URI scheme or commit hash is
+embedded: the Run binds the Locator to its Revision and Pin. Line ranges must
+exist at that Revision.
 
-Cite only files you actually opened. Drafts are routing aids, never
-provenance. Unmaterialized LFS pointers and binary files are not evidence.
-Database concepts use the credential-free schema or table URI from the
-captured catalog.
+Cite only files actually opened. Plans and Candidate pages are routing inputs,
+not provenance. Unmaterialized LFS pointers and binary files are not evidence.
+Database concepts use credential-free resources from the captured Catalog.
 
-## Citations in pages
+## Citations and metadata
 
 Every load-bearing claim carries a footnote id. The same id appears exactly
-once in frontmatter `sources:` and once as a footnote definition — the
-validator joins all three. Git metadata supplies author and last_modified;
-writers do not invent them.
+once in frontmatter `sources:` and once as a footnote definition. The kernel
+fills Git author and last_modified metadata.
 
-## Concept metadata
+Writers set type, title, routing description, coverage, useful tags, optional
+asset-level resource and sources. The State Gate owns generated metadata;
+review owns verified, status and stale_after. Workers never set trust fields.
 
-Writers set: type, title, routing description, coverage, optional asset-level
-resource, useful tags, sources. The write gate owns generated and status;
-review owns verified, status and stale_after. Never set trust fields.
+Partial coverage requires a non-empty Gaps section naming missing evidence and
+the searched scope. Causal language requires cited written rationale.
 
-Partial coverage requires a non-empty Gaps section naming the missing
-evidence and search scope. Never infer rationale: causal language ("because",
-"in order to") requires a citation to written rationale.
+Links are bundle-root-relative or page-relative; broken links block
+Publication. Cross-source architecture links participating Source concepts,
+so published Markdown carries topology without a separate connection graph.
 
-Links are bundle-root-relative or page-relative; broken links block the run.
-Cross-source architecture links both source-owned concepts, so links carry
-topology without a custom graph schema.
+## Page DAG
+
+The Page Plan is the single writer of page paths, owners, metadata, `scopes`
+and `depends_on` edges. A dependency points from a parent synthesis page to a
+child. Paths are unique, every dependency names a planned page and dependencies
+are acyclic.
+
+A leaf researches and writes from Source evidence. A parent waits for all
+children to become Machine-confirmed, then synthesizes them with Source
+evidence. Review is per page and binds its exact digest. Changing a page
+invalidates its review and dependent parents.
+
+Workspace root pages use owner `workspace`. Source-owned pages use their
+Source name as owner, live under `data/<source-slug>/` and cite only that
+owner. Every plan includes `overview.md` and `architecture.md`. Multi-source
+plans add source-owned concepts only where they improve routing. Catalog pages
+may group related selected tables and use one or more table scopes; table
+selection alone never requires a page. Reserved `index.md` and `log.md` are
+generated by Publication.
+
+## Attempts and gates
+
+Workers write only the packet's Attempt Artifact inside its attempt-specific
+temporary directory. A successful State Gate promotes it to the canonical
+plan, Candidate page or review artifact. A rejected attempt cannot mutate
+completed artifacts or unlock downstream Targets. Target dependencies,
+ready-set calculation, retries and invalidation belong to the CLI, not the
+coordinator.
 
 ## Language
 
-The dispatch packet's `language` is the workspace output language. Prose
-travels in it: claims, gaps, contracts, failure propagation, page bodies,
-titles, routing descriptions, exclusion and review text. Machine-facing
-structure never does: frontmatter field names, finding/connection ids,
-tags, page paths and locators stay ASCII as specified here. Review flags
-drift with the `language` issue category.
-
-## Partition
-
-Global namespaces are partitioned so each artifact has one writer and every
-conflict is rejected on the writer's own gate, while it can still repair:
-triage assigns every file to exactly one scope; finding and connection ids
-are unique across the run (the gate rejects an id a completed sibling
-already holds); an edge belongs to its lowest-sorting participant's connect
-task; each plan shard writes pages only under its own path prefix and
-assigns or excludes each finding exactly once run-wide.
-
-## Layout
-
-Every plan includes `overview.md` and `architecture.md` (workspace-owned).
-Multi-Git workspaces add `<source>/architecture.md` per source — the path
-segment is the lowercased Source name; owner and locators keep the declared
-case. Source-owned pages cite only their owner; root pages own composition.
-OpenGauss runs add `data-model.md` plus one `data/<source>/<table>.md` per
-selected table (type Table, canonical resource, H1 Schema section with a
-Comment column).
-
-Reserved `index.md` and `log.md` are generated by publish; never author them.
-
-## Proposals
-
-`okf propose` writes only under the run's proposals directory after
-publication — never into a source repository, and never as a Wiki phase.
-Zero files is valid. An `agents-block-<source>.md` has exactly one managed
-block and at most 15 non-empty inner lines. Include a Verify command only if
-a worker ran it successfully. CONTEXT terms and ADR rationale always require
-human ratification.
+The packet's `language` controls page prose, titles, routing descriptions,
+gaps and review text. Machine-facing frontmatter fields, tags, paths and
+Locators remain ASCII. Review flags language drift.

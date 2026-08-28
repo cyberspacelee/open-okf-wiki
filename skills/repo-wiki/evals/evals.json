@@ -5,24 +5,27 @@
       "id": 1,
       "name": "cli-contract-e2e",
       "tier": 1,
-      "prompt": "(no LLM) run_cli_e2e.py exercises frozen multi-source lifecycle, independent review, OKF publication, human verification and incremental reuse",
+      "prompt": "(no LLM) run_cli_e2e.py exercises multi-source Page DAG readiness, Refresh invalidation, stale attempts, per-page independent review and OKF Publication",
       "expected_output": "passed true; exit 0 on Windows, Linux and macOS"
     },
     {
       "id": 2,
       "name": "java-multi-source",
       "tier": 2,
-      "prompt": "You are the coordinator for the repo-wiki skill. Workspace: {WS}. Skill: {SKILL_DIR}. Read SKILL.md first. Delegate every content target from its task-start dispatch packet, consume path-only handoffs, and never bypass a rejected completion.",
+      "prompt": "You are the coordinator for repo-wiki. Workspace: {WS}. Skill: {SKILL_DIR}. Read SKILL.md first. Dispatch only ready_targets, preserve attempt tokens, use bounded navigation, consume path-only Handoffs, and never bypass a rejected State Gate.",
       "fixture": "setup_java_ws.py (feign + spring-cloud-openfeign)",
       "expected_output": "published thin wiki, 0 validation errors, honest citations",
       "assertions": [
-        "run reached published and every target is complete",
+        "Run reached published and every plan/page/review Target is complete",
+        "Page Target count equals the bounded Page Plan, not repository package count",
+        "parent pages became ready only after every child was Machine-confirmed",
+        "one bounded agent-facing Source outline exists per Revision",
         "required overview and architecture routing concepts exist",
         "re-running okf.py validate --published reports 0 errors",
         "sampled cited line ranges exist in the pinned sources (anti-fabrication)",
         "proposal files are well-formed when present; zero files is allowed",
         "every page description is non-empty (routing text)",
-        "independent approved review is bound to the candidate digest",
+        "each independent approved review is bound to its exact page digest",
         "OKF reserved files and lifecycle trust fields conform"
       ]
     }

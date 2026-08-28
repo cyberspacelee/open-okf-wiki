@@ -5,17 +5,20 @@ import os
 import pathlib
 import re
 import secrets
-import shutil
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from _files import atomic_json, directory_digest
-from _models import PagePlan, ReviewReport, model_errors
-from pydantic import ValidationError
+from _models import PagePlan, ReviewReport
 
 VERSION = 2
-PHASES = ["triage", "survey", "connect", "plan", "write", "review"]
+CONTRACT = "target-dag"
+KINDS = {"plan", "page", "review"}
 LOCK_TIMEOUT_SEC = 60
+MAX_SEARCH_RESULTS = 50
+MAX_SEARCH_BYTES = 16 * 1024
+MAX_READ_LINES = 200
+MAX_READ_BYTES = 64 * 1024
 
 
 class StateError(Exception):
@@ -75,13 +78,12 @@ def _release_lock(fd: int) -> None:
         fcntl.flock(fd, fcntl.LOCK_UN)
 
 
-def _agent_actor(value: str) -> bool:
-    parts = value.split("/", 1)
-    return len(parts) == 2 and all(parts)
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _agent_actor(value: str) -> bool:
+    return bool(re.fullmatch(r"[^\s/]+/[^\s/]+", value or ""))
 
 
 def _meta(root: pathlib.Path) -> pathlib.Path:
@@ -102,7 +104,7 @@ def candidate_dir(root: pathlib.Path, state: dict) -> pathlib.Path:
 
 def _read_pointer(root: pathlib.Path) -> str | None:
     path = _pointer(root)
-    if not path.exists():
+    if not path.is_file():
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -113,7 +115,7 @@ def _read_pointer(root: pathlib.Path) -> str | None:
             raise ValueError("pointer fields are invalid")
         return run_id
     except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
-        raise StateError(f"corrupt current-run pointer: {exc}") from exc
+        raise StateError(f"invalid current run pointer: {exc}") from exc
 
 
 def read(root: pathlib.Path) -> dict | None:
@@ -121,38 +123,38 @@ def read(root: pathlib.Path) -> dict | None:
     if run_id is None:
         return None
     path = run_dir(root, run_id) / "state.json"
-    bak = path.with_suffix(".json.bak")
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        if bak.is_file():
-            try:
-                state = json.loads(bak.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                raise StateError(f"corrupt run state: {exc}") from exc
-        else:
-            raise StateError(f"corrupt run state: {exc}") from exc
-    if state.get("version") != VERSION:
-        raise StateError(
-            f"unsupported run state version {state.get('version')!r}; this kernel is v{VERSION}"
-        )
+        raise StateError(f"invalid run state: {exc}") from exc
+    if (
+        state.get("version") != VERSION
+        or state.get("contract") != CONTRACT
+        or not isinstance(state.get("targets"), dict)
+        or "tasks" in state
+    ):
+        raise StateError("legacy or unsupported run state; target-dag is required")
+    for target_id, target in state["targets"].items():
+        if target.get("id") != target_id or target.get("kind") not in KINDS:
+            raise StateError(f"invalid target state: {target_id}")
     return state
 
 
 def _write(root: pathlib.Path, state: dict) -> None:
     state["updated_at"] = _now()
     path = run_dir(root, state["run_id"]) / "state.json"
-    if path.exists():
-        shutil.copy2(path, path.with_suffix(".json.bak"))
     atomic_json(path, state)
 
 
-def _task(phase: str, name: str, artifact: str, **spec) -> dict:
+def _target(kind: str, name: str, artifact: str, *, dependencies=(), **spec) -> dict:
+    if kind not in KINDS:
+        raise StateError(f"unsupported target kind: {kind}")
     return {
-        "id": f"{phase}:{name}",
-        "phase": phase,
+        "id": f"{kind}:{name}",
+        "kind": kind,
         "name": name,
         "artifact": artifact,
+        "depends_on": list(dependencies),
         "status": "pending",
         "attempts": 0,
         "last_error": None,
@@ -160,19 +162,33 @@ def _task(phase: str, name: str, artifact: str, **spec) -> dict:
     }
 
 
-def _add_task(state: dict, task: dict) -> None:
-    if task["id"] in state["tasks"]:
-        raise StateError(f"duplicate target id: {task['id']}")
-    state["tasks"][task["id"]] = task
+def _add_target(state: dict, target: dict) -> None:
+    if target["id"] in state["targets"]:
+        raise StateError(f"duplicate target id: {target['id']}")
+    state["targets"][target["id"]] = target
 
 
-def _slug(name: str) -> str:
-    return name.lower()
+def _plan_scopes(workspace, catalogs: list[dict]) -> list[dict]:
+    scopes = [
+        {"source": source.name, "paths": ["."]}
+        for source in workspace.sources.values()
+        if source.kind in ("git", "files")
+    ]
+    scopes.extend(
+        {
+            "source": catalog["name"],
+            "paths": [table["page_slug"] for table in catalog.get("tables", [])]
+            or ["."],
+        }
+        for catalog in catalogs
+    )
+    return scopes
 
 
 @_locked
 def start_run(root: pathlib.Path, producer: str, session: str) -> dict:
     import _db
+    import _index
     import _workspace
 
     existing = read(root)
@@ -187,24 +203,29 @@ def start_run(root: pathlib.Path, producer: str, session: str) -> dict:
         raise StateError("at least one source is required")
 
     run_id = f"r-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{secrets.token_hex(3)}"
-    revisions = []
-    catalogs = []
-    for source in workspace.sources.values():
-        if source.kind == "git":
-            record = _workspace.capture_git_revision(root, source)
-            _workspace.materialize_pin(root, run_id, source, record)
-            revisions.append(record)
-        elif source.kind == "files":
-            record = _workspace.capture_files_revision(root, source)
-            _workspace.materialize_pin(root, run_id, source, record)
-            revisions.append(record)
-        elif source.kind in ("opengauss", "postgres"):
-            catalogs.append(_db.capture_catalog(root, source))
-        else:
-            raise StateError(f"unsupported source kind: {source.kind}")
+    revisions: list[dict] = []
+    catalogs: list[dict] = []
+    try:
+        for source in workspace.sources.values():
+            if source.kind == "git":
+                record = _workspace.capture_git_revision(root, source)
+                _workspace.materialize_pin(root, run_id, source, record)
+                revisions.append(record)
+            elif source.kind == "files":
+                record = _workspace.capture_files_revision(root, source)
+                _workspace.materialize_pin(root, run_id, source, record)
+                revisions.append(record)
+            elif source.kind in ("opengauss", "postgres"):
+                catalogs.append(_db.capture_catalog(root, source))
+            else:
+                raise StateError(f"unsupported source kind: {source.kind}")
+    except Exception:
+        _workspace.remove_run_pins(root, run_id, workspace.sources)
+        raise
 
     state = {
         "version": VERSION,
+        "contract": CONTRACT,
         "run_id": run_id,
         "status": "active",
         "started_at": _now(),
@@ -215,165 +236,101 @@ def start_run(root: pathlib.Path, producer: str, session: str) -> dict:
         "freshness_days": workspace.freshness_days,
         "revisions": revisions,
         "catalogs": catalogs,
-        "tasks": {},
+        "targets": {},
         "review_attempts": [],
         "publication": None,
     }
-    previous = _published_manifest(root)
-    previous_run_id = (previous or {}).get("producer_run_id")
-    if previous_run_id and (run_dir(root, previous_run_id) / "state.json").is_file():
-        state["previous_run_id"] = previous_run_id
     base = run_dir(root, run_id)
-    for path in (
-        base / "drafts",
-        base / "candidate",
-        base / "proposals",
-        base / "drafts" / "index",
-        base / "drafts" / "triage",
-        base / "drafts" / "evidence",
-        base / "drafts" / "survey",
+    for relative in (
+        "drafts/index",
+        "drafts/plan",
+        "drafts/review",
+        "attempts",
+        "candidate",
+        "proposals",
     ):
-        path.mkdir(parents=True, exist_ok=True)
-    import _index
-
+        (base / relative).mkdir(parents=True, exist_ok=True)
     for revision in revisions:
-        source = workspace.sources[revision["name"]]
-        _index.write_source_index(root, run_id, source, revision)
-    for revision in revisions:
-        slug = _slug(revision["name"])
-        task = _task(
-            "triage",
-            slug,
-            f"drafts/triage/{slug}.json",
-            source=revision["name"],
+        _index.write_source_index(
+            root, run_id, workspace.sources[revision["name"]], revision
         )
-        _add_task(state, task)
-        _reuse_task(root, state, task)
-    if not revisions:
-        _add_plan_shards(root, state)
-        if _phase_complete(state, "plan"):
-            _advance(root, state, "plan")
-    elif _phase_complete(state, "triage"):
-        _advance(root, state, "triage")
+    _add_target(
+        state,
+        _target(
+            "plan",
+            "workspace",
+            "drafts/plan/workspace.json",
+            scopes=_plan_scopes(workspace, catalogs),
+        ),
+    )
     _write(root, state)
     atomic_json(_pointer(root), {"version": VERSION, "run_id": run_id})
     return status(root)
 
 
-def _connectable(state: dict) -> list[dict]:
-    return [item for item in state["revisions"] if item.get("kind") in ("git", "files")]
-
-
-def _load_triage(root: pathlib.Path, state: dict):
-    from _models import Triage
-
-    base = run_dir(root, state["run_id"]) / "drafts" / "triage"
-    return [
-        Triage.model_validate_json(path.read_text(encoding="utf-8"), strict=True)
-        for path in sorted(base.glob("*.json"))
-    ]
-
-
-def _scope_name(source: str, paths: list[str]) -> str:
-    slug = _slug(source)
-    head = pathlib.PurePosixPath(paths[0]).as_posix().strip("/")
-    stem = f"{slug}/{_slug(head.replace('/', '-'))}" if head and head != "." else slug
-    digest = hashlib.sha256(
-        json.dumps(sorted(paths), separators=(",", ":")).encode()
-    ).hexdigest()[:8]
-    return slug if head in ("", ".") else f"{stem}-{digest}"
-
-
-def _add_survey_tasks(root: pathlib.Path, state: dict) -> None:
-    for triage in _load_triage(root, state):
-        for scope in triage.scopes:
-            if scope.tier == "inventory":
-                continue
-            name = _scope_name(triage.source, list(scope.paths))
-            spec = {
-                "source": triage.source,
-                "scope": list(scope.paths),
-                "tier": scope.tier,
-                "orientation": scope.orientation,
-                "themes": list(scope.themes),
-            }
-            task = _task("survey", name, f"drafts/survey/{name}.json", **spec)
-            _add_task(state, task)
-            _reuse_task(root, state, task)
-
-
-def _add_connect_tasks(root: pathlib.Path, state: dict) -> None:
-    for item in _connectable(state):
-        slug = _slug(item["name"])
-        _add_task(
-            state,
-            _task(
-                "connect",
-                slug,
-                f"drafts/connect/{slug}.json",
-                source=item["name"],
-            ),
-        )
-        _reuse_task(root, state, state["tasks"][f"connect:{slug}"])
-
-
-def _add_plan_shards(root: pathlib.Path, state: dict) -> None:
-    owners = [item["name"] for item in state["revisions"]]
-    owners.extend(item["name"] for item in state["catalogs"])
-    for name in owners:
-        slug = _slug(name)
-        _add_task(
-            state,
-            _task("plan", slug, f"drafts/plan/{slug}.json", source=name),
-        )
-        _reuse_task(root, state, state["tasks"][f"plan:{slug}"])
-    _add_task(
-        state,
-        _task("plan", "workspace", "drafts/plan/workspace.json", source=None),
+def _ready(state: dict, target: dict) -> bool:
+    return target["status"] in ("pending", "failed") and all(
+        state["targets"].get(dependency, {}).get("status") == "complete"
+        for dependency in target["depends_on"]
     )
-    _reuse_task(root, state, state["tasks"]["plan:workspace"])
 
 
-def _phase(state: dict) -> str | None:
-    for phase in PHASES:
-        if any(
-            task["phase"] == phase and task["status"] != "complete"
-            for task in state["tasks"].values()
-        ):
-            return phase
-    if state["status"] == "awaiting_review":
-        return "review"
-    return None
+def _assert_completed_artifacts(root: pathlib.Path, state: dict) -> None:
+    base = run_dir(root, state["run_id"])
+    for target in state["targets"].values():
+        if target["status"] != "complete":
+            continue
+        path = base / target["artifact"]
+        actual = _file_digest(path) if path.is_file() else directory_digest(path)
+        if not path.exists() or actual != target.get("output_digest"):
+            raise StateError(f"completed artifact changed: {target['id']}")
 
 
 def status(root: pathlib.Path) -> dict:
     state = read(root)
     if state is None:
         return {"run": None}
-    if state["status"] in ("active", "awaiting_review", "reviewing", "paused"):
+    if state["status"] in ("active", "paused", "approved"):
         _assert_completed_artifacts(root, state)
-    current = _phase(state)
-    tasks = [task for task in state["tasks"].values() if task["phase"] == current]
-    next_actions = []
+    ready = [
+        target["id"] for target in state["targets"].values() if _ready(state, target)
+    ]
+    in_progress = [
+        target["id"]
+        for target in state["targets"].values()
+        if target["status"] == "in_progress"
+    ]
     if state["status"] == "paused":
         next_actions = ["run resume"]
+    elif state["status"] == "approved":
+        next_actions = ["publication publish"]
     else:
-        for task in tasks:
-            if task["status"] in ("pending", "failed"):
-                next_actions.append(f"task start {task['id']}")
-            elif task["status"] == "in_progress":
-                next_actions.append(f"task complete {task['id']}")
-        if state["status"] == "awaiting_review":
-            next_actions = [
+        next_actions = []
+        review_ready = any(item.startswith("review:") for item in ready)
+        if review_ready and "review" not in state:
+            next_actions.append(
                 "review start --actor <producer/version> --session <new-session>"
-            ]
-        elif state["status"] == "approved":
-            next_actions = ["publication publish"]
+            )
+        next_actions.extend(
+            f"task start {target_id}"
+            for target_id in ready
+            if not target_id.startswith("review:") or "review" in state
+        )
+        next_actions.extend(
+            f"task complete {target_id} --attempt "
+            f"{state['targets'][target_id]['active_attempt']['token']}"
+            for target_id in in_progress
+        )
     return {
         "run_id": state["run_id"],
         "status": state["status"],
-        "current_phase": current,
-        "tasks": [{"id": task["id"], "status": task["status"]} for task in tasks],
+        "contract": CONTRACT,
+        "ready_targets": ready,
+        "in_progress": in_progress,
+        "targets": [
+            {"id": target["id"], "kind": target["kind"], "status": target["status"]}
+            for target in state["targets"].values()
+        ],
         "next_actions": next_actions,
         "run_dir": str(run_dir(root, state["run_id"])),
     }
@@ -390,818 +347,699 @@ def assert_revisions_current(root: pathlib.Path, state: dict) -> None:
         _workspace.assert_pin_current(root, state["run_id"], source, record)
 
 
-@_locked
-def task_start(root: pathlib.Path, task_id: str) -> dict:
-    state = _require_run(root, {"active", "reviewing"})
-    assert_revisions_current(root, state)
-    task = state["tasks"].get(task_id)
-    if task is None:
-        raise StateError(f"unknown target: {task_id}")
-    current = _phase(state)
-    if task["phase"] != current:
-        raise StateError(
-            f"target belongs to phase {task['phase']}; current phase is {current}"
-        )
-    if task["status"] == "complete":
-        raise StateError(
-            "completed target cannot be restarted unless review reopens it"
-        )
-    if task["status"] == "in_progress":
-        raise StateError("target is already in progress")
-    task["status"] = "in_progress"
-    task["attempts"] += 1
-    task["started_at"] = _now()
-    task["last_error"] = None
-    _write(root, state)
-    return _dispatch(root, state, task)
+def _reference(target: dict) -> pathlib.Path:
+    name = {"plan": "plan.md", "page": "page.md", "review": "review.md"}[target["kind"]]
+    return pathlib.Path(__file__).resolve().parent.parent / "references" / name
 
 
-def task_ls(
-    root: pathlib.Path, task_id: str, path: str, after: str | None = None
-) -> dict:
+def _scope_digests(root: pathlib.Path, state: dict, target: dict) -> list[dict]:
     import _index
     import _workspace
 
-    state = _require_run(root, {"active"})
-    task = state["tasks"].get(task_id)
-    if task is None:
-        raise StateError(f"unknown target: {task_id}")
-    if task["phase"] != _phase(state):
-        raise StateError(f"target does not belong to current phase: {task_id}")
-    if task["phase"] not in ("triage", "survey"):
-        raise StateError("task ls is available only for triage and survey")
-    if task["status"] != "in_progress":
-        raise StateError("task ls requires an in-progress task")
-    if not isinstance(path, str) or not path or "\\" in path:
-        raise StateError("path must be a relative POSIX path")
-    pure = pathlib.PurePosixPath(path)
-    if pure.is_absolute() or ".." in pure.parts or re.match(r"^[A-Za-z]:", path):
-        raise StateError("path must be a relative POSIX path")
-    normalized = pure.as_posix().strip("/")
-    normalized = "." if normalized in ("", ".") else normalized
-
-    selected = task["spec"]["source"]
     workspace = _workspace.load(root)
-    source = workspace.sources[selected]
-    revision = next(item for item in state["revisions"] if item["name"] == selected)
-    pin = _workspace.pin_dir(root, state["run_id"], selected)
-    _workspace.assert_pin_current(root, state["run_id"], source, revision)
-    if task["phase"] == "survey" and not any(
-        scope in ("", ".")
-        or normalized == scope.rstrip("/")
-        or normalized.startswith(scope.rstrip("/") + "/")
-        for scope in task["spec"]["scope"]
-    ):
-        raise StateError(f"path is outside task scope: {path}")
-    files = _workspace.scoped_files(
-        _workspace.captured_files(source, pin, revision),
-        ["."] if task["phase"] == "triage" else task["spec"]["scope"],
-        source.survey_exclude,
-    )
-    if normalized in files or not _workspace.scoped_files(files, [normalized], ()):
-        raise StateError(f"path is outside task scope or is not a directory: {path}")
-    try:
-        return _index.list_directory(
-            source.name,
-            normalized,
-            files,
-            source.survey_split if task["phase"] == "triage" else (),
-            after,
-        )
-    except ValueError as exc:
-        raise StateError(str(exc)) from exc
-
-
-def _pin_sources(root: pathlib.Path, state: dict, selected: str | None) -> dict[str, str]:
-    import _workspace
-
-    workspace = _workspace.load(root)
-    result = {}
-    for name, source in workspace.sources.items():
-        if source.kind not in ("git", "files") or not source.path:
-            continue
-        if selected and name != selected:
-            continue
-        pin = _workspace.pin_dir(root, state["run_id"], name)
-        result[name] = str(pin if pin.is_dir() else source.path)
+    revisions = {item["name"]: item for item in state["revisions"]}
+    catalogs = {item["name"]: item for item in state["catalogs"]}
+    result = []
+    for scope in target["spec"].get("scopes", []):
+        name = scope["source"]
+        paths = scope["paths"]
+        revision = revisions.get(name)
+        source = workspace.sources.get(name)
+        if revision and source and source.kind in ("git", "files"):
+            pin = _workspace.pin_dir(root, state["run_id"], name)
+            files = _workspace.captured_files(source, pin, revision)
+            digest = _index.scope_digest(pin, files, paths)
+        elif name in catalogs:
+            raw = json.dumps(
+                {"content_hash": catalogs[name]["content_hash"], "paths": paths},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            digest = hashlib.sha256(raw.encode()).hexdigest()
+        else:
+            raise StateError(f"scope names unknown Source: {name}")
+        result.append({"source": name, "paths": paths, "digest": digest})
     return result
-
-
-def _catalog_paths(root: pathlib.Path, state: dict, task: dict) -> list[str]:
-    import _db
-
-    phase = task["phase"]
-    spec = task["spec"]
-    paths: list[pathlib.Path] = []
-    if phase == "plan":
-        selected = spec.get("source")
-        for catalog in state["catalogs"]:
-            if selected is None or catalog["name"] == selected:
-                paths.append(_db.catalog_index_path(root, catalog["content_hash"]))
-    elif phase == "write":
-        if spec.get("type") == "DataModel" or task["name"] == "data-model.md":
-            for catalog in state["catalogs"]:
-                paths.append(_db.catalog_index_path(root, catalog["content_hash"]))
-        elif spec.get("type") == "Table":
-            for catalog in state["catalogs"]:
-                for table in catalog["tables"]:
-                    if (
-                        f"data/{catalog['name'].lower()}/{table['page_slug']}.md"
-                        == task["name"]
-                    ):
-                        paths.append(
-                            _db.catalog_table_path(
-                                root, catalog["content_hash"], table["page_slug"]
-                            )
-                        )
-    return [str(path) for path in paths if path.exists()]
-
-
-def _page_catalog_hash(state: dict, page) -> str | None:
-    if page.type == "DataModel":
-        hashes = [item["content_hash"] for item in state["catalogs"]]
-        return ",".join(sorted(hashes)) if hashes else None
-    if page.type != "Table":
-        return None
-    for catalog in state["catalogs"]:
-        prefix = f"data/{catalog['name'].lower()}/"
-        if page.path.startswith(prefix) or page.owner == catalog["name"]:
-            return catalog["content_hash"]
-    return None
-
-
-def _dispatch(root: pathlib.Path, state: dict, task: dict) -> dict:
-    import _index
-
-    base = run_dir(root, state["run_id"])
-    phase = task["phase"]
-    selected = task["spec"].get("source")
-    inputs: list[pathlib.Path] = []
-    if phase == "triage":
-        inputs.append(_index.index_path(base, selected))
-    elif phase in ("connect", "plan", "write"):
-        evidence = _index.ensure_evidence_cache(root, state)
-        inputs.extend(sorted((base / "drafts" / "survey").rglob("*.json")))
-        inputs.extend(sorted((base / "drafts" / "connect").glob("*.json")))
-        inputs.extend(evidence)
-        if phase == "write":
-            inputs.extend(sorted((base / "drafts" / "plan").glob("*.json")))
-    elif phase == "review":
-        inputs.append(base / "candidate")
-    okf = pathlib.Path(__file__).resolve().parent / "okf.py"
-    reference = "review.md" if phase == "review" else f"{phase}.md"
-    packet = {
-        "run_id": state["run_id"],
-        "task": {"id": task["id"], "phase": phase, "spec": task["spec"]},
-        "language": state["language"],
-        "reference": str(
-            pathlib.Path(__file__).resolve().parent.parent / "references" / reference
-        ),
-        "artifact": str(_artifact(root, state, task)),
-        "sources": _pin_sources(
-            root,
-            state,
-            selected if phase in ("triage", "survey") and selected else None,
-        ),
-        "inputs": [str(path) for path in inputs if path.exists()],
-        "complete_command": f"uv run {okf} task complete {task['id']} --json",
-        "workdir": str(root),
-    }
-    if phase in ("triage", "survey"):
-        packet["ls_command"] = f"uv run {okf} task ls {task['id']}"
-    catalogs = _catalog_paths(root, state, task)
-    if catalogs:
-        packet["catalogs"] = catalogs
-    if phase == "review":
-        packet["candidate"] = str(candidate_dir(root, state))
-        packet["candidate_digest"] = state["review"]["candidate_digest"]
-        packet["pages"] = task["spec"].get("pages", [])
-        packet["actor"] = state["review"]["actor"]
-        packet["session"] = state["review"]["session"]
-    return packet
-
-
-def _artifact(root: pathlib.Path, state: dict, task: dict) -> pathlib.Path:
-    return run_dir(root, state["run_id"]) / task["artifact"]
 
 
 def _file_digest(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _assert_completed_artifacts(root: pathlib.Path, state: dict) -> None:
-    for task in state["tasks"].values():
-        if task["status"] != "complete":
-            continue
-        artifact = _artifact(root, state, task)
-        actual = (
-            _file_digest(artifact) if artifact.is_file() else directory_digest(artifact)
+def _input_digest(root: pathlib.Path, state: dict, target: dict) -> str:
+    base = run_dir(root, state["run_id"])
+    reference = _reference(target)
+    dependencies = []
+    for target_id in target["depends_on"]:
+        dependency = state["targets"].get(target_id)
+        if dependency is None or dependency.get("status") != "complete":
+            raise StateError(f"target dependency is not complete: {target_id}")
+        dependencies.append(
+            {
+                "id": target_id,
+                "output": dependency.get("output_digest"),
+                "page_output": dependency.get("page_output_digest"),
+            }
         )
-        if not artifact.exists() or actual != task.get("artifact_digest"):
-            raise StateError(f"completed artifact changed: {task['id']}")
+    canonical = base / target["artifact"]
+    payload = {
+        "spec": target["spec"],
+        "scopes": _scope_digests(root, state, target),
+        "dependencies": dependencies,
+        "language": state["language"],
+        "reference": _file_digest(reference),
+        "prior_output": _file_digest(canonical) if canonical.is_file() else None,
+        "actor": (
+            state.get("review", {}).get("actor")
+            if target["kind"] == "review"
+            else state["producer"]
+        ),
+        "session": (
+            state.get("review", {}).get("session")
+            if target["kind"] == "review"
+            else state["producer_session"]
+        ),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _attempt_path(target: dict, token: str) -> str:
+    suffix = pathlib.PurePosixPath(target["artifact"]).suffix or ".tmp"
+    key = hashlib.sha256(target["id"].encode()).hexdigest()[:16]
+    return f"attempts/{key}/{token}{suffix}"
+
+
+def _pin_sources(root: pathlib.Path, state: dict, target: dict) -> dict[str, str]:
+    import _workspace
+
+    selected = {scope["source"] for scope in target["spec"].get("scopes", [])}
+    workspace = _workspace.load(root)
+    result = {}
+    for name in selected:
+        source = workspace.sources.get(name)
+        if source is None or source.kind not in ("git", "files"):
+            continue
+        pin = _workspace.pin_dir(root, state["run_id"], name)
+        if pin.is_dir():
+            result[name] = str(pin)
+    return result
+
+
+def _catalog_paths(root: pathlib.Path, state: dict, target: dict) -> list[str]:
+    import _db
+
+    selected = {scope["source"] for scope in target["spec"].get("scopes", [])}
+    return [
+        str(_db.catalog_index_path(root, catalog["content_hash"]))
+        for catalog in state["catalogs"]
+        if catalog["name"] in selected
+    ]
+
+
+def _dependency_inputs(root: pathlib.Path, state: dict, target: dict) -> list[str]:
+    base = run_dir(root, state["run_id"])
+    result = []
+    for target_id in target["depends_on"]:
+        dependency = state["targets"][target_id]
+        if dependency["kind"] == "review":
+            page = dependency["spec"]["page"]
+            result.append(str(base / "candidate" / page))
+        elif dependency["kind"] == "page":
+            result.append(str(base / dependency["artifact"]))
+    canonical = base / target["artifact"]
+    if canonical.is_file():
+        result.append(str(canonical))
+    return sorted(set(result))
+
+
+def _dispatch(root: pathlib.Path, state: dict, target: dict) -> dict:
+    base = run_dir(root, state["run_id"])
+    attempt = target["active_attempt"]
+    okf = pathlib.Path(__file__).resolve().parent / "okf.py"
+    inputs = _dependency_inputs(root, state, target)
+    if target["kind"] == "plan":
+        inputs.extend(
+            str(path) for path in sorted((base / "drafts/index").glob("*.md"))
+        )
+    catalogs = _catalog_paths(root, state, target)
+    packet = {
+        "run_id": state["run_id"],
+        "target": {
+            "id": target["id"],
+            "kind": target["kind"],
+            "spec": target["spec"],
+            "depends_on": target["depends_on"],
+        },
+        "attempt": attempt["token"],
+        "language": state["language"],
+        "reference": str(_reference(target)),
+        "artifact": str(base / attempt["artifact"]),
+        "sources": _pin_sources(root, state, target),
+        "inputs": sorted(set(inputs)),
+        "workdir": str(root),
+        "complete_command": (
+            f"uv run {okf} task complete {target['id']} "
+            f"--attempt {attempt['token']} --json"
+        ),
+        "outline_command": (
+            f"uv run {okf} task outline {target['id']} --source <source> [path]"
+        ),
+        "search_command": (
+            f"uv run {okf} task search {target['id']} --source <source> <pattern>"
+        ),
+        "read_command": (
+            f"uv run {okf} task read {target['id']} --source <source> <path>"
+        ),
+    }
+    if catalogs:
+        packet["catalogs"] = catalogs
+    if target["kind"] == "review":
+        page = target["spec"]["page"]
+        path = base / "candidate" / page
+        packet.update(
+            {
+                "page": page,
+                "page_digest": _file_digest(path),
+                "actor": state["review"]["actor"],
+                "session": state["review"]["session"],
+            }
+        )
+    return packet
 
 
 @_locked
-def task_complete(root: pathlib.Path, task_id: str) -> dict:
+def task_start(root: pathlib.Path, target_id: str) -> dict:
+    state = _require_run(root, {"active"})
+    assert_revisions_current(root, state)
+    target = state["targets"].get(target_id)
+    if target is None:
+        raise StateError(f"unknown target: {target_id}")
+    if not _ready(state, target):
+        raise StateError("target is not ready")
+    if target["kind"] == "review" and "review" not in state:
+        raise StateError("call review start before starting a review target")
+    token = f"a{target['attempts'] + 1}-{secrets.token_hex(8)}"
+    input_digest = _input_digest(root, state, target)
+    target["status"] = "in_progress"
+    target["attempts"] += 1
+    target["last_error"] = None
+    target["active_attempt"] = {
+        "token": token,
+        "artifact": _attempt_path(target, token),
+        "input_digest": input_digest,
+        "started_at": _now(),
+    }
+    _write(root, state)
+    return _dispatch(root, state, target)
+
+
+def _attempt_target(target: dict) -> dict:
+    return {**target, "artifact": target["active_attempt"]["artifact"]}
+
+
+def _render_page_attempt(root: pathlib.Path, state: dict, target: dict) -> None:
     import _validate
 
-    state = _require_run(root, {"active", "reviewing"})
-    assert_revisions_current(root, state)
-    task = state["tasks"].get(task_id)
-    if task is None:
-        raise StateError(f"unknown target: {task_id}")
-    if task["status"] == "complete":
-        return {"ok": True, "state": status(root)}
-    if task["status"] != "in_progress":
-        raise StateError("target must be started before completion")
-    if task["phase"] == "write":
-        artifact = _artifact(root, state, task)
-        rendered = _validate.render_generated_page(root, state, task, artifact)
-        if rendered is not None:
-            artifact.parent.mkdir(parents=True, exist_ok=True)
-            artifact.write_text(rendered, encoding="utf-8", newline="\n")
-    issues = _validate.validate_task(root, state, task)
-    errors = [issue for issue in issues if issue.severity == "error"]
-    if errors:
-        return {"ok": False, "issues": [issue.to_dict() for issue in errors]}
-    if task["phase"] == "review":
-        return _finish_review_batch(root, state, task)
-    if task["phase"] == "survey":
-        import _index
-
-        _index.materialize_survey(root, state, task)
-    artifact = _artifact(root, state, task)
-    task["status"] = "complete"
-    task["completed_at"] = _now()
-    task["artifact_digest"] = (
-        _file_digest(artifact) if artifact.is_file() else directory_digest(artifact)
+    path = run_dir(root, state["run_id"]) / target["active_attempt"]["artifact"]
+    if not path.is_file():
+        return
+    rendered = _validate.render_generated_page(
+        root, state, _attempt_target(target), path
     )
-    compose_issues = _advance(root, state, task["phase"])
-    _write(root, state)
-    if compose_issues:
-        return {"ok": False, "issues": compose_issues, "state": status(root)}
-    return {"ok": True, "state": status(root)}
+    if rendered is not None:
+        path.write_text(rendered, encoding="utf-8", newline="\n")
+
+
+def _promote(root: pathlib.Path, state: dict, target: dict) -> pathlib.Path:
+    base = run_dir(root, state["run_id"])
+    source = base / target["active_attempt"]["artifact"]
+    destination = base / target["artifact"]
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(source, destination)
+    return destination
+
+
+def _plan_targets(plan: PagePlan) -> dict[str, dict]:
+    targets = {}
+    for page in plan.pages:
+        spec = page.model_dump(mode="json")
+        page_id = f"page:{page.path}"
+        review_id = f"review:{page.path}"
+        page_dependencies = [f"review:{path}" for path in page.depends_on]
+        targets[page_id] = _target(
+            "page",
+            page.path,
+            f"candidate/{page.path}",
+            dependencies=page_dependencies,
+            **spec,
+        )
+        targets[review_id] = _target(
+            "review",
+            page.path,
+            f"drafts/review/{page.path.removesuffix('.md')}.json",
+            dependencies=[page_id],
+            page=page.path,
+            owner=page.owner,
+            scopes=[scope.model_dump(mode="json") for scope in page.scopes],
+        )
+    return targets
+
+
+def _target_definition(target: dict) -> dict:
+    return {
+        key: target[key]
+        for key in ("id", "kind", "name", "artifact", "depends_on", "spec")
+    }
+
+
+def _dependent_closure(targets: dict[str, dict], seeds: set[str]) -> set[str]:
+    affected = set(seeds)
+    while True:
+        dependents = {
+            target_id
+            for target_id, target in targets.items()
+            if affected.intersection(target["depends_on"])
+        }
+        if dependents <= affected:
+            return affected
+        affected.update(dependents)
+
+
+def _discard_attempt(root: pathlib.Path, state: dict, target: dict) -> None:
+    active = target.get("active_attempt")
+    if active:
+        (run_dir(root, state["run_id"]) / active["artifact"]).unlink(missing_ok=True)
+
+
+def _materialize_plan(root: pathlib.Path, state: dict, plan: PagePlan) -> None:
+    old = state["targets"]
+    planned = _plan_targets(plan)
+    desired = {"plan:workspace": old["plan:workspace"], **planned}
+    changed = set(old).symmetric_difference(desired)
+    changed.update(
+        target_id
+        for target_id in set(old).intersection(desired) - {"plan:workspace"}
+        if _target_definition(old[target_id]) != _target_definition(desired[target_id])
+    )
+    changed = _dependent_closure({**old, **desired}, changed)
+    base = run_dir(root, state["run_id"])
+    for target_id in set(old) - set(desired):
+        _discard_attempt(root, state, old[target_id])
+        (base / old[target_id]["artifact"]).unlink(missing_ok=True)
+    reconciled = {"plan:workspace": old["plan:workspace"]}
+    for target_id, target in planned.items():
+        previous = old.get(target_id)
+        if previous is not None and target_id not in changed:
+            reconciled[target_id] = previous
+            continue
+        if previous is not None and _target_definition(previous) == _target_definition(
+            target
+        ):
+            _discard_attempt(root, state, previous)
+            _reset_target(previous)
+            reconciled[target_id] = previous
+        else:
+            if previous is not None:
+                _discard_attempt(root, state, previous)
+            reconciled[target_id] = target
+    state["targets"] = reconciled
+
+
+def _reset_target(target: dict) -> None:
+    target["status"] = "pending"
+    target["last_error"] = None
+    target.pop("active_attempt", None)
+    target.pop("completed_at", None)
+    target.pop("output_digest", None)
+    target.pop("page_output_digest", None)
+
+
+def _invalidate_targets(root: pathlib.Path, state: dict, seeds: set[str]) -> None:
+    for target_id in _dependent_closure(state["targets"], seeds):
+        target = state["targets"].get(target_id)
+        if target is not None and target["kind"] != "plan":
+            _discard_attempt(root, state, target)
+            _reset_target(target)
+
+
+def _reopen_plan(
+    root: pathlib.Path, state: dict, affected: set[str] | None = None
+) -> None:
+    plan = state["targets"]["plan:workspace"]
+    _discard_attempt(root, state, plan)
+    _reset_target(plan)
+    _invalidate_targets(root, state, affected or set())
+
+
+def _stamp_reviewed_page(
+    root: pathlib.Path, state: dict, target: dict, actor: str
+) -> str:
+    from _frontmatter import parse_file, render
+
+    page_target = state["targets"][target["depends_on"][0]]
+    path = run_dir(root, state["run_id"]) / page_target["artifact"]
+    parsed = parse_file(path)
+    if parsed.errors:
+        raise StateError(f"cannot stamp invalid page: {parsed.errors[0]}")
+    now = datetime.now(timezone.utc)
+    verified = parsed.meta.get("verified", [])
+    if isinstance(verified, dict):
+        verified = [verified]
+    verified = [item for item in verified if item.get("by") != actor]
+    verified.append({"by": actor, "at": now})
+    parsed.meta["verified"] = verified
+    parsed.meta["status"] = "stable"
+    parsed.meta["stale_after"] = (now + timedelta(days=state["freshness_days"])).date()
+    path.write_text(render(parsed.meta, parsed.body), encoding="utf-8", newline="\n")
+    digest = _file_digest(path)
+    page_target["output_digest"] = digest
+    return digest
+
+
+def _finish_review(
+    root: pathlib.Path, state: dict, target: dict, report: ReviewReport
+) -> dict:
+    page_target = state["targets"][target["depends_on"][0]]
+    page_path = run_dir(root, state["run_id"]) / page_target["artifact"]
+    if report.page != target["spec"]["page"] or report.page_digest != _file_digest(
+        page_path
+    ):
+        raise StateError("review report does not match the current page digest")
+    state["review_attempts"].append(
+        {
+            "actor": state["review"]["actor"],
+            "session": state["review"]["session"],
+            "submitted_at": _now(),
+            **report.model_dump(mode="json"),
+        }
+    )
+    if report.verdict == "changes_requested":
+        if any(issue.reopen == "plan" for issue in report.issues):
+            _reopen_plan(root, state, {page_target["id"]})
+        else:
+            _invalidate_targets(root, state, {page_target["id"]})
+        return {"verdict": report.verdict, "ok": True}
+    target["page_output_digest"] = _stamp_reviewed_page(
+        root, state, target, state["review"]["actor"]
+    )
+    return {"verdict": report.verdict, "ok": True}
+
+
+def _maybe_approve(root: pathlib.Path, state: dict) -> None:
+    import _validate
+
+    if not state["targets"] or not all(
+        target["status"] == "complete" for target in state["targets"].values()
+    ):
+        return
+    issues = _validate.validate_candidate(root, state, published=False)
+    errors = [item for item in issues if item.severity == "error"]
+    if errors:
+        raise StateError(
+            f"candidate validation failed: {[item.to_dict() for item in errors[:3]]}"
+        )
+    state["approved_digest"] = directory_digest(candidate_dir(root, state))
+    state["approved_at"] = _now()
+    state["status"] = "approved"
 
 
 @_locked
-def task_fail(root: pathlib.Path, task_id: str, reason: str) -> dict:
-    state = _require_run(root, {"active", "reviewing"})
-    task = state["tasks"].get(task_id)
-    if task is None:
-        raise StateError(f"unknown target: {task_id}")
-    if task["status"] != "in_progress":
+def task_complete(root: pathlib.Path, target_id: str, attempt: str) -> dict:
+    import _validate
+
+    state = _require_run(root, {"active"})
+    assert_revisions_current(root, state)
+    target = state["targets"].get(target_id)
+    if target is None:
+        raise StateError(f"unknown target: {target_id}")
+    active = target.get("active_attempt")
+    if target["status"] != "in_progress" or not active or active["token"] != attempt:
+        raise StateError("stale or inactive target attempt")
+    if _input_digest(root, state, target) != active["input_digest"]:
+        raise StateError("target inputs changed during the attempt")
+    if target["kind"] == "page":
+        _render_page_attempt(root, state, target)
+    attempt_target = _attempt_target(target)
+    issues = _validate.validate_task(root, state, attempt_target)
+    errors = [item for item in issues if item.severity == "error"]
+    if errors:
+        return {"ok": False, "issues": [item.to_dict() for item in errors]}
+
+    attempt_path = run_dir(root, state["run_id"]) / active["artifact"]
+    report = None
+    plan = None
+    if target["kind"] == "plan":
+        plan = PagePlan.model_validate_json(
+            attempt_path.read_text(encoding="utf-8"), strict=True
+        )
+    elif target["kind"] == "review":
+        report = ReviewReport.model_validate_json(
+            attempt_path.read_text(encoding="utf-8"), strict=True
+        )
+    canonical = _promote(root, state, target)
+    target["status"] = "complete"
+    target["completed_at"] = _now()
+    target["output_digest"] = _file_digest(canonical)
+    target["last_attempt"] = active
+    target.pop("active_attempt", None)
+    result = {"ok": True}
+    if plan is not None:
+        _materialize_plan(root, state, plan)
+    elif report is not None:
+        result.update(_finish_review(root, state, target, report))
+    _maybe_approve(root, state)
+    _write(root, state)
+    result["state"] = status(root)
+    return result
+
+
+@_locked
+def task_fail(
+    root: pathlib.Path, target_id: str, reason: str, attempt: str | None = None
+) -> dict:
+    state = _require_run(root, {"active"})
+    target = state["targets"].get(target_id)
+    if target is None:
+        raise StateError(f"unknown target: {target_id}")
+    active = target.get("active_attempt")
+    if target["status"] != "in_progress" or not active:
         raise StateError("only an in-progress target can fail")
-    task["status"] = "failed"
-    task["last_error"] = reason
+    if attempt is not None and active["token"] != attempt:
+        raise StateError("stale target attempt")
+    _discard_attempt(root, state, target)
+    target["status"] = "failed"
+    target["last_error"] = reason
+    target["last_attempt"] = active
+    target.pop("active_attempt", None)
     _write(root, state)
     return status(root)
 
 
-def _phase_complete(state: dict, phase: str) -> bool:
-    tasks = [task for task in state["tasks"].values() if task["phase"] == phase]
-    return bool(tasks) and all(task["status"] == "complete" for task in tasks)
-
-
-def _advance(root: pathlib.Path, state: dict, phase: str) -> list[dict]:
-    if not _phase_complete(state, phase):
-        return []
-    connectable = _connectable(state)
-    if phase == "triage":
-        _add_survey_tasks(root, state)
-        if not any(task["phase"] == "survey" for task in state["tasks"].values()):
-            _add_plan_shards(root, state)
-    elif phase == "survey":
-        if len(connectable) > 1:
-            _add_connect_tasks(root, state)
-        else:
-            _add_plan_shards(root, state)
-    elif phase == "connect":
-        _add_plan_shards(root, state)
-    elif phase == "plan":
-        compose_issues = _compose_plan(root, state)
-        if compose_issues:
-            return compose_issues
-    elif phase == "write":
-        state["status"] = "awaiting_review"
-    next_phase = {
-        "triage": (
-            "survey"
-            if any(task["phase"] == "survey" for task in state["tasks"].values())
-            else "plan"
-        ),
-        "survey": "connect" if len(connectable) > 1 else "plan",
-        "connect": "plan",
-        "plan": "write",
-    }.get(phase)
-    if next_phase and _phase_complete(state, next_phase):
-        return _advance(root, state, next_phase)
-    return []
-
-
-def _compose_plan(root: pathlib.Path, state: dict) -> list[dict]:
-    """Union plan shards into write tasks; on failure reopen the shard at fault.
-
-    Shard gates make cross-shard conflicts unrepresentable, so composed
-    validation failing means a shard artifact escaped its gate. The issues
-    name the offending shard artifact; that shard (or all shards when the
-    fault is not attributable) goes back to pending so a worker can fix it,
-    and the issues surface through the completing task's result.
-    """
-    import _validate
-
-    issues = _validate.validate_composed_plan(root, state)
-    errors = [item for item in issues if item.severity == "error"]
-    if errors:
-        shards = {
-            task["id"]: str(run_dir(root, state["run_id"]) / task["artifact"])
-            for task in state["tasks"].values()
-            if task["phase"] == "plan"
-        }
-        responsible = {
-            task_id
-            for task_id, artifact in shards.items()
-            if any(item.path == artifact for item in errors)
-        } or set(shards)
-        for task_id in responsible:
-            task = state["tasks"][task_id]
-            task["status"] = "pending"
-            task.pop("artifact_digest", None)
-        return [item.to_dict() for item in errors]
-    pages = _composed_pages(root, state)
-    candidate = candidate_dir(root, state)
-    keep = {page.path for page in pages}
-    if candidate.exists():
-        for path in list(candidate.rglob("*.md")):
-            rel = path.relative_to(candidate).as_posix()
-            if rel not in keep:
-                path.unlink()
-    else:
-        candidate.mkdir(parents=True, exist_ok=True)
-    existing_writes = {
-        task_id: task
-        for task_id, task in state["tasks"].items()
-        if task["phase"] == "write"
-    }
-    wanted = {f"write:{page.path}" for page in pages}
-    for task_id in list(existing_writes):
-        if task_id not in wanted:
-            del state["tasks"][task_id]
-    for page in pages:
-        task_id = f"write:{page.path}"
-        spec = {
-            "owner": page.owner,
-            "type": page.type,
-            "title": page.title,
-            "description": page.description,
-            "tags": page.tags,
-            "finding_ids": page.finding_ids,
-            "connection_ids": page.connection_ids,
-        }
-        catalog_hash = _page_catalog_hash(state, page)
-        if catalog_hash:
-            spec["catalog_hash"] = catalog_hash
-        if task_id in state["tasks"]:
-            old = state["tasks"][task_id]
-            if old.get("spec") == spec and old.get("status") == "complete":
-                continue
-            old["spec"] = spec
-            old["status"] = "pending"
-            old.pop("artifact_digest", None)
-            continue
-        _add_task(
-            state,
-            _task(
-                "write",
-                page.path,
-                f"candidate/{page.path}",
-                **spec,
-            ),
-        )
-        _reuse_page(root, state, state["tasks"][task_id])
-    return []
-
-
-def _composed_pages(root: pathlib.Path, state: dict):
-    pages = []
-    for path in sorted(
-        (run_dir(root, state["run_id"]) / "drafts" / "plan").glob("*.json")
-    ):
-        plan = PagePlan.model_validate_json(path.read_text(encoding="utf-8"), strict=True)
-        pages.extend(plan.pages)
-    return pages
-
-
-def _published_manifest(root: pathlib.Path) -> dict | None:
-    pointer = root / ".okf-wiki" / "publication" / "current.json"
-    if not pointer.is_file():
-        return None
-    try:
-        generation = json.loads(pointer.read_text(encoding="utf-8"))["generation"]
-        path = (
-            root
-            / ".okf-wiki"
-            / "publication"
-            / "generations"
-            / generation
-            / ".okf-manifest.json"
-        )
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (KeyError, OSError, json.JSONDecodeError):
-        return None
-
-
-def _previous_state(root: pathlib.Path, state: dict) -> dict | None:
-    run_id = state.get("previous_run_id")
-    if not run_id:
-        return None
-    try:
-        previous = json.loads(
-            (run_dir(root, run_id) / "state.json").read_text(encoding="utf-8")
-        )
-    except (OSError, json.JSONDecodeError):
-        return None
-    if previous.get("version") != VERSION:
-        return None
-    return previous
-
-
-def _source_unchanged(state: dict, previous: dict, source: str) -> bool:
-    def _key(item: dict) -> str | None:
-        return item.get("commit") or item.get("content_hash")
-
-    current = next((item for item in state["revisions"] if item["name"] == source), None)
-    old = next((item for item in previous["revisions"] if item["name"] == source), None)
-    if current and old:
-        return _key(current) == _key(old)
-    current_cat = next(
-        (item for item in state["catalogs"] if item["name"] == source), None
-    )
-    old_cat = next(
-        (item for item in previous["catalogs"] if item["name"] == source), None
-    )
-    return bool(
-        current_cat
-        and old_cat
-        and current_cat.get("content_hash") == old_cat.get("content_hash")
-    )
-
-
-def _all_sources_unchanged(state: dict, previous: dict) -> bool:
-    def index(items: list[dict], key: str) -> dict:
-        return {item["name"]: item.get(key) or item.get("content_hash") for item in items}
-
-    current = index(state["revisions"], "commit")
-    current.update(index(state["catalogs"], "content_hash"))
-    old = index(previous["revisions"], "commit")
-    old.update(index(previous["catalogs"], "content_hash"))
-    return current == old
-
-
-def _reuse_task(root: pathlib.Path, state: dict, task: dict) -> None:
-    previous = _previous_state(root, state)
-    if previous is None:
-        return
-    old = previous.get("tasks", {}).get(task["id"])
-    if not old or old.get("status") != "complete" or old.get("spec") != task["spec"]:
-        return
-    if task["phase"] == "triage":
-        if not _source_unchanged(state, previous, task["spec"]["source"]):
-            return
-    elif task["phase"] == "survey":
-        source = task["spec"].get("source")
-        if source:
-            if not _source_unchanged(state, previous, source):
-                return
-        elif not _all_sources_unchanged(state, previous):
-            return
-    elif task["phase"] == "connect":
-        if not _all_sources_unchanged(state, previous):
-            return
-    elif task["phase"] == "plan":
-        source = task["spec"].get("source")
-        if source:
-            if not _source_unchanged(state, previous, source):
-                return
-        elif not _all_sources_unchanged(state, previous):
-            return
-    else:
-        return
-    source_path = run_dir(root, previous["run_id"]) / old["artifact"]
-    target_path = run_dir(root, state["run_id"]) / task["artifact"]
-    if not source_path.is_file():
-        return
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_path, target_path)
-    task.update(
-        {
-            "status": "complete",
-            "reused_from": previous["run_id"],
-            "completed_at": _now(),
-            "artifact_digest": _file_digest(target_path),
-        }
-    )
-    if task["phase"] == "survey":
-        import _index
-
-        _index.materialize_survey(root, state, task)
-
-
-def _reuse_page(root: pathlib.Path, state: dict, task: dict) -> None:
-    import _validate
-    import _workspace
-    from _frontmatter import parse_file, render
-
-    manifest = _published_manifest(root)
-    previous = _previous_state(root, state)
-    page_info = (manifest or {}).get("pages", {}).get(task["name"])
-    if (
-        previous is None
-        or not page_info
-        or page_info.get("plan") != task["spec"]
-        or page_info.get("input_digest")
-        != page_input_digest(run_dir(root, state["run_id"]), task["spec"])
-    ):
-        return
-    workspace = _workspace.load(root)
-    revisions = {item["name"]: item for item in state["revisions"]}
-    for key, expected in page_info.get("source_blobs", {}).items():
-        source, _, rel = key.partition("/")
-        revision = revisions.get(source)
-        registered = workspace.sources.get(source)
-        if not rel or revision is None or registered is None:
-            return
-        if registered.kind == "git":
-            if _workspace.git_blob_oid(registered, revision["commit"], rel) != expected:
-                return
-        elif registered.kind == "files":
-            blob = _workspace.files_blob(registered, rel)
-            if blob is None or hashlib.sha256(blob).hexdigest() != expected:
-                return
-        else:
-            return
-    pointer = json.loads(
-        (root / ".okf-wiki" / "publication" / "current.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    source_path = (
-        root
-        / ".okf-wiki"
-        / "publication"
-        / "generations"
-        / pointer["generation"]
-        / task["name"]
-    )
-    if not source_path.is_file():
-        return
-    parsed = parse_file(source_path)
-    stale_after = parsed.meta.get("stale_after") if not parsed.errors else None
-    if (
-        not stale_after
-        or str(stale_after) < datetime.now(timezone.utc).date().isoformat()
-    ):
-        return
-    target_path = run_dir(root, state["run_id"]) / task["artifact"]
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(
-        render(parsed.meta, parsed.body), encoding="utf-8", newline="\n"
-    )
-    rendered = _validate.render_generated_page(root, state, task, target_path)
-    if rendered is not None:
-        target_path.write_text(rendered, encoding="utf-8", newline="\n")
-    if any(
-        item.severity == "error"
-        for item in _validate.validate_page(
-            root,
-            state,
-            target_path,
-            owner=task["spec"]["owner"],
-            published=False,
-        )
-    ):
-        target_path.unlink()
-        return
-    task.update(
-        {
-            "status": "complete",
-            "reused_from": previous["run_id"],
-            "completed_at": _now(),
-            "artifact_digest": _file_digest(target_path),
-        }
-    )
-
-
-def page_input_digest(base: pathlib.Path, spec: dict) -> str:
-    from _models import Connect, Survey
-
-    findings = {}
-    survey_dir = base / "drafts" / "survey"
-    if survey_dir.is_dir():
-        for path in sorted(survey_dir.rglob("*.json")):
-            survey = Survey.model_validate_json(
-                path.read_text(encoding="utf-8"), strict=True
-            )
-            findings.update(
-                {item.id: item.model_dump(mode="json") for item in survey.findings}
-            )
-    connections = {}
-    connect_dir = base / "drafts" / "connect"
-    if connect_dir.is_dir():
-        for path in sorted(connect_dir.glob("*.json")):
-            connect = Connect.model_validate_json(
-                path.read_text(encoding="utf-8"), strict=True
-            )
-            connections.update(
-                {item.id: item.model_dump(mode="json") for item in connect.connections}
-            )
-    inputs = {
-        "findings": [
-            findings[item] for item in spec.get("finding_ids", []) if item in findings
-        ],
-        "connections": [
-            connections[item]
-            for item in spec.get("connection_ids", [])
-            if item in connections
-        ],
-    }
-    raw = json.dumps(inputs, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
 @_locked
 def review_start(root: pathlib.Path, actor: str, session: str) -> dict:
-    state = read(root)
-    if state is None or state["status"] != "awaiting_review":
-        raise StateError("run is not awaiting review")
-    assert_revisions_current(root, state)
+    state = _require_run(root, {"active"})
     if not _agent_actor(actor):
         raise StateError("reviewer must follow <producer>/<version>")
-    if session == state["producer_session"]:
+    if not session or session == state["producer_session"]:
         raise StateError("review session must be distinct from the producer session")
-    if not session:
-        raise StateError("review session id is required")
-    digest = directory_digest(candidate_dir(root, state))
-    pages_by_owner: dict[str, list[str]] = {}
-    for page in _composed_pages(root, state):
-        pages_by_owner.setdefault(page.owner, []).append(page.path)
-    state["review"] = {
-        "actor": actor,
-        "session": session,
-        "candidate_digest": digest,
-        "created_at": _now(),
-    }
-    for owner, pages in sorted(pages_by_owner.items()):
-        slug = "workspace" if owner == "workspace" else _slug(owner)
-        _add_task(
-            state,
-            _task(
-                "review",
-                slug,
-                f"drafts/review/{slug}.json",
-                owner=owner,
-                pages=sorted(pages),
-            ),
-        )
-    state["status"] = "reviewing"
-    _write(root, state)
-    okf = pathlib.Path(__file__).resolve().parent / "okf.py"
-    packet = {
-        "run_id": state["run_id"],
-        "candidate_digest": digest,
-        "actor": actor,
-        "session": session,
-        "language": state["language"],
-        "created_at": state["review"]["created_at"],
-        "reference": str(
-            pathlib.Path(__file__).resolve().parent.parent / "references" / "review.md"
-        ),
-        "candidate": str(candidate_dir(root, state)),
-        "sources": _pin_sources(root, state, None),
-        "batches": [
-            {
-                "id": f"review:{'workspace' if owner == 'workspace' else _slug(owner)}",
-                "owner": owner,
-                "pages": sorted(pages),
-            }
-            for owner, pages in sorted(pages_by_owner.items())
-        ],
-        "workdir": str(root),
-        "complete_command": f"uv run {okf} task complete <review-id> --json",
-    }
-    return packet
-
-
-def _finish_review_batch(root: pathlib.Path, state: dict, task: dict) -> dict:
-    import _validate
-
-    report_path = _artifact(root, state, task)
-    try:
-        report = ReviewReport.model_validate_json(
-            report_path.read_text(encoding="utf-8"), strict=True
-        )
-    except (OSError, ValidationError) as exc:
-        raise StateError(
-            "invalid review report: " + "; ".join(model_errors(exc))
-        ) from exc
-    expected_batch = task["spec"].get("owner") or task["name"]
-    if report.batch not in {task["name"], expected_batch, task["spec"].get("owner")}:
-        raise StateError(
-            f"review batch {report.batch!r} does not match target {task['id']}"
-        )
-    current_digest = directory_digest(candidate_dir(root, state))
+    current = state.get("review")
     if (
-        report.candidate_digest != state["review"]["candidate_digest"]
-        or report.candidate_digest != current_digest
+        current
+        and current != {"actor": actor, "session": session}
+        and any(
+            target["kind"] == "review" and target["status"] == "in_progress"
+            for target in state["targets"].values()
+        )
     ):
-        raise StateError("candidate changed after review packet creation")
-    attempt = {
-        "actor": state["review"]["actor"],
-        "session": state["review"]["session"],
-        "batch": report.batch,
-        "submitted_at": _now(),
-        **report.model_dump(mode="json"),
-    }
-    state["review_attempts"].append(attempt)
-    if report.verdict == "changes_requested":
-        _apply_reopen(root, state, report)
-        _write(root, state)
-        return {"verdict": "changes_requested", "state": status(root), "ok": True}
-
-    task["status"] = "complete"
-    task["completed_at"] = _now()
-    task["artifact_digest"] = _file_digest(report_path)
-    if _phase_complete(state, "review"):
-        for path, text in _validate.render_approved_pages(
-            root, state, state["review"]["actor"]
-        ):
-            path.write_text(text, encoding="utf-8", newline="\n")
-        issues = _validate.validate_candidate(root, state, published=False)
-        errors = [issue for issue in issues if issue.severity == "error"]
-        if errors:
-            raise StateError(
-                f"approved candidate failed validation: {[issue.to_dict() for issue in errors[:3]]}"
-            )
-        state["approved_digest"] = directory_digest(candidate_dir(root, state))
-        state["approved_at"] = _now()
-        state["status"] = "approved"
-        state.pop("review", None)
+        raise StateError("cannot replace a reviewer with review attempts in progress")
+    state["review"] = {"actor": actor, "session": session}
     _write(root, state)
-    return {"verdict": "approved", "ok": True, "state": status(root)}
+    ready = [
+        target["id"]
+        for target in state["targets"].values()
+        if target["kind"] == "review" and _ready(state, target)
+    ]
+    return {
+        "run_id": state["run_id"],
+        "actor": actor,
+        "session": session,
+        "ready_targets": ready,
+        "start_commands": [f"task start {target_id}" for target_id in ready],
+        "workdir": str(root),
+    }
 
 
-def _apply_reopen(root: pathlib.Path, state: dict, report: ReviewReport) -> None:
-    plan_issues = [issue for issue in report.issues if issue.reopen == "plan"]
-    page_issues = [issue for issue in report.issues if issue.reopen == "page"]
-    _remove_phases(state, {"review"})
-    state.pop("review", None)
-    state["status"] = "active"
-    reopened_pages: set[str] = set()
-    if plan_issues:
-        shards = {issue.target for issue in plan_issues}
-        for target in shards:
-            slug = "workspace" if target in {"workspace", "plan:workspace"} else _slug(
-                target.removeprefix("plan:")
-            )
-            task = state["tasks"].get(f"plan:{slug}")
-            if task is None:
-                raise StateError(f"review references unknown plan shard: {target}")
-            owned = {
-                page.path
-                for page in _composed_pages(root, state)
-                if (page.owner == "workspace" and slug == "workspace")
-                or _slug(page.owner) == slug
-            }
-            for path in owned:
-                write = state["tasks"].get(f"write:{path}")
-                if write:
-                    del state["tasks"][f"write:{path}"]
-                    artifact = candidate_dir(root, state) / path
-                    if artifact.exists():
-                        artifact.unlink()
-                reopened_pages.add(path)
-            task["status"] = "pending"
-            task.pop("artifact_digest", None)
-    for path in {issue.target for issue in page_issues} - reopened_pages:
-        task = state["tasks"].get(f"write:{path}")
-        if task is None:
-            raise StateError(f"review references unknown page: {path}")
-        task["status"] = "pending"
-        task.pop("artifact_digest", None)
+def _target_scopes(target: dict, source: str) -> list[str]:
+    return [
+        path
+        for scope in target["spec"].get("scopes", [])
+        if scope["source"] == source
+        for path in scope["paths"]
+    ]
 
 
-def _remove_phases(state: dict, phases: set[str]) -> None:
-    state["tasks"] = {
-        task_id: task
-        for task_id, task in state["tasks"].items()
-        if task["phase"] not in phases
+def _navigation_context(
+    root: pathlib.Path, target_id: str, source_name: str
+) -> tuple[dict, dict, pathlib.Path, list[str], list[str]]:
+    import _workspace
+
+    state = _require_run(root, {"active"})
+    target = state["targets"].get(target_id)
+    if target is None or target["status"] != "in_progress":
+        raise StateError("navigation requires an in-progress target")
+    roots = _target_scopes(target, source_name)
+    if not roots:
+        raise StateError(f"Source is outside target scope: {source_name}")
+    workspace = _workspace.load(root)
+    source = workspace.sources.get(source_name)
+    revision = next(
+        (item for item in state["revisions"] if item["name"] == source_name), None
+    )
+    if source is None or revision is None or source.kind not in ("git", "files"):
+        raise StateError(f"navigation requires a Git/files Source: {source_name}")
+    pin = _workspace.pin_dir(root, state["run_id"], source_name)
+    files = _workspace.captured_files(source, pin, revision)
+    scoped = _workspace.scoped_files(files, roots)
+    return state, target, pin, scoped, roots
+
+
+def _normalized_path(value: str) -> str:
+    pure = pathlib.PurePosixPath(value)
+    windows = pathlib.PureWindowsPath(value)
+    if (
+        not value
+        or "\\" in value
+        or pure.is_absolute()
+        or bool(windows.drive)
+        or ".." in pure.parts
+        or (value != "." and pure.as_posix() != value)
+    ):
+        raise StateError("path must be a normalized relative POSIX path")
+    return value
+
+
+def _inside_roots(path: str, roots: list[str]) -> bool:
+    return any(
+        root == "." or path == root or path.startswith(root.rstrip("/") + "/")
+        for root in roots
+    )
+
+
+def task_outline(
+    root: pathlib.Path,
+    target_id: str,
+    source: str,
+    path: str = ".",
+    after: str | None = None,
+) -> dict:
+    import _index
+
+    _, _, _, files, roots = _navigation_context(root, target_id, source)
+    path = _normalized_path(path)
+    if not _inside_roots(path, roots):
+        raise StateError(f"path is outside target scope: {path}")
+    try:
+        return _index.list_directory(source, path, files, after=after)
+    except ValueError as exc:
+        raise StateError(str(exc)) from exc
+
+
+def task_search(
+    root: pathlib.Path,
+    target_id: str,
+    source: str,
+    query: str,
+    path: str = ".",
+) -> dict:
+    import _workspace
+
+    _, _, pin, files, roots = _navigation_context(root, target_id, source)
+    path = _normalized_path(path)
+    if not query or len(query) > 256:
+        raise StateError("query must contain 1..256 characters")
+    if not _inside_roots(path, roots):
+        raise StateError(f"path is outside target scope: {path}")
+    selected = [
+        rel
+        for rel in files
+        if path == "." or rel == path or rel.startswith(path.rstrip("/") + "/")
+    ]
+    results = []
+    used = 0
+    for rel in selected:
+        disk = _workspace.resolve_pin_file(pin, rel)
+        if disk is None:
+            continue
+        try:
+            with disk.open(encoding="utf-8") as handle:
+                for line_no, line in enumerate(handle, 1):
+                    if query not in line:
+                        continue
+                    text = line.rstrip("\r\n")[:500]
+                    size = len((rel + text).encode("utf-8"))
+                    if (
+                        len(results) >= MAX_SEARCH_RESULTS
+                        or used + size > MAX_SEARCH_BYTES
+                    ):
+                        return {"results": results, "truncated": True}
+                    results.append({"path": rel, "line": line_no, "text": text})
+                    used += size
+        except (OSError, UnicodeDecodeError):
+            continue
+    return {"results": results, "truncated": False}
+
+
+def task_read(
+    root: pathlib.Path,
+    target_id: str,
+    source: str,
+    path: str,
+    start: int = 1,
+    end: int | None = None,
+) -> dict:
+    import _workspace
+
+    _, _, pin, files, roots = _navigation_context(root, target_id, source)
+    path = _normalized_path(path)
+    if path not in files or not _inside_roots(path, roots):
+        raise StateError(f"file is outside target scope: {path}")
+    if not isinstance(start, int) or start < 1:
+        raise StateError("start must be a positive line number")
+    if end is not None and (not isinstance(end, int) or end < start):
+        raise StateError("end must not precede start")
+    end = min(start + MAX_READ_LINES - 1, end if end is not None else start + 39)
+    disk = _workspace.resolve_pin_file(pin, path)
+    if disk is None:
+        raise StateError(f"file is not a regular file inside the Pin: {path}")
+    try:
+        lines = disk.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise StateError(f"file is not readable UTF-8 text: {path}") from exc
+    numbered = [
+        f"{index}|{lines[index - 1][:500]}"
+        for index in range(start, min(end, len(lines)) + 1)
+    ]
+    text = "\n".join(numbered)
+    raw = text.encode("utf-8")
+    truncated = end < len(lines)
+    if len(raw) > MAX_READ_BYTES:
+        text = raw[:MAX_READ_BYTES].decode("utf-8", errors="ignore")
+        truncated = True
+    return {
+        "source": source,
+        "path": path,
+        "start": start,
+        "end": min(end, len(lines)),
+        "text": text + ("\n" if text else ""),
+        "truncated": truncated,
     }
 
 
 @_locked
 def pause(root: pathlib.Path) -> dict:
-    state = _require_run(root, {"active", "awaiting_review", "reviewing"})
+    state = _require_run(root, {"active"})
     state["status"] = "paused"
-    state["paused_from"] = _phase(state)
     _write(root, state)
     return status(root)
 
@@ -1212,15 +1050,7 @@ def resume(root: pathlib.Path) -> dict:
     if state is None or state["status"] != "paused":
         raise StateError("run is not paused")
     assert_revisions_current(root, state)
-    has_review = any(t["phase"] == "review" for t in state["tasks"].values())
-    write_done = _phase_complete(state, "write")
-    if has_review:
-        state["status"] = "reviewing" if write_done else "active"
-    elif write_done:
-        state["status"] = "awaiting_review"
-    else:
-        state["status"] = "active"
-    state.pop("paused_from", None)
+    state["status"] = "active"
     _write(root, state)
     return status(root)
 
@@ -1230,64 +1060,66 @@ def refresh_source(root: pathlib.Path, name: str) -> dict:
     import _index
     import _workspace
 
-    state = _require_run(root, {"active", "paused", "awaiting_review", "reviewing"})
+    state = _require_run(root, {"active", "paused", "approved"})
     workspace = _workspace.load(root)
     source = workspace.sources.get(name)
     if source is None or source.kind not in ("git", "files"):
-        raise StateError(f"refresh requires a git or files source: {name}")
-    if source.kind == "git":
-        record = _workspace.capture_git_revision(root, source)
-    else:
-        record = _workspace.capture_files_revision(root, source)
-    _workspace.remove_pin(root, state["run_id"], source)
-    _workspace.materialize_pin(root, state["run_id"], source, record)
-    state["revisions"] = [
-        record if item["name"] == name else item for item in state["revisions"]
-    ]
-    _index.write_source_index(root, state["run_id"], source, record)
-    _invalidate_source(root, state, name)
-    if state["status"] in ("awaiting_review", "reviewing", "approved"):
-        state["status"] = "active"
-    _write(root, state)
+        raise StateError(f"refresh requires a Git/files Source: {name}")
+    record = (
+        _workspace.capture_git_revision(root, source)
+        if source.kind == "git"
+        else _workspace.capture_files_revision(root, source)
+    )
+    previous = next(item for item in state["revisions"] if item["name"] == name)
+    if record == previous:
+        return status(root)
+    before = {
+        target_id: [
+            item
+            for item in _scope_digests(root, state, target)
+            if item["source"] == name
+        ]
+        for target_id, target in state["targets"].items()
+        if target["kind"] == "page" and _target_scopes(target, name)
+    }
+    try:
+        _workspace.remove_pin(root, state["run_id"], source)
+        _workspace.materialize_pin(root, state["run_id"], source, record)
+        state["revisions"] = [
+            record if item["name"] == name else item for item in state["revisions"]
+        ]
+        _index.write_source_index(root, state["run_id"], source, record)
+        affected = {
+            target_id
+            for target_id, old_digest in before.items()
+            if old_digest
+            != [
+                item
+                for item in _scope_digests(root, state, state["targets"][target_id])
+                if item["source"] == name
+            ]
+        }
+        _reopen_plan(root, state, affected)
+        state["status"] = "active" if state["status"] != "paused" else "paused"
+        state.pop("approved_digest", None)
+        state.pop("approved_at", None)
+        _write(root, state)
+    except Exception:
+        _workspace.remove_pin(root, state["run_id"], source)
+        _workspace.materialize_pin(root, state["run_id"], source, previous)
+        _index.write_source_index(root, state["run_id"], source, previous)
+        raise
     return status(root)
-
-
-def _invalidate_source(root: pathlib.Path, state: dict, name: str) -> None:
-    slug = _slug(name)
-    _remove_phases(state, {"survey", "connect", "plan", "write", "review"})
-    state.pop("review", None)
-    task = state["tasks"][f"triage:{slug}"]
-    task["status"] = "pending"
-    task.pop("artifact_digest", None)
-    artifact = _artifact(root, state, task)
-    if artifact.is_file():
-        artifact.unlink()
-    base = run_dir(root, state["run_id"])
-    for relative in (
-        "drafts/survey",
-        "drafts/evidence",
-        "drafts/connect",
-        "drafts/plan",
-        "candidate",
-    ):
-        path = base / relative
-        if path.exists():
-            shutil.rmtree(path)
-        path.mkdir(parents=True)
 
 
 @_locked
 def propose_start(root: pathlib.Path) -> dict:
-    import _workspace
-
     state = read(root)
     if state is None or state["status"] != "published":
         raise StateError("propose runs against a published run")
-    assert_revisions_current(root, state)
-    workspace = _workspace.load(root)
-    okf = pathlib.Path(__file__).resolve().parent / "okf.py"
     proposals = run_dir(root, state["run_id"]) / "proposals"
     proposals.mkdir(parents=True, exist_ok=True)
+    okf = pathlib.Path(__file__).resolve().parent / "okf.py"
     return {
         "run_id": state["run_id"],
         "language": state["language"],
@@ -1296,25 +1128,19 @@ def propose_start(root: pathlib.Path) -> dict:
         ),
         "artifact": str(proposals),
         "candidate": _publication_path(root),
-        "sources": _pin_sources(root, state, None),
-        "inputs": [
-            str(path)
-            for path in sorted(
-                (run_dir(root, state["run_id"]) / "drafts" / "plan").glob("*.json")
-            )
-        ],
+        "inputs": [str(run_dir(root, state["run_id"]) / "drafts/plan/workspace.json")],
         "complete_command": f"uv run {okf} propose complete --json",
         "workdir": str(root),
     }
 
 
 def _publication_path(root: pathlib.Path) -> str:
-    pointer = json.loads(
-        (root / ".okf-wiki" / "publication" / "current.json").read_text(encoding="utf-8")
-    )
-    return str(
-        root / ".okf-wiki" / "publication" / "generations" / pointer["generation"]
-    )
+    import _publish
+
+    current = _publish.current(root)
+    if current is None:
+        raise StateError("nothing has been published")
+    return current["path"]
 
 
 @_locked
@@ -1344,7 +1170,9 @@ def mark_published(root: pathlib.Path, publication: dict) -> dict:
     state["published_at"] = _now()
     _write(root, state)
     workspace = _workspace.load(root)
-    _workspace.remove_run_pins(root, state["run_id"], workspace.sources)
+    for source in workspace.sources.values():
+        if source.kind == "git":
+            _workspace.remove_pin(root, state["run_id"], source)
     return status(root)
 
 

@@ -128,9 +128,7 @@ def render_indexes(bundle: pathlib.Path, language: str) -> dict[str, str]:
             lines.append("")
         if not child_dirs and not direct_pages:
             lines.extend(["# Wiki", ""])
-        indexes[(directory / "index.md").as_posix()] = (
-            "\n".join(lines).rstrip() + "\n"
-        )
+        indexes[(directory / "index.md").as_posix()] = "\n".join(lines).rstrip() + "\n"
     return indexes
 
 
@@ -182,9 +180,7 @@ def render_log(
         previous / "log.md" if previous and (previous / "log.md").exists() else None
     )
     prior = (
-        old_log.read_text(encoding="utf-8").rstrip()
-        if old_log
-        else text_for["title"]
+        old_log.read_text(encoding="utf-8").rstrip() if old_log else text_for["title"]
     )
     events = []
     for kind, paths in (
@@ -239,15 +235,14 @@ def _write_generated(bundle: pathlib.Path, files: dict[str, str]) -> None:
 
 
 def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> dict:
-    import _state
     import _validate
     import _workspace
 
     workspace = _workspace.load(root)
     revisions = {item["name"]: item for item in state["revisions"]}
     result = {}
-    for task in state["tasks"].values():
-        if task["phase"] != "write":
+    for task in state["targets"].values():
+        if task["kind"] != "page":
             continue
         page = candidate / task["name"]
         parsed = parse_file(page)
@@ -261,9 +256,7 @@ def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> 
                 registered = workspace.sources.get(source_name)
                 blob = None
                 if revision and registered and registered.kind == "git":
-                    blob = _workspace.git_blob_oid(
-                        registered, revision["commit"], rel
-                    )
+                    blob = _workspace.git_blob_oid(registered, revision["commit"], rel)
                 elif registered and registered.kind == "files":
                     content = _workspace.files_blob(registered, rel)
                     blob = hashlib.sha256(content).hexdigest() if content else None
@@ -271,7 +264,11 @@ def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> 
                     source_blobs[f"{source_name}/{rel}"] = blob
         result[task["name"]] = {
             "plan": task["spec"],
-            "input_digest": _state.page_input_digest(candidate.parent, task["spec"]),
+            "input_digest": task["last_attempt"]["input_digest"],
+            "output_digest": task.get("output_digest"),
+            "review_digest": state["targets"]
+            .get(f"review:{task['name']}", {})
+            .get("output_digest"),
             "source_blobs": source_blobs,
         }
     return result
@@ -346,7 +343,9 @@ def prune(root: pathlib.Path, keep: int = KEEP_GENERATIONS) -> dict:
     previous = _publication(root) / "previous.json"
     if previous.is_file():
         try:
-            protected.add(json.loads(previous.read_text(encoding="utf-8"))["generation"])
+            protected.add(
+                json.loads(previous.read_text(encoding="utf-8"))["generation"]
+            )
         except (OSError, json.JSONDecodeError, KeyError):
             pass
     dirs = sorted(
@@ -394,7 +393,9 @@ def publish(root: pathlib.Path) -> dict:
             publication = _publication(root)
             generations = publication / "generations"
             generations.mkdir(parents=True, exist_ok=True)
-            partial = pathlib.Path(tempfile.mkdtemp(prefix=".partial-", dir=generations))
+            partial = pathlib.Path(
+                tempfile.mkdtemp(prefix=".partial-", dir=generations)
+            )
             shutil.copytree(candidate, partial, dirs_exist_ok=True)
             old = current(root)
             previous = pathlib.Path(old["path"]) if old else None
@@ -459,7 +460,9 @@ def verify(root: pathlib.Path, actor: str, pages: list[str]) -> dict:
         try:
             publication = _publication(root)
             generations = publication / "generations"
-            partial = pathlib.Path(tempfile.mkdtemp(prefix=".partial-", dir=generations))
+            partial = pathlib.Path(
+                tempfile.mkdtemp(prefix=".partial-", dir=generations)
+            )
             shutil.copytree(source, partial, dirs_exist_ok=True)
             now = datetime.now(timezone.utc)
             for relative in requested:

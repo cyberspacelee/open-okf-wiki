@@ -141,10 +141,33 @@ def cmd_task(args) -> int:
     root = workspace_root()
     if args.action == "start":
         result = _state.task_start(root, args.target)
-    elif args.action == "ls":
-        result = _state.task_ls(root, args.target, args.path, args.after)
+    elif args.action == "outline":
+        result = _state.task_outline(
+            root,
+            args.target,
+            source=args.source,
+            path=args.path,
+            after=args.after,
+        )
+    elif args.action == "search":
+        result = _state.task_search(
+            root,
+            args.target,
+            source=args.source,
+            query=args.pattern,
+            path=args.path,
+        )
+    elif args.action == "read":
+        result = _state.task_read(
+            root,
+            args.target,
+            source=args.source,
+            path=args.path,
+            start=args.start,
+            end=args.end,
+        )
     elif args.action == "complete":
-        result = _state.task_complete(root, args.target)
+        result = _state.task_complete(root, args.target, args.attempt)
         if not result.get("ok"):
             return emit_issues(result["issues"], args.json)
     else:
@@ -268,9 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    workspace = commands.add_parser(
-        "workspace", help="create or inspect the workspace"
-    )
+    workspace = commands.add_parser("workspace", help="create or inspect the workspace")
     workspace_actions = workspace.add_subparsers(dest="action", required=True)
     init = leaf(
         workspace_actions.add_parser(
@@ -301,9 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
     link.add_argument("target", help="path to the Git worktree")
     link.add_argument("--name", required=True, help="unique source name")
     clone = leaf(
-        source_kinds.add_parser(
-            "clone", help="clone a Git URL into <workspace>/<name>"
-        )
+        source_kinds.add_parser("clone", help="clone a Git URL into <workspace>/<name>")
     )
     clone.add_argument("target", help="Git URL to clone")
     clone.add_argument("--name", required=True, help="unique source name")
@@ -353,7 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     leaf(
         run_actions.add_parser(
-            "status", help="show current phase, tasks and next actions"
+            "status", help="show ready targets, active attempts and next actions"
         )
     )
     leaf(run_actions.add_parser("pause", help="pause the current run"))
@@ -361,7 +380,7 @@ def build_parser() -> argparse.ArgumentParser:
     leaf(run_actions.add_parser("abandon", help="abandon the current run"))
 
     task = commands.add_parser(
-        "task", help="dispatch and gate run tasks (id format: <phase>:<name>)"
+        "task", help="claim, navigate and gate plan, page and review targets"
     )
     task_actions = task.add_subparsers(dest="action", required=True)
     start_task = leaf(
@@ -369,34 +388,55 @@ def build_parser() -> argparse.ArgumentParser:
             "start", help="mark a task in progress and print its dispatch packet"
         )
     )
-    start_task.add_argument("target", help="task id, e.g. survey:api")
-    list_task = leaf(
+    start_task.add_argument("target", help="ready target id, e.g. page:overview.md")
+    outline = leaf(
         task_actions.add_parser(
-            "ls", help="list one directory inside an active triage or survey task"
+            "outline", help="list one bounded directory inside the target scope"
         )
     )
-    list_task.add_argument("target", help="active triage or survey task id")
-    list_task.add_argument("path", help="relative directory path, or . for task root")
-    list_task.add_argument("--after", help="continue after this path from the prior page")
+    outline.add_argument("target", help="in-progress target id")
+    outline.add_argument("path", nargs="?", default=".", help="relative directory")
+    outline.add_argument("--source", required=True, help="source name")
+    outline.add_argument("--after", help="continue after an item from the prior page")
+    search = leaf(
+        task_actions.add_parser(
+            "search", help="search text inside the target scope with bounded output"
+        )
+    )
+    search.add_argument("target", help="in-progress target id")
+    search.add_argument("pattern", help="literal text, at most 256 characters")
+    search.add_argument("--source", required=True, help="source name")
+    search.add_argument("--path", default=".", help="relative scope path")
+    read = leaf(
+        task_actions.add_parser(
+            "read", help="read one bounded locator inside the target scope"
+        )
+    )
+    read.add_argument("target", help="in-progress target id")
+    read.add_argument("path", help="source-relative file path")
+    read.add_argument("--source", required=True, help="source name")
+    read.add_argument("--start", type=int, default=1, help="first line")
+    read.add_argument("--end", type=int, help="last line (bounded by the kernel)")
     complete_task = leaf(
         task_actions.add_parser(
             "complete", help="validate the task artifact and advance on success"
         )
     )
-    complete_task.add_argument("target", help="task id, e.g. survey:api")
-    fail = leaf(
-        task_actions.add_parser("fail", help="record a failed task for retry")
+    complete_task.add_argument("target", help="in-progress target id")
+    complete_task.add_argument(
+        "--attempt", required=True, help="attempt token returned by task start"
     )
-    fail.add_argument("target", help="task id, e.g. survey:api")
+    fail = leaf(task_actions.add_parser("fail", help="record a failed task for retry"))
+    fail.add_argument("target", help="in-progress target id")
     fail.add_argument("--reason", help="short failure description")
 
     review = commands.add_parser(
-        "review", help="independent review of the finished candidate"
+        "review", help="bind an independent session for ready page reviews"
     )
     review_actions = review.add_subparsers(dest="action", required=True)
     review_start = leaf(
         review_actions.add_parser(
-            "start", help="bind a review session and print the review packet"
+            "start", help="bind a review session and expose ready review targets"
         )
     )
     review_start.add_argument(
@@ -444,7 +484,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prune = leaf(
         publication_actions.add_parser(
-            "prune", help="delete old generations; keeps current, previous and --keep newest"
+            "prune",
+            help="delete old generations; keeps current, previous and --keep newest",
         )
     )
     prune.add_argument("--keep", type=int, default=5, help="generations to retain")

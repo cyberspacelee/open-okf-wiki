@@ -1,82 +1,84 @@
 # Plan
 
-Convert findings and connections into the smallest useful page set for this
-shard. Each shard is the single writer of its own namespace, and the gate
-enforces the partition:
+Read contract.md, then build one bounded Workspace Page Plan. Use the packet's
+`outline`, `search` and `read` commands to navigate each Pin. Start at build
+modules and source sets, descend into package clusters only when the parent
+view cannot support a page decision. Structure is routing evidence, not
+semantic importance.
 
-- `plan:<source>` pages live under `<source-slug>/` (a database shard's
-  under `data/<source-slug>/`); `plan:workspace` pages live at the root or
-  in directories no source owns. Page paths therefore never collide across
-  shards.
-- Each finding is assigned to a page or excluded exactly once across all
-  shards; the gate rejects a finding already claimed by a completed sibling
-  shard. Source-owned pages cite only their owner's findings; workspace
-  pages may compose findings from any source.
-- Only `plan:workspace` assigns connections, each to exactly one workspace
-  page, and it must assign all of them.
-- Required pages are gated on the shard that owns them: workspace owns
-  `overview.md`, `architecture.md` and (with a database) `data-model.md`;
-  a multi-source run's `plan:<source>` owns `<source-slug>/architecture.md`;
-  a database shard owns one Table page per selected table.
+Plan at most 64 concept pages, choosing the smallest set that passes the Grep
+Test. Each entry in a page's `scopes` names one Source and the paths its worker
+may investigate. A package cluster may support one page, several clusters may
+support one page, and most packages should create no page. Do not enumerate
+files, generate package documentation or reserve speculative pages.
 
-The CLI Compose Gate re-checks the same partition when the last shard
-completes; a failure names the shard artifact at fault and reopens it.
-
-Write the artifact yourself to the packet's `artifact` path — never return
-its content in your reply. Source shard:
+Write one JSON Attempt Artifact at the packet's `artifact` path:
 
     {
-      "source": "API",
       "pages": [{
-        "path": "api/architecture.md",
-        "type": "Architecture",
+        "path": "data/api/request-lifecycle.md",
+        "type": "Domain",
         "owner": "API",
-        "title": "API architecture",
-        "description": "Open before API changes.",
+        "title": "Request lifecycle",
+        "description": "Open before changing request state or retry behavior.",
+        "tags": ["requests", "lifecycle"],
+        "scopes": [{
+          "source": "API",
+          "paths": ["api-core/src/main/java/com/example/request"]
+        }],
+        "depends_on": []
+      }, {
+        "path": "architecture.md",
+        "type": "Architecture",
+        "owner": "workspace",
+        "title": "Architecture",
+        "description": "Open before changing system boundaries.",
         "tags": ["architecture"],
-        "finding_ids": ["api-request-lifecycle"],
-        "connection_ids": []
-      }],
-      "exclusions": []
-    }
-
-Workspace shard:
-
-    {
-      "source": null,
-      "pages": [{
+        "scopes": [
+          {"source": "API", "paths": ["api-core"]},
+          {"source": "web", "paths": ["src/client"]}
+        ],
+        "depends_on": ["data/api/request-lifecycle.md"]
+      }, {
         "path": "overview.md",
         "type": "Overview",
         "owner": "workspace",
         "title": "Workspace overview",
         "description": "Open first to route a task.",
         "tags": ["overview"],
-        "finding_ids": [],
-        "connection_ids": []
-      }, {
-        "path": "architecture.md",
-        "type": "Architecture",
-        "owner": "workspace",
-        "title": "Architecture",
-        "description": "Open before cross-boundary changes.",
-        "tags": ["architecture"],
-        "finding_ids": [],
-        "connection_ids": ["web-calls-api"]
+        "scopes": [
+          {"source": "API", "paths": ["."]},
+          {"source": "web", "paths": ["."]}
+        ],
+        "depends_on": ["architecture.md"]
       }],
-      "exclusions": [{
-        "finding_id": "cheap-inventory",
-        "reason": "fails Grep Test"
-      }]
+      "gaps": []
     }
 
-Paths are lowercase portable bundle-relative Markdown paths. Write titles,
-descriptions and exclusion reasons in the packet's `language`; paths, tags
-and ids stay ASCII. Include required database pages from contract.md; a
-database shard reads the packet's `catalogs` index for selected table names,
-page slugs and comments — not `state.json` or the full `catalog.json`. Do
-not add tag indexes or speculative pages.
+`depends_on` lists child pages. A page with children becomes ready only after
+every listed child is Machine-confirmed. Every dependency names a planned
+page, and the graph stays acyclic.
 
-Then run the packet's `complete_command` from its `workdir`. If the gate
-rejects the artifact, fix it and complete again until it passes.
+Paths are lowercase portable bundle-relative Markdown paths. Every page has an
+`owner` and non-empty `scopes`. Scope paths are
+normalized Source-relative POSIX paths; `.` selects the eligible Source root.
+For a Catalog Source, paths are selected table page slugs from the packet's
+catalog index. Every scope must resolve inside a registered Source.
 
-Handoff: artifact path, gate verdict, page count, exclusion count.
+Workspace root pages use `owner: "workspace"`. Every source-owned page uses
+its declared Source name as owner and lives under
+`data/<source-slug>/`; all its scopes name that owner. Every Page Plan includes
+`overview.md` and `architecture.md`. Add source-owned or database pages only
+when the concept passes the Grep Test. A Catalog page may group related
+selected tables under one bounded concept scope; do not create one page per
+table merely because the table was selected.
+
+Write titles and descriptions in the packet's `language`; paths, tags and
+machine-facing fields stay ASCII. Read only the packet's bounded Catalog
+indexes, never `state.json` or a full `catalog.json`.
+
+Run `complete_command` from `workdir`. The State Gate validates paths, scopes,
+required pages, dependency references and cycles before promoting the plan and
+creating page Targets. Repair the Attempt Artifact until the gate passes.
+
+Handoff: Attempt Artifact path, gate verdict, page count, leaf count.

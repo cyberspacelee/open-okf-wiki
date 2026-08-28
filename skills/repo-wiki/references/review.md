@@ -1,41 +1,43 @@
 # Review
 
-Review runs in a session distinct from the producer. The review packet binds
-the exact candidate digest. Read contract.md, the candidate pages and the
-revision-bound evidence; never use writer conversation history. Reopen the
-Pin evidence behind every decision-changing claim — do not trust the
-producer's derived Evidence Cache.
+Review exactly one Candidate page in a session distinct from the producer.
+The packet binds its path and exact `page_digest`. Read contract.md, the page,
+its owner, `scopes` and revision-bound evidence. Do not use writer conversation
+history. Reopen Pin or Catalog evidence behind every decision-changing claim;
+the page's citations are assertions to verify, not trusted excerpts.
 
-Judge: Grep Test violations, unsupported claims, invented rationale, padded
-gaps, ownership bleed, missing connection links, routing overlap, coverage
-honesty, output language. Page prose must be written in the packet's
-`language`; flag drift with the `language` category.
+Judge the Grep Test, unsupported claims, invented rationale, padded gaps,
+scope or owner bleed, missing cross-source evidence, broken routing, coverage
+honesty and output language. For a parent page, inspect its Machine-confirmed child
+inputs for routing overlap and missing links.
 
-This task covers one owner batch (`pages` in the packet). Write the report
-yourself to the packet's `artifact` path — never return its content in your
-reply:
+Write one JSON Attempt Artifact at the packet's `artifact` path:
 
     {
-      "batch": "API",
-      "candidate_digest": "<packet digest>",
+      "page": "data/api/request-lifecycle.md",
+      "page_digest": "<packet page_digest>",
       "verdict": "changes_requested",
       "issues": [{
         "category": "unsupported-claim",
-        "target": "api/requests.md",
+        "target": "data/api/request-lifecycle.md",
         "claim": "exact claim or section",
         "resolution": "evidence or deletion needed",
         "reopen": "page"
       }]
     }
 
-Use `"reopen": "plan"` with `target` set to the source name or `workspace`
-when ownership, routing or page boundaries must change — the gate rejects a
-target that names no plan shard. A report may mix plan and page issues:
-reopened shards take their owned pages with them, and the remaining page
-issues reopen individually. An approved report has verdict `approved` and
-an empty issues list; approval stamps machine-confirmed verification — it
-is not human review.
+Issue categories are `grep-test`, `unsupported-claim`, `invented-rationale`,
+`padded-gap`, `ownership`, `routing`, `coverage` and `language`. Use
+`"reopen": "page"` for content repair and set `target` to the reviewed page.
+Use `"reopen": "plan"` only when the owner, `scopes`, page boundary or
+dependency structure must change; its `target` is `plan:workspace`.
 
-Then run the packet's `complete_command` from its `workdir`.
+An approved report has `verdict: "approved"` and no issues. Approval is
+valid only while the page digest matches. The State Gate promotes the report,
+stamps that page Machine-confirmed and unlocks ready parents. It is not human
+review.
 
-Handoff: report path, verdict, issue count.
+Run `complete_command` from `workdir`. Repair schema or evidence-check errors
+until the gate accepts the report.
+
+Handoff: Attempt Artifact path, verdict, issue count.

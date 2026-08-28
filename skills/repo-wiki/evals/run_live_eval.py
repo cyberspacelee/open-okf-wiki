@@ -30,10 +30,12 @@ def main() -> int:
     ws = pathlib.Path(setup.stdout.strip().splitlines()[-1])
     prompt = (
         f"Workspace: {ws}. Skill: {SKILL}. Read SKILL.md and follow it strictly. "
-        "The two-source run is open at triage. Stay coordinator-only: delegate every "
-        "content target to a worker using the task-start dispatch packet, consume only its "
-        "path handoff, repair every rejected target, use a distinct review worker, publish "
-        "the generation and export wiki/. Do not modify the skill."
+        "The multi-source Run has plan:workspace ready. Stay coordinator-only: dispatch "
+        "only ready_targets, preserve each task-start attempt token, consume path-only "
+        "Handoffs, and repair every rejected State Gate. Use the bounded outline/search/read "
+        "Interface instead of recursive file inventory. Bind one distinct review session, "
+        "finish every per-page review, publish the generation and export wiki/. Do not "
+        "modify the skill."
     )
     log = ws / "host-run.log"
     if args.host == "codex":

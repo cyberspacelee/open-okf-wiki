@@ -38,8 +38,6 @@ class Source:
     url_env: str | None = None
     schema: str | None = None
     tables: tuple[str, ...] = ()
-    survey_split: tuple[str, ...] = ()
-    survey_exclude: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
@@ -74,11 +72,6 @@ def _git(
 
 def _is_git_repo(path: pathlib.Path) -> bool:
     return _git(path, "rev-parse", "--is-inside-work-tree", check=False).returncode == 0
-
-
-def _relative_dir(value: str) -> bool:
-    pure = pathlib.PurePosixPath(value)
-    return bool(value) and not pure.is_absolute() and ".." not in pure.parts
 
 
 def init(
@@ -163,7 +156,9 @@ def load(root: pathlib.Path) -> Workspace:
                 raise WorkspaceError(
                     f"source '{name}' path must be a named child of the workspace"
                 )
-            source_path = pathlib.Path(os.path.abspath(root / pathlib.Path(*pure.parts)))
+            source_path = pathlib.Path(
+                os.path.abspath(root / pathlib.Path(*pure.parts))
+            )
         if kind in ("opengauss", "postgres") and (
             not isinstance(entry.get("url_env"), str)
             or not isinstance(entry.get("schema"), str)
@@ -171,27 +166,6 @@ def load(root: pathlib.Path) -> Workspace:
             raise WorkspaceError(f"invalid opengauss source '{name}'")
         if source_path is not None and not source_path.is_dir():
             raise WorkspaceError(f"source '{name}' target not found: {source_path}")
-        survey = entry.get("survey", {})
-        if not isinstance(survey, dict):
-            raise WorkspaceError(f"invalid survey config for source '{name}'")
-        for key in ("split", "exclude"):
-            values = survey.get(key, [])
-            if not isinstance(values, list) or any(
-                not isinstance(item, str) or not _relative_dir(item) for item in values
-            ):
-                raise WorkspaceError(
-                    f"survey.{key} for source '{name}' must list relative directories"
-                )
-        splits = tuple(item.strip("/") for item in survey.get("split", []))
-        excludes = tuple(item.strip("/") for item in survey.get("exclude", []))
-        if any(
-            split == excluded or split.startswith(excluded + "/")
-            for split in splits
-            for excluded in excludes
-        ):
-            raise WorkspaceError(
-                f"survey.split for source '{name}' cannot be inside survey.exclude"
-            )
         sources[name] = Source(
             name=name,
             kind=kind,
@@ -202,8 +176,6 @@ def load(root: pathlib.Path) -> Workspace:
             url_env=entry.get("url_env"),
             schema=entry.get("schema"),
             tables=tuple(tables),
-            survey_split=splits,
-            survey_exclude=excludes,
         )
     return Workspace(
         root=root,
@@ -407,7 +379,8 @@ def _ignore_source(root: pathlib.Path, name: str) -> None:
     existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
     if marker not in existing.splitlines():
         gitignore.write_text(
-            existing.rstrip() + ("\n" if existing and not existing.endswith("\n") else "")
+            existing.rstrip()
+            + ("\n" if existing and not existing.endswith("\n") else "")
             + marker
             + "\n",
             encoding="utf-8",
@@ -507,7 +480,9 @@ def remove_pin(root: pathlib.Path, run_id: str, source: Source) -> None:
         shutil.rmtree(dest, ignore_errors=True)
 
 
-def remove_run_pins(root: pathlib.Path, run_id: str, sources: dict[str, Source]) -> None:
+def remove_run_pins(
+    root: pathlib.Path, run_id: str, sources: dict[str, Source]
+) -> None:
     for source in sources.values():
         if source.kind in ("git", "files"):
             remove_pin(root, run_id, source)
@@ -515,17 +490,23 @@ def remove_run_pins(root: pathlib.Path, run_id: str, sources: dict[str, Source])
     shutil.rmtree(pins, ignore_errors=True)
 
 
-def assert_pin_current(root: pathlib.Path, run_id: str, source: Source, record: dict) -> None:
+def assert_pin_current(
+    root: pathlib.Path, run_id: str, source: Source, record: dict
+) -> None:
     dest = pin_dir(root, run_id, source.name)
     if not dest.is_dir():
         raise WorkspaceError(f"pin missing for source '{source.name}'")
     if source.kind == "git":
         head = _git(dest, "rev-parse", "HEAD").stdout.strip()
         if head != record.get("commit"):
-            raise WorkspaceError(f"pin for '{source.name}' drifted from the recorded commit")
+            raise WorkspaceError(
+                f"pin for '{source.name}' drifted from the recorded commit"
+            )
     elif source.kind == "files":
         if directory_digest(dest) != record.get("content_hash"):
-            raise WorkspaceError(f"pin for '{source.name}' drifted from the recorded tree")
+            raise WorkspaceError(
+                f"pin for '{source.name}' drifted from the recorded tree"
+            )
 
 
 def _safe_origin(origin: str) -> str:
@@ -538,18 +519,23 @@ def _safe_origin(origin: str) -> str:
     return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
 
 
-def resolve_source_file(source: Source, rel: str) -> pathlib.Path | None:
-    if source.path is None:
-        return None
+def resolve_pin_file(pin: pathlib.Path, rel: str) -> pathlib.Path | None:
     pure = pathlib.PurePosixPath(rel)
     if pure.is_absolute() or ".." in pure.parts:
         return None
-    path = source.path.joinpath(*pure.parts).resolve()
+    candidate = pin.joinpath(*pure.parts)
+    if candidate.is_symlink():
+        return None
+    path = candidate.resolve()
     try:
-        path.relative_to(source.path.resolve())
+        path.relative_to(pin.resolve())
     except ValueError:
         return None
     return path if path.is_file() else None
+
+
+def resolve_source_file(source: Source, rel: str) -> pathlib.Path | None:
+    return resolve_pin_file(source.path, rel) if source.path is not None else None
 
 
 def tracked_files(source: Source, commit: str | None) -> list[str]:
@@ -582,14 +568,12 @@ def captured_files(source: Source, pin: pathlib.Path, revision: dict) -> list[st
     )
 
 
-def scoped_files(files: list[str], paths, exclude) -> list[str]:
-    excluded = tuple(item.strip("/") for item in exclude if item.strip("/"))
+def scoped_files(files: list[str], paths) -> list[str]:
     selected = tuple(paths)
     return [
         item
         for item in files
-        if not any(item == entry or item.startswith(entry + "/") for entry in excluded)
-        and any(
+        if any(
             path in ("", ".")
             or item == path.rstrip("/")
             or item.startswith(path.rstrip("/") + "/")
@@ -629,9 +613,7 @@ def git_blob_oid(source: Source, commit: str, rel: str) -> str | None:
         or ".." in pure.parts
     ):
         return None
-    result = _git(
-        source.path, "rev-parse", f"{commit}:{pure.as_posix()}", check=False
-    )
+    result = _git(source.path, "rev-parse", f"{commit}:{pure.as_posix()}", check=False)
     return result.stdout.strip() if result.returncode == 0 else None
 
 

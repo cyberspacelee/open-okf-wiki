@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # ///
-"""Outcome-based grader for a published v1 repo-wiki run."""
+"""Outcome grader for a published ready-page DAG run."""
 
 import argparse
 import json
@@ -35,79 +35,97 @@ def grade(ws: pathlib.Path) -> list[dict]:
     run_id = manifest["producer_run_id"]
     run_dir = ws / ".okf-wiki/runs" / run_id
     state = load(run_dir / "state.json")
+    targets = state.get("targets", {})
     incomplete = [
-        key for key, value in state["tasks"].items() if value["status"] != "complete"
+        key for key, value in targets.items() if value["status"] != "complete"
     ]
     check(
-        "run published with all targets complete",
+        "run published with every DAG target complete",
         state["status"] == "published" and not incomplete,
         f"status={state['status']}, incomplete={incomplete[:5]}",
     )
-    revision_names = {item["name"] for item in state["revisions"]}
-    triage = [
-        task for task in state["tasks"].values() if task["phase"] == "triage"
-    ]
-    indexes = sorted((run_dir / "drafts/index").glob("*.md"))
-    check(
-        "each revision has one bounded index and triage target",
-        {task["spec"]["source"] for task in triage} == revision_names
-        and len(indexes) == len(revision_names)
-        and all(path.stat().st_size <= 64 * 1024 for path in indexes),
-        f"revisions={len(revision_names)}, indexes={len(indexes)}, triage={len(triage)}",
-    )
-    survey = [
-        task for task in state["tasks"].values() if task["phase"] == "survey"
-    ]
-    evidence_ok = True
-    for task in survey:
-        cache_path = run_dir / "drafts/evidence" / f"{task['name']}.json"
-        if not cache_path.is_file():
-            evidence_ok = False
-            break
-        cache = load(cache_path)
-        revision = next(
-            item for item in state["revisions"] if item["name"] == task["spec"]["source"]
-        )
-        evidence_ok = evidence_ok and (
-            task["spec"].get("tier") in {"standard", "deep"}
-            and cache.get("target") == task["name"]
-            and cache.get("pin") == revision.get("commit", revision.get("content_hash"))
-            and cache.get("window") == {"version": 2, "lines": 20}
-        )
-    check(
-        "survey evidence caches are kernel-derived and Pin-bound",
-        evidence_ok,
-        f"survey={len(survey)}",
-    )
-    writes = [
-        task for task in state["tasks"].values() if task["phase"] == "write"
+    legacy = [
+        target["id"]
+        for target in targets.values()
+        if target.get("kind") not in {"plan", "page", "review"}
     ]
     check(
-        "write targets map one-to-one to canonical page artifacts",
-        len(writes) == len(manifest.get("pages", {}))
-        and all(
-            "pages" not in task["spec"]
-            and task["artifact"] == f"candidate/{task['name']}"
-            for task in writes
-        ),
-        f"writes={len(writes)}, manifest_pages={len(manifest.get('pages', {}))}",
-    )
-    attempts = state.get("review_attempts", [])
-    check(
-        "independent approved review recorded",
-        bool(attempts)
-        and attempts[-1]["verdict"] == "approved"
-        and attempts[-1]["session"] != state["producer_session"],
-        f"attempts={len(attempts)}",
+        "target graph contains no legacy phases",
+        not legacy and "tasks" not in state,
+        f"legacy={legacy[:5]}",
     )
 
-    pages = sorted(
+    plans = [target for target in targets.values() if target["kind"] == "plan"]
+    pages = [target for target in targets.values() if target["kind"] == "page"]
+    reviews = [target for target in targets.values() if target["kind"] == "review"]
+    plan = None
+    if len(plans) == 1:
+        try:
+            plan_path = run_dir / plans[0]["artifact"]
+            plan = load(plan_path)
+        except (OSError, json.JSONDecodeError):
+            plan = None
+    planned = {item["path"]: item for item in (plan or {}).get("pages", [])}
+    check(
+        "page and review target counts come from the Page Plan",
+        bool(planned)
+        and {target["name"] for target in pages} == set(planned)
+        and {target["name"] for target in reviews} == set(planned),
+        f"planned={len(planned)}, pages={len(pages)}, reviews={len(reviews)}",
+    )
+    dependency_errors = []
+    review_by_page = {target["name"]: target for target in reviews}
+    for path, entry in planned.items():
+        for child in entry.get("depends_on", []):
+            if review_by_page.get(child, {}).get("status") != "complete":
+                dependency_errors.append(f"{path}: child {child} not Machine-confirmed")
+    check(
+        "parent pages depend on Machine-confirmed children",
+        not dependency_errors,
+        "; ".join(dependency_errors[:5]) or "all dependency reviews complete",
+    )
+
+    revision_names = {item["name"] for item in state["revisions"]}
+    indexes = sorted((run_dir / "drafts/index").glob("*.md"))
+    bad_indexes = []
+    for path in indexes:
+        text = path.read_text(encoding="utf-8")
+        if (
+            path.stat().st_size > 64 * 1024
+            or "inventory complete" not in text
+            or "## Repository outline" not in text
+            or "Stats columns" in text
+        ):
+            bad_indexes.append(path.name)
+    check(
+        "each Revision has one bounded agent-facing outline",
+        len(indexes) == len(revision_names) and not bad_indexes,
+        f"revisions={len(revision_names)}, indexes={len(indexes)}, bad={bad_indexes}",
+    )
+
+    manifest_pages = manifest.get("pages", {})
+    page_by_name = {target["name"]: target for target in pages}
+    digest_errors = [
+        path
+        for path, item in manifest_pages.items()
+        if not item.get("output_digest")
+        or not item.get("review_digest")
+        or item.get("input_digest")
+        != page_by_name.get(path, {}).get("last_attempt", {}).get("input_digest")
+    ]
+    check(
+        "Publication binds page and independent review digests",
+        set(manifest_pages) == set(planned) and not digest_errors,
+        f"manifest={len(manifest_pages)}, missing={digest_errors[:5]}",
+    )
+
+    concept_pages = sorted(
         path for path in bundle.rglob("*.md") if path.name not in ("index.md", "log.md")
     )
     check(
         "required routing concepts exist",
         (bundle / "overview.md").is_file() and (bundle / "architecture.md").is_file(),
-        f"{len(pages)} concepts",
+        f"{len(concept_pages)} concepts",
     )
     validation = subprocess.run(
         [
@@ -137,37 +155,38 @@ def grade(ws: pathlib.Path) -> list[dict]:
         if item["kind"] == "git"
     }
     citations = []
-    for page in pages:
+    for page in concept_pages:
         citations.extend(
             (page, match) for match in CITE.finditer(page.read_text(encoding="utf-8"))
         )
     random.Random(0).shuffle(citations)
-    bad = []
+    bad_citations = []
     for page, match in citations[:12]:
         locator, lo, hi = match.groups()
         source, _, rel = locator.partition("/")
         revision = revisions.get(source)
-        if revision is None:
-            continue
         source_path = source_paths.get(source)
-        content = subprocess.run(
-            ["git", "-C", str(source_path), "show", f"{revision['commit']}:{rel}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        ) if source_path else None
+        content = (
+            subprocess.run(
+                ["git", "-C", str(source_path), "show", f"{revision['commit']}:{rel}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if source_path and revision
+            else None
+        )
         if content is None or content.returncode:
-            bad.append(f"{page.name}: unresolved {locator}")
+            bad_citations.append(f"{page.name}: unresolved {locator}")
             continue
-        if hi or lo:
-            upper = int(hi or lo)
-            count = len(content.stdout.splitlines())
-            if upper > count:
-                bad.append(f"{page.name}: L{upper} exceeds {count}")
+        upper = int(hi or lo or 0)
+        if upper and upper > len(content.stdout.splitlines()):
+            bad_citations.append(f"{page.name}: L{upper} out of range")
     check(
-        "sampled revision citations resolve",
-        bool(citations) and not bad,
-        "; ".join(bad) or f"{min(12, len(citations))}/{len(citations)} checked",
+        "sampled Revision Locators resolve",
+        bool(citations) and not bad_citations,
+        "; ".join(bad_citations)
+        or f"{min(12, len(citations))}/{len(citations)} checked",
     )
 
     proposals = sorted((run_dir / "proposals").glob("agents-block-*.md"))
@@ -192,19 +211,14 @@ def grade(ws: pathlib.Path) -> list[dict]:
     )
     trust_missing = [
         path.name
-        for path in pages
+        for path in concept_pages
         if not all(
             token in path.read_text(encoding="utf-8")
-            for token in (
-                "generated:",
-                "verified:",
-                "status: stable",
-                "stale_after:",
-            )
+            for token in ("generated:", "verified:", "status: stable", "stale_after:")
         )
     ]
     check(
-        "published concepts carry lifecycle trust fields",
+        "published concepts carry Machine-confirmed lifecycle fields",
         not trust_missing,
         ", ".join(trust_missing) or "all concepts stamped",
     )
@@ -221,7 +235,7 @@ def main() -> int:
     except (OSError, KeyError, json.JSONDecodeError) as exc:
         results = [
             {
-                "text": "run produced a readable publication",
+                "text": "run produced a readable Publication",
                 "passed": False,
                 "evidence": str(exc),
             }
