@@ -146,8 +146,9 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
     invalid_plan["pages"][1]["finding_ids"] = ["answer"]
     _state.task_start(root, "plan:workspace")
     write(run / "drafts/plan/workspace.json", json.dumps(invalid_plan))
-    with pytest.raises(_state.StateError, match="composed page plan"):
-        _state.task_complete(root, "plan:workspace")
+    rejected = _state.task_complete(root, "plan:workspace")
+    assert not rejected["ok"]
+    assert "finding-reassigned" in {item["code"] for item in rejected["issues"]}
     write(run / "drafts/plan/workspace.json", json.dumps(valid_plan))
     assert _state.task_complete(root, "plan:workspace")["ok"]
     complete(

@@ -65,9 +65,10 @@ def test_start_creates_one_triage_target_and_bounded_index_per_source(tmp_path):
     index = json.loads(
         (_state.run_dir(root, state["run_id"]) / "drafts/index/src.json").read_text()
     )
-    assert index["version"] == 1
+    assert index["version"] == 2
     assert index["source"] == "src"
     assert index["file_count"] == 2
+    assert sum(item["files"] for item in index["directories"]) == 2
     assert len(json.dumps(index).encode()) <= 64 * 1024
     forbidden = {"churn", "authors", "gzip_ratio", "name_homogeneity"}
     assert all(not (forbidden & set(item)) for item in index["directories"])
@@ -459,7 +460,7 @@ def test_survey_completion_materializes_and_rebuilds_evidence_cache(
     evidence = json.loads(cache.read_text())
     assert evidence["target"] == target
     assert len(evidence["pin"]) == 40
-    assert evidence["window"] == {"version": 1, "lines": 20}
+    assert evidence["window"] == {"version": 2, "lines": 20}
     assert evidence["findings"][0]["excerpts"][0]["locator"] == "src/core/answer.py#L1-L2"
     assert "1|def answer():" in evidence["findings"][0]["excerpts"][0]["text"]
 
@@ -602,14 +603,9 @@ def test_duplicate_edge_across_tasks_fails_composed_plan(tmp_path):
 
 
 def test_zh_survey_budget_is_wider(tmp_path):
-    per_file_en, total_en = _validate.survey_budget({"language": "en", "tasks": {}})
-    per_file_zh, total_zh = _validate.survey_budget({"language": "zh", "tasks": {}})
+    per_file_en = _validate.survey_budget({"language": "en", "tasks": {}})
+    per_file_zh = _validate.survey_budget({"language": "zh", "tasks": {}})
     assert per_file_zh == per_file_en * 2
-    many = {
-        f"survey:s{index}": {"phase": "survey"} for index in range(20)
-    }
-    _, total_many = _validate.survey_budget({"language": "en", "tasks": many})
-    assert total_many == 20 * per_file_en > total_en
 
 
 def test_zh_log_uses_localized_headings(tmp_path):

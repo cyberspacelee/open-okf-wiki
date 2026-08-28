@@ -13,7 +13,7 @@ from _files import atomic_json, directory_digest
 from _models import PagePlan, ReviewReport, model_errors
 from pydantic import ValidationError
 
-VERSION = 1
+VERSION = 2
 PHASES = ["triage", "survey", "connect", "plan", "write", "review"]
 LOCK_TIMEOUT_SEC = 60
 
@@ -636,8 +636,10 @@ def task_complete(root: pathlib.Path, task_id: str) -> dict:
     task["artifact_digest"] = (
         _file_digest(artifact) if artifact.is_file() else directory_digest(artifact)
     )
-    _advance(root, state, task["phase"])
+    compose_issues = _advance(root, state, task["phase"])
     _write(root, state)
+    if compose_issues:
+        return {"ok": False, "issues": compose_issues, "state": status(root)}
     return {"ok": True, "state": status(root)}
 
 
@@ -660,9 +662,9 @@ def _phase_complete(state: dict, phase: str) -> bool:
     return bool(tasks) and all(task["status"] == "complete" for task in tasks)
 
 
-def _advance(root: pathlib.Path, state: dict, phase: str) -> None:
+def _advance(root: pathlib.Path, state: dict, phase: str) -> list[dict]:
     if not _phase_complete(state, phase):
-        return
+        return []
     connectable = _connectable(state)
     if phase == "triage":
         _add_survey_tasks(root, state)
@@ -676,7 +678,9 @@ def _advance(root: pathlib.Path, state: dict, phase: str) -> None:
     elif phase == "connect":
         _add_plan_shards(root, state)
     elif phase == "plan":
-        _compose_plan(root, state)
+        compose_issues = _compose_plan(root, state)
+        if compose_issues:
+            return compose_issues
     elif phase == "write":
         state["status"] = "awaiting_review"
     next_phase = {
@@ -690,18 +694,39 @@ def _advance(root: pathlib.Path, state: dict, phase: str) -> None:
         "plan": "write",
     }.get(phase)
     if next_phase and _phase_complete(state, next_phase):
-        _advance(root, state, next_phase)
+        return _advance(root, state, next_phase)
+    return []
 
 
-def _compose_plan(root: pathlib.Path, state: dict) -> None:
+def _compose_plan(root: pathlib.Path, state: dict) -> list[dict]:
+    """Union plan shards into write tasks; on failure reopen the shard at fault.
+
+    Shard gates make cross-shard conflicts unrepresentable, so composed
+    validation failing means a shard artifact escaped its gate. The issues
+    name the offending shard artifact; that shard (or all shards when the
+    fault is not attributable) goes back to pending so a worker can fix it,
+    and the issues surface through the completing task's result.
+    """
     import _validate
 
     issues = _validate.validate_composed_plan(root, state)
     errors = [item for item in issues if item.severity == "error"]
     if errors:
-        raise StateError(
-            f"composed page plan is invalid: {[item.to_dict() for item in errors[:3]]}"
-        )
+        shards = {
+            task["id"]: str(run_dir(root, state["run_id"]) / task["artifact"])
+            for task in state["tasks"].values()
+            if task["phase"] == "plan"
+        }
+        responsible = {
+            task_id
+            for task_id, artifact in shards.items()
+            if any(item.path == artifact for item in errors)
+        } or set(shards)
+        for task_id in responsible:
+            task = state["tasks"][task_id]
+            task["status"] = "pending"
+            task.pop("artifact_digest", None)
+        return [item.to_dict() for item in errors]
     pages = _composed_pages(root, state)
     candidate = candidate_dir(root, state)
     keep = {page.path for page in pages}
@@ -753,6 +778,7 @@ def _compose_plan(root: pathlib.Path, state: dict) -> None:
             ),
         )
         _reuse_page(root, state, state["tasks"][task_id])
+    return []
 
 
 def _composed_pages(root: pathlib.Path, state: dict):
@@ -789,11 +815,14 @@ def _previous_state(root: pathlib.Path, state: dict) -> dict | None:
     if not run_id:
         return None
     try:
-        return json.loads(
+        previous = json.loads(
             (run_dir(root, run_id) / "state.json").read_text(encoding="utf-8")
         )
     except (OSError, json.JSONDecodeError):
         return None
+    if previous.get("version") != VERSION:
+        return None
+    return previous
 
 
 def _source_unchanged(state: dict, previous: dict, source: str) -> bool:
@@ -1126,6 +1155,7 @@ def _apply_reopen(root: pathlib.Path, state: dict, report: ReviewReport) -> None
     _remove_phases(state, {"review"})
     state.pop("review", None)
     state["status"] = "active"
+    reopened_pages: set[str] = set()
     if plan_issues:
         shards = {issue.target for issue in plan_issues}
         for target in shards:
@@ -1148,10 +1178,10 @@ def _apply_reopen(root: pathlib.Path, state: dict, report: ReviewReport) -> None
                     artifact = candidate_dir(root, state) / path
                     if artifact.exists():
                         artifact.unlink()
+                reopened_pages.add(path)
             task["status"] = "pending"
             task.pop("artifact_digest", None)
-        return
-    for path in {issue.target for issue in page_issues}:
+    for path in {issue.target for issue in page_issues} - reopened_pages:
         task = state["tasks"].get(f"write:{path}")
         if task is None:
             raise StateError(f"review references unknown page: {path}")

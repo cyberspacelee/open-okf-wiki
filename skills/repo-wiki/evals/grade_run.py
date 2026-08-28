@@ -72,7 +72,7 @@ def grade(ws: pathlib.Path) -> list[dict]:
             task["spec"].get("tier") in {"standard", "deep"}
             and cache.get("target") == task["name"]
             and cache.get("pin") == revision.get("commit", revision.get("content_hash"))
-            and cache.get("window") == {"version": 1, "lines": 20}
+            and cache.get("window") == {"version": 2, "lines": 20}
         )
     check(
         "survey evidence caches are kernel-derived and Pin-bound",

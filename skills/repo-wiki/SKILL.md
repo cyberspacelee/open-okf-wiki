@@ -69,10 +69,13 @@ source entry in workspace.json (`"survey": {"split": ["src/core"],
 "exclude": ["vendor"]}`) is the only exclusion policy; split paths must be
 independent scopes and cannot be inside an excluded path. Propose is an
 optional post-publish command, not a phase.
-The Index collapses empty single-child directory chains. Triage reads it once
-and uses the packet's bounded `ls_command` only when the Index is truncated or
-unclear. Survey packets do not carry the Index; workers use `ls_command` to
-browse only their captured task scope, then perform targeted source reads.
+The Index collapses empty single-child directory chains; its per-directory
+counts are disjoint (each file counted once) and the byte budget coarsens
+entries into their parent (`collapsed_dirs`) instead of dropping them.
+Triage reads it once and uses the packet's bounded `ls_command` only on
+coarsened or unclear directories. Survey packets do not carry the Index;
+workers use `ls_command` to browse only their captured task scope, then
+perform targeted source reads.
 `run status` lists the current phase's tasks; task ids are `<phase>:<name>`
 (e.g. `triage:api`, `survey:api`, `write:overview.md`). For each task:
 
@@ -123,10 +126,11 @@ What goes where:
 Each phase reference (`references/<phase>.md`, named in the dispatch packet)
 tells the worker what to read, do, write and return. Read it before working.
 
-The plan phase assigns every finding exactly once; page count follows the
-Grep Test (see `references/contract.md`), not a quota. Unchanged pages from
-the previous publication are reused automatically when their plan entry,
-cited Git blobs and `stale_after` all still hold.
+The plan phase partitions ownership: each shard plans pages only under its
+own path prefix and assigns each finding exactly once run-wide; page count
+follows the Grep Test (see `references/contract.md`), not a quota.
+Unchanged pages from the previous publication are reused automatically when
+their plan entry, cited Git blobs and `stale_after` all still hold.
 
 ## Review, publish, verify
 

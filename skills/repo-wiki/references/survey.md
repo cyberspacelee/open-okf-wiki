@@ -25,10 +25,12 @@ its content in your reply:
 
 `target` is the task name from the dispatch packet. Write claims,
 domains and gaps in the packet's `language`; ids stay ASCII slugs.
-Evidence uses plain locators (`source/path`, optional `#Lx-Ly`); every
-range must exist at the run's recorded revision. Write no excerpt or evidence
-pack: after the gate validates the locators, the kernel derives the Evidence
-Cache from the Pin.
+Finding ids are global across the whole run — prefix them with this
+task's slug (`<target>-<topic>`) so the gate never rejects a collision
+with a sibling survey. Evidence uses plain locators (`source/path`,
+optional `#Lx-Ly`); every range must exist at the run's recorded revision.
+Write no excerpt or evidence pack: after the gate validates the locators,
+the kernel derives the Evidence Cache from the Pin.
 
 The gate enforces at most 32 findings, 8 locators per finding, 16 gaps and
 a byte budget — prioritize Grep-Test knowledge and record omitted scope

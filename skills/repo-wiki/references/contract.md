@@ -60,6 +60,16 @@ structure never does: frontmatter field names, finding/connection ids,
 tags, page paths and locators stay ASCII as specified here. Review flags
 drift with the `language` issue category.
 
+## Partition
+
+Global namespaces are partitioned so each artifact has one writer and every
+conflict is rejected on the writer's own gate, while it can still repair:
+triage assigns every file to exactly one scope; finding and connection ids
+are unique across the run (the gate rejects an id a completed sibling
+already holds); an edge belongs to its lowest-sorting participant's connect
+task; each plan shard writes pages only under its own path prefix and
+assigns or excludes each finding exactly once run-wide.
+
 ## Layout
 
 Every plan includes `overview.md` and `architecture.md` (workspace-owned).

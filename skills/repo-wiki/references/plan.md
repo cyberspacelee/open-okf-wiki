@@ -1,9 +1,26 @@
 # Plan
 
 Convert findings and connections into the smallest useful page set for this
-shard. `plan:<source>` owns pages whose owner is that source.
-`plan:workspace` owns workspace pages and assigns every connection. The CLI
-Compose Gate unions shards and checks global finding/connection coverage.
+shard. Each shard is the single writer of its own namespace, and the gate
+enforces the partition:
+
+- `plan:<source>` pages live under `<source-slug>/` (a database shard's
+  under `data/<source-slug>/`); `plan:workspace` pages live at the root or
+  in directories no source owns. Page paths therefore never collide across
+  shards.
+- Each finding is assigned to a page or excluded exactly once across all
+  shards; the gate rejects a finding already claimed by a completed sibling
+  shard. Source-owned pages cite only their owner's findings; workspace
+  pages may compose findings from any source.
+- Only `plan:workspace` assigns connections, each to exactly one workspace
+  page, and it must assign all of them.
+- Required pages are gated on the shard that owns them: workspace owns
+  `overview.md`, `architecture.md` and (with a database) `data-model.md`;
+  a multi-source run's `plan:<source>` owns `<source-slug>/architecture.md`;
+  a database shard owns one Table page per selected table.
+
+The CLI Compose Gate re-checks the same partition when the last shard
+completes; a failure names the shard artifact at fault and reopens it.
 
 Write the artifact yourself to the packet's `artifact` path — never return
 its content in your reply. Source shard:

@@ -12,7 +12,7 @@ from _files import atomic_json, directory_digest
 
 VERSION = 1
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
-_RESERVED_NAMES = {"wiki"}
+_RESERVED_NAMES = {"wiki", "workspace", "data"}
 _WINDOWS_RESERVED = {
     "CON",
     "PRN",

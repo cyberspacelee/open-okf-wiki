@@ -5,7 +5,9 @@ files sources exist. One task per source: this task declares only the edges
 whose case-insensitive lowest-sorting participant is this source — the gate
 rejects edges declared by any other participant, so every edge has exactly
 one home. For edges owned by another source, verify nothing and declare
-nothing. Connection ids must be globally unique ASCII slugs.
+nothing. Connection ids must be ASCII slugs, unique across every connect
+task in the run — the gate rejects an id already used by a completed
+sibling, so name edges after their participants (`web-calls-api`).
 
 Read survey JSON and the matching Evidence Caches from the dispatch inputs,
 then reopen Pin files only when a cached window is not enough to evidence

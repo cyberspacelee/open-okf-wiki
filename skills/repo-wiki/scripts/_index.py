@@ -1,4 +1,14 @@
-"""Deterministic structural index for Git/files Pins. Zero LLM."""
+"""Deterministic structural index for Git/files Pins. Zero LLM.
+
+Index invariants (v2):
+- every directory record describes a disjoint region of files; a file is
+  counted by exactly one record, so record counts are additive;
+- a record's fields describe the record's region directly (no recursive
+  roll-up); `subtree_files` is the only derived subtree metric;
+- the byte budget coarsens the index by merging records into their nearest
+  kept ancestor (`collapsed_dirs` accounts for them) — no file ever loses
+  its record.
+"""
 
 from __future__ import annotations
 
@@ -45,7 +55,9 @@ ENTRY_BASENAMES = {
     "server.py",
     "server.ts",
 }
-TEST_TOKEN = re.compile(r"(^|/)(tests?|spec|__tests__)(/|$)|test[s]?\.|_test\.|\.spec\.", re.I)
+TEST_TOKEN = re.compile(
+    r"(^|/)(tests?|spec|__tests__)(/|$)|(^|[/._-])tests?\.|_test\.|\.spec\.", re.I
+)
 BINARY_EXT = {
     ".png",
     ".jpg",
@@ -69,10 +81,14 @@ BINARY_EXT = {
     ".mp3",
     ".wasm",
 }
-VERSION = 1
+VERSION = 2
 MAX_INDEX_BYTES = 64 * 1024
 MAX_LS_BYTES = 16 * 1024
 WINDOW = 20
+MAX_EXCERPT_LINE_CHARS = 500
+EXCERPT_CLIP_MARK = "…[clipped]"
+MAX_ENTRY_POINTS = 16
+MAX_EXTENSIONS = 20
 GENERATED_TOKEN = re.compile(r"(^|/)(generated|vendor|dist|build)(/|$)", re.I)
 GENERATED_MARKER = re.compile(rb"generated (by|file)|do not edit", re.I)
 PROTECTED_TOKEN = re.compile(
@@ -112,21 +128,61 @@ def build_index(
     files: list[str],
     forced_splits: tuple[str, ...] = (),
 ) -> dict:
-    directories: dict[str, dict] = {}
-    _ensure_dir(directories, "")
-    for rel in files:
-        size, raw = _file_data(pin, rel)
-        for parent in _parents(rel):
-            _accumulate_file(_ensure_dir(directories, parent), rel, size, raw)
-    direct_files, child_dirs = _directory_shape(files)
     required = {"", *(item.strip("/") for item in forced_splits)}
+    direct_files, child_dirs = _directory_shape(files)
     visible = required | direct_files | {
         path for path, children in child_dirs.items() if len(children) > 1
     }
+    stats = {path: _new_stats() for path in visible}
+    for rel in files:
+        size, raw = _file_data(pin, rel)
+        _accumulate_file(stats[_parent_of(rel)], rel, size, raw)
+    candidates = sorted(
+        (path for path in stats if path not in required),
+        key=lambda path: _keep_priority(path, stats[path]),
+    )
+    full = _assemble(source, files, stats, required, candidates, len(candidates))
+    if _json_size(full) <= MAX_INDEX_BYTES:
+        return full
+    floor = _assemble(source, files, stats, required, candidates, 0)
+    if _json_size(floor) > MAX_INDEX_BYTES:
+        raise ValueError("configured survey.split entries exceed the index byte budget")
+    lo, hi = 0, len(candidates)
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        probe = _assemble(source, files, stats, required, candidates, mid)
+        if _json_size(probe) <= MAX_INDEX_BYTES:
+            lo = mid
+        else:
+            hi = mid
+    return _assemble(source, files, stats, required, candidates, lo)
+
+
+def _assemble(
+    source: str,
+    files: list[str],
+    stats: dict[str, dict],
+    required: set[str],
+    candidates: list[str],
+    keep_count: int,
+) -> dict:
+    kept = required | set(candidates[:keep_count])
+    working = {path: _copy_stats(item) for path, item in stats.items()}
+    for path in list(working):
+        if path in kept:
+            continue
+        _merge_stats(working[_nearest_kept(path, kept)], working[path])
+        del working[path]
+    subtree = {path: item["files"] for path, item in working.items()}
+    for path, item in working.items():
+        ancestor = path
+        while ancestor:
+            ancestor = _parent_dir(ancestor)
+            if ancestor in working:
+                subtree[ancestor] += item["files"]
     records = [
-        _finalize(path, stats)
-        for path, stats in directories.items()
-        if path in visible
+        {**_finalize(path, item), "subtree_files": subtree[path]}
+        for path, item in working.items()
     ]
     records.sort(key=lambda item: (item["path"] != ".", item["path"]))
     payload = {
@@ -134,42 +190,48 @@ def build_index(
         "source": source,
         "file_count": len(files),
         "directories": records,
-        "truncated": False,
+        "truncated": keep_count < len(candidates),
     }
-    if _json_size(payload) <= MAX_INDEX_BYTES:
-        return payload
-    required_paths = {".", *(item.strip("/") for item in forced_splits)}
-    kept = [item for item in records if item["path"] in required_paths]
-    candidates = [item for item in records if item["path"] not in required_paths]
-    candidates.sort(
-        key=lambda item: (bool(item["entry_points"]), item["files"]), reverse=True
-    )
-    payload["truncated"] = True
-    payload["directories"] = kept
-    if _json_size(payload) > MAX_INDEX_BYTES:
-        raise ValueError("configured survey.split entries exceed the index byte budget")
-    for item in candidates:
-        payload["directories"].append(item)
-        if _json_size(payload) > MAX_INDEX_BYTES:
-            payload["directories"].pop()
-    payload["directories"].sort(key=lambda item: item["path"])
+    total = sum(item["files"] for item in records)
+    if total != len(files) or subtree.get("", 0) != len(files):
+        raise AssertionError("index partition lost files during assembly")
     return payload
+
+
+def _keep_priority(path: str, stats: dict) -> tuple:
+    """Sort key: candidates kept longest come first when the budget bites."""
+    files = stats["files"]
+    fully_generated = files > 0 and stats["generated_files"] == files
+    test_only = files > 0 and stats["test_files"] == files
+    depth = 0 if not path else path.count("/") + 1
+    return (
+        not stats["entry_points"],
+        fully_generated,
+        test_only,
+        depth,
+        -files,
+        path,
+    )
+
+
+def _parent_of(rel: str) -> str:
+    parent = pathlib.PurePosixPath(rel).parent
+    return "" if parent == pathlib.PurePosixPath(".") else parent.as_posix()
+
+
+def _parent_dir(path: str) -> str:
+    return path.rsplit("/", 1)[0] if "/" in path else ""
+
+
+def _nearest_kept(path: str, kept: set[str]) -> str:
+    while True:
+        path = _parent_dir(path)
+        if path in kept:
+            return path
 
 
 def _json_size(value: dict) -> int:
     return len(json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")) + 1
-
-
-def _parents(rel: str) -> list[str]:
-    parent = pathlib.PurePosixPath(rel).parent
-    result = [""]
-    if parent == pathlib.PurePosixPath("."):
-        return result
-    parts: list[str] = []
-    for part in parent.parts:
-        parts.append(part)
-        result.append("/".join(parts))
-    return result
 
 
 def _directory_shape(files: list[str]) -> tuple[set[str], dict[str, set[str]]]:
@@ -242,19 +304,37 @@ def list_directory(
     }
 
 
-def _ensure_dir(directories: dict[str, dict], path: str) -> dict:
-    if path not in directories:
-        directories[path] = {
-            "files": 0,
-            "bytes": 0,
-            "lines": 0,
-            "extensions": Counter(),
-            "test_files": 0,
-            "entry_points": [],
-            "generated_files": 0,
-            "representative_files": [],
-        }
-    return directories[path]
+def _new_stats() -> dict:
+    return {
+        "files": 0,
+        "bytes": 0,
+        "lines": 0,
+        "extensions": Counter(),
+        "test_files": 0,
+        "entry_points": [],
+        "generated_files": 0,
+        "rep_nonempty": [],
+        "rep_any": [],
+        "collapsed_dirs": 0,
+    }
+
+
+def _copy_stats(stats: dict) -> dict:
+    return {
+        **stats,
+        "extensions": Counter(stats["extensions"]),
+        "entry_points": list(stats["entry_points"]),
+        "rep_nonempty": list(stats["rep_nonempty"]),
+        "rep_any": list(stats["rep_any"]),
+    }
+
+
+def _merge_stats(parent: dict, child: dict) -> None:
+    for key in ("files", "bytes", "lines", "test_files", "generated_files"):
+        parent[key] += child[key]
+    parent["extensions"] += child["extensions"]
+    parent["entry_points"].extend(child["entry_points"])
+    parent["collapsed_dirs"] += child["collapsed_dirs"] + 1
 
 
 def _file_data(pin: pathlib.Path, rel: str) -> tuple[int, bytes | None]:
@@ -294,8 +374,10 @@ def _accumulate_file(stats: dict, rel: str, size: int, raw: bytes | None) -> Non
     stats["files"] += 1
     suffix = pathlib.PurePosixPath(rel).suffix.lower()
     stats["extensions"][suffix or "(none)"] += 1
-    if len(stats["representative_files"]) < 3:
-        stats["representative_files"].append(rel)
+    if len(stats["rep_any"]) < 3:
+        stats["rep_any"].append(rel)
+    if size > 0 and len(stats["rep_nonempty"]) < 3:
+        stats["rep_nonempty"].append(rel)
     if TEST_TOKEN.search(rel):
         stats["test_files"] += 1
     if is_entry_point(rel):
@@ -314,13 +396,32 @@ def _accumulate_file(stats: dict, rel: str, size: int, raw: bytes | None) -> Non
     stats["lines"] += text.count("\n") + (0 if text.endswith("\n") or not text else 1)
 
 
+def _representatives(stats: dict) -> list[str]:
+    reps = list(stats["rep_nonempty"])
+    for rel in stats["rep_any"]:
+        if len(reps) >= 3:
+            break
+        if rel not in reps:
+            reps.append(rel)
+    return reps
+
+
 def _finalize(path: str, stats: dict) -> dict:
     extensions = sorted(stats["extensions"].items(), key=lambda item: (-item[1], item[0]))
+    entry_points = sorted(stats["entry_points"])
     return {
         "path": path or ".",
-        **{key: value for key, value in stats.items() if key != "extensions"},
-        "extensions": dict(extensions[:20]),
-        "entry_points": sorted(stats["entry_points"])[:16],
+        "files": stats["files"],
+        "bytes": stats["bytes"],
+        "lines": stats["lines"],
+        "test_files": stats["test_files"],
+        "generated_files": stats["generated_files"],
+        "entry_points": entry_points[:MAX_ENTRY_POINTS],
+        "entry_points_omitted": max(0, len(entry_points) - MAX_ENTRY_POINTS),
+        "representative_files": _representatives(stats),
+        "extensions": dict(extensions[:MAX_EXTENSIONS]),
+        "extensions_other": sum(count for _, count in extensions[MAX_EXTENSIONS:]),
+        "collapsed_dirs": stats["collapsed_dirs"],
     }
 
 
@@ -332,7 +433,12 @@ def excerpt(content: bytes, lo: int | None, hi: int | None, window: int = WINDOW
     else:
         start = max(1, lo - window)
         end = min(len(lines), (hi or lo) + window)
-    numbered = [f"{index}|{lines[index - 1]}" for index in range(start, end + 1)]
+    numbered = []
+    for index in range(start, end + 1):
+        line = lines[index - 1]
+        if len(line) > MAX_EXCERPT_LINE_CHARS:
+            line = line[:MAX_EXCERPT_LINE_CHARS] + EXCERPT_CLIP_MARK
+        numbered.append(f"{index}|{line}")
     return "\n".join(numbered) + ("\n" if numbered else "")
 
 
@@ -360,7 +466,7 @@ def _survey_cache(root: pathlib.Path, state: dict, task: dict, survey) -> dict:
         "target": task["name"],
         "source": survey.source,
         "pin": _pin_digest(state, survey.source),
-        "window": {"version": 1, "lines": WINDOW},
+        "window": {"version": 2, "lines": WINDOW},
         "findings": findings,
     }
 

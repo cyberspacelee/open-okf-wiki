@@ -29,9 +29,12 @@ reply:
     }
 
 Use `"reopen": "plan"` with `target` set to the source name or `workspace`
-when ownership, routing or page boundaries must change. An approved report
-has verdict `approved` and an empty issues list; approval stamps
-machine-confirmed verification — it is not human review.
+when ownership, routing or page boundaries must change — the gate rejects a
+target that names no plan shard. A report may mix plan and page issues:
+reopened shards take their owned pages with them, and the remaining page
+issues reopen individually. An approved report has verdict `approved` and
+an empty issues list; approval stamps machine-confirmed verification — it
+is not human review.
 
 Then run the packet's `complete_command` from its `workdir`.
 
