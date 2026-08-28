@@ -538,7 +538,7 @@ def _dispatch(root: pathlib.Path, state: dict, task: dict) -> dict:
     selected = task["spec"].get("source")
     inputs: list[pathlib.Path] = []
     if phase == "triage":
-        inputs.append(base / "drafts" / "index" / f"{selected.lower()}.json")
+        inputs.append(_index.index_path(base, selected))
     elif phase in ("connect", "plan", "write"):
         evidence = _index.ensure_evidence_cache(root, state)
         inputs.extend(sorted((base / "drafts" / "survey").rglob("*.json")))

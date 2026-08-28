@@ -8,12 +8,18 @@ from collections.abc import Collection
 
 
 def atomic_json(path: pathlib.Path, data: dict) -> None:
+    atomic_text(
+        path,
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+    )
+
+
+def atomic_text(path: pathlib.Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
+            handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
         for attempt in range(5):

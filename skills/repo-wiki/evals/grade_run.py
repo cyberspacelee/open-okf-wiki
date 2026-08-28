@@ -47,7 +47,7 @@ def grade(ws: pathlib.Path) -> list[dict]:
     triage = [
         task for task in state["tasks"].values() if task["phase"] == "triage"
     ]
-    indexes = sorted((run_dir / "drafts/index").glob("*.json"))
+    indexes = sorted((run_dir / "drafts/index").glob("*.md"))
     check(
         "each revision has one bounded index and triage target",
         {task["spec"]["source"] for task in triage} == revision_names

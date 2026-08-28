@@ -97,7 +97,13 @@ def evaluate(base: pathlib.Path) -> dict:
         target = f"triage:{slug}"
         packet = run(ws, "task", "start", target, json_output=True)
         listing = run(ws, "task", "ls", target, ".", json_output=True)
-        if "ls_command" not in packet or not listing["items"]:
+        if (
+            "ls_command" not in packet
+            or not listing["items"]
+            or len(packet["inputs"]) != 1
+            or not packet["inputs"][0].endswith(".md")
+            or not pathlib.Path(packet["inputs"][0]).is_file()
+        ):
             raise RuntimeError("triage dispatch must provide bounded source browsing")
         write(
             run_dir / f"drafts/triage/{slug}.json",

@@ -62,17 +62,55 @@ def test_start_creates_one_triage_target_and_bounded_index_per_source(tmp_path):
     task = state["tasks"]["triage:src"]
     assert task["artifact"] == "drafts/triage/src.json"
     assert (_state.run_dir(root, state["run_id"]) / "drafts/triage").is_dir()
-    index = json.loads(
-        (_state.run_dir(root, state["run_id"]) / "drafts/index/src.json").read_text()
-    )
-    assert index["version"] == 2
-    assert index["source"] == "src"
-    assert index["file_count"] == 2
-    assert sum(item["files"] for item in index["directories"]) == 2
-    assert len(json.dumps(index).encode()) <= 64 * 1024
+    index_path = _state.run_dir(root, state["run_id"]) / "drafts/index/src.md"
+    rendered = index_path.read_text()
+    assert rendered.startswith("# Source Index\n")
+    assert "- version: 2\n" in rendered
+    assert '- source: "src"\n' in rendered
+    assert "- file_count: 2\n" in rendered
+    assert index_path.stat().st_size <= 64 * 1024
+    packet = _state.task_start(root, "triage:src")
+    assert packet["inputs"] == [str(index_path)]
+    index = _index.build_index("src", root / "src", ["app.py", "lib/util.py"])
     forbidden = {"churn", "authors", "gzip_ratio", "name_homogeneity"}
     assert all(not (forbidden & set(item)) for item in index["directories"])
     assert _index.is_protected("openapi.yaml")
+
+
+def test_index_markdown_preserves_all_fields_and_escapes_paths():
+    path = 'odd|`name\npart.py'
+    payload = {
+        "version": 2,
+        "source": "src",
+        "file_count": 7,
+        "truncated": True,
+        "directories": [
+            {
+                "path": path,
+                "files": 7,
+                "bytes": 11,
+                "lines": 13,
+                "test_files": 2,
+                "generated_files": 1,
+                "entry_points": ["pom.xml"],
+                "entry_points_omitted": 3,
+                "representative_files": [path],
+                "extensions": {".py": 7},
+                "extensions_other": 5,
+                "collapsed_dirs": 17,
+                "subtree_files": 19,
+            }
+        ],
+    }
+    assert _index.render_index(payload) == (
+        '# Source Index\n\n- version: 2\n- source: "src"\n- file_count: 7\n'
+        '- truncated: true\n\n## Directories\n\n'
+        'Each record is `stats | extensions | entry_points | representative_files`.\n'
+        'Stats columns are `[path, files, bytes, lines, test_files, generated_files, '
+        'entry_points_omitted, extensions_other, collapsed_dirs, subtree_files]`.\n\n'
+        '- ["odd|`name\\npart.py",7,11,13,2,1,3,5,17,19] | {".py":7} | '
+        '["pom.xml"] | ["odd|`name\\npart.py"]\n'
+    )
 
 
 def test_index_compacts_single_child_chains_and_preserves_forced_splits(tmp_path):

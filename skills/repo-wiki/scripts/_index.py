@@ -18,7 +18,7 @@ import pathlib
 import re
 from collections import Counter
 
-from _files import atomic_json
+from _files import atomic_json, atomic_text
 
 ENTRY_NAMES = (
     "readme.md",
@@ -97,7 +97,7 @@ PROTECTED_TOKEN = re.compile(
 
 
 def index_path(base: pathlib.Path, source: str) -> pathlib.Path:
-    return base / "drafts" / "index" / f"{source.lower()}.json"
+    return base / "drafts" / "index" / f"{source.lower()}.md"
 
 
 def evidence_path(base: pathlib.Path, target: str) -> pathlib.Path:
@@ -118,8 +118,52 @@ def write_source_index(
     )
     payload = build_index(source.name, pin, files, source.survey_split)
     path = index_path(_state.run_dir(root, run_id), source.name)
-    atomic_json(path, payload)
+    rendered = render_index(payload)
+    if len(rendered.encode("utf-8")) > MAX_INDEX_BYTES:
+        raise AssertionError("rendered index exceeds the index byte budget")
+    atomic_text(path, rendered)
     return payload
+
+
+def render_index(payload: dict) -> str:
+    """Render the bounded structural payload for one-pass model reading."""
+
+    def compact(value) -> str:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    lines = [
+        "# Source Index",
+        "",
+        f"- version: {payload['version']}",
+        f"- source: {compact(payload['source'])}",
+        f"- file_count: {payload['file_count']}",
+        f"- truncated: {str(payload['truncated']).lower()}",
+        "",
+        "## Directories",
+        "",
+        "Each record is `stats | extensions | entry_points | representative_files`.",
+        "Stats columns are `[path, files, bytes, lines, test_files, generated_files, "
+        "entry_points_omitted, extensions_other, collapsed_dirs, subtree_files]`.",
+        "",
+    ]
+    for item in payload["directories"]:
+        stats = [
+            item["path"],
+            item["files"],
+            item["bytes"],
+            item["lines"],
+            item["test_files"],
+            item["generated_files"],
+            item["entry_points_omitted"],
+            item["extensions_other"],
+            item["collapsed_dirs"],
+            item["subtree_files"],
+        ]
+        lines.append(
+            f"- {compact(stats)} | {compact(item['extensions'])} | "
+            f"{compact(item['entry_points'])} | {compact(item['representative_files'])}"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def build_index(
