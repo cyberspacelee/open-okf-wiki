@@ -1,9 +1,9 @@
 # Page
 
-Research and author exactly the page named by this Target. Read contract.md,
-the packet's page metadata, `scopes` and `evidence_seeds`, exact dependency
-inputs and matching template in assets/templates/. Write Markdown to the
-packet's `artifact` Attempt Artifact; never return page content in the Handoff.
+Research and author exactly the page named by this Target. Read the packet's
+`contract`, `template`, page metadata, `scopes`, `evidence_seeds` and exact
+dependency inputs. Write Markdown to the packet's `artifact` Attempt Artifact;
+never return page content in the Handoff.
 
 Use `outline` to orient inside the Page Scope declared by `scopes`, `search`
 to locate behavior and pass its returned Locators directly to `read`. Expand
@@ -20,20 +20,33 @@ and planning artifacts are never provenance.
 Start frontmatter like:
 
     ---
-    type: Domain
+    type: Lifecycle
     title: Request lifecycle
     description: Open before changing request state or error handling.
     tags: [requests, lifecycle]
     coverage: full
+    diagrams:
+      - id: request-state
+        kind: state
+        question: How does a request fail and recover?
     sources:
       - id: transition
         resource: API/api-core/src/main/java/com/example/Request.java#L20-L48
     ---
 
 The packet's Page Plan entry owns type, owner, title, description, tags,
-`scopes` and dependencies. The State Gate owns generated metadata;
-review owns verified, status and stale_after.
+`scopes`, dependencies and Diagram Specs. The State Gate overwrites these
+fields from the Plan and owns generated metadata; review owns verified, status
+and stale_after.
 Write none of those trust fields.
+
+Implement every planned Diagram Spec exactly once as a `mermaid` fence. Put
+`%% okf-id: <planned-id>` on its own line and use the planned kind. Add a
+non-empty `accTitle` and `accDescr`; show normal and evidence-backed failure,
+retry, compensation, terminal or optional paths relevant to the diagram's
+question. Immediately follow the fence with a short conclusion or caption
+containing a normal page footnote. Do not put Locators in the fence, use color
+as the only meaning, or repeat every edge in prose.
 
 Every Locator must resolve inside the Page Scope. A source-owned page cites
 only its owner; a workspace-owned page whose `scopes` span multiple Sources
@@ -53,6 +66,6 @@ nothing about unselected tables.
 Run `complete_command` from `workdir`. The State Gate validates and promotes a
 successful Attempt Artifact into the Candidate, then creates its review
 Target. Repair gate issues until it passes; use `task fail` when the Page Plan
-itself prevents an honest page.
+type, split or Diagram Specs prevent an honest page.
 
 Handoff: Attempt Artifact path, gate verdict, gap count.

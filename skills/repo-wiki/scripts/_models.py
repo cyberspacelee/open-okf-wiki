@@ -33,6 +33,20 @@ SourceRole = Literal[
     "extension-surface",
     "evidence-only-dependency",
 ]
+PageType = Literal[
+    "Overview",
+    "Architecture",
+    "Domain",
+    "Flow",
+    "Lifecycle",
+    "DataModel",
+    "Table",
+]
+DiagramKind = Literal["flowchart", "sequence", "state", "er"]
+DiagramId = Annotated[
+    str,
+    StringConstraints(max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$"),
+]
 _WINDOWS_RESERVED = {
     "CON",
     "PRN",
@@ -62,10 +76,36 @@ class EvidenceSource(BaseModel):
     last_modified: date | None = None
 
 
+class DiagramSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: DiagramId
+    kind: DiagramKind
+    question: ShortText
+
+
+def _check_diagram_contract(page_type: str, diagrams: list[DiagramSpec]) -> None:
+    ids = [diagram.id for diagram in diagrams]
+    if len(ids) != len(set(ids)):
+        raise ValueError("diagram ids must be unique within a page")
+    kinds = {diagram.kind for diagram in diagrams}
+    required = {
+        "Architecture": {"flowchart"},
+        "Flow": {"flowchart", "sequence"},
+        "Lifecycle": {"state"},
+        "DataModel": {"er"},
+    }
+    if page_type in {"Overview", "Table"} and diagrams:
+        raise ValueError(f"{page_type} pages must not plan diagrams")
+    if page_type in required and not (kinds & required[page_type]):
+        expected = " or ".join(sorted(required[page_type]))
+        raise ValueError(f"{page_type} pages require a {expected} diagram")
+
+
 class ConceptFrontmatter(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
 
-    type: NonEmpty
+    type: PageType
     title: NonEmpty | None = None
     description: NonEmpty | None = None
     resource: NonEmpty | None = None
@@ -76,12 +116,18 @@ class ConceptFrontmatter(BaseModel):
     stale_after: date | None = None
     coverage: Literal["full", "partial"] | None = None
     language: Literal["en", "zh"] | None = None
+    diagrams: list[DiagramSpec] = Field(max_length=4)
     sources: list[EvidenceSource] = Field(default_factory=list)
 
     @field_validator("verified", mode="before")
     @classmethod
     def normalize_verified(cls, value):
         return [value] if isinstance(value, dict) else value
+
+    @model_validator(mode="after")
+    def diagrams_match_page_type(self):
+        _check_diagram_contract(self.type, self.diagrams)
+        return self
 
 
 def _portable_page_path(value: str) -> str:
@@ -175,7 +221,7 @@ class PagePlanEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     path: PagePath
-    type: ShortText
+    type: PageType
     owner: ShortText
     title: ShortText
     description: ClaimText
@@ -183,6 +229,7 @@ class PagePlanEntry(BaseModel):
     scopes: list[PageScope] = Field(min_length=1, max_length=16)
     evidence_seeds: list[ScopePath] = Field(max_length=3)
     depends_on: list[PagePath] = Field(default_factory=list, max_length=64)
+    diagrams: list[DiagramSpec] = Field(max_length=4)
 
     @field_validator("path", mode="after")
     @classmethod
@@ -193,6 +240,11 @@ class PagePlanEntry(BaseModel):
     @classmethod
     def portable_dependencies(cls, values: list[str]) -> list[str]:
         return [_portable_page_path(value) for value in values]
+
+    @model_validator(mode="after")
+    def diagrams_match_page_type(self):
+        _check_diagram_contract(self.type, self.diagrams)
+        return self
 
 
 class PagePlan(BaseModel):
@@ -251,6 +303,7 @@ class ReviewIssue(BaseModel):
         "routing",
         "coverage",
         "language",
+        "representation",
     ]
     claim: ClaimText
     resolution: ClaimText

@@ -12,7 +12,7 @@ from _files import atomic_json, directory_digest
 from _models import PagePlan, ReviewReport, SourceBrief
 
 VERSION = 2
-CONTRACT = "source-plan-dag"
+CONTRACT = "source-plan-diagram-dag"
 KINDS = {"plan", "page", "review"}
 LOCK_TIMEOUT_SEC = 60
 MAX_SEARCH_RESULTS = 20
@@ -139,7 +139,9 @@ def read(root: pathlib.Path) -> dict | None:
         or not isinstance(state.get("targets"), dict)
         or "tasks" in state
     ):
-        raise StateError("legacy or unsupported run state; source-plan-dag is required")
+        raise StateError(
+            "legacy or unsupported run state; source-plan-diagram-dag is required"
+        )
     for target_id, target in state["targets"].items():
         if target.get("id") != target_id or target.get("kind") not in KINDS:
             raise StateError(f"invalid target state: {target_id}")
@@ -389,6 +391,29 @@ def _reference(target: dict) -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parent.parent / "references" / name
 
 
+def _contract() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parent.parent / "references/contract.md"
+
+
+def _template(state: dict, target: dict) -> pathlib.Path | None:
+    page = target if target["kind"] == "page" else None
+    if target["kind"] == "review":
+        subject = target["spec"].get("subject", "")
+        page = state["targets"].get(subject) if subject.startswith("page:") else None
+    if page is None:
+        return None
+    name = {
+        "Overview": "overview.md",
+        "Architecture": "architecture.md",
+        "Domain": "domain.md",
+        "Flow": "flow.md",
+        "Lifecycle": "lifecycle.md",
+        "DataModel": "data-model.md",
+        "Table": "table.md",
+    }[page["spec"]["type"]]
+    return pathlib.Path(__file__).resolve().parent.parent / "assets/templates" / name
+
+
 def _scope_digests(root: pathlib.Path, state: dict, target: dict) -> list[dict]:
     import _index
     import _workspace
@@ -426,6 +451,7 @@ def _file_digest(path: pathlib.Path) -> str:
 def _input_digest(root: pathlib.Path, state: dict, target: dict) -> str:
     base = run_dir(root, state["run_id"])
     reference = _reference(target)
+    template = _template(state, target)
     dependencies = []
     for target_id in target["depends_on"]:
         dependency = state["targets"].get(target_id)
@@ -436,6 +462,7 @@ def _input_digest(root: pathlib.Path, state: dict, target: dict) -> str:
                 "id": target_id,
                 "output": dependency.get("output_digest"),
                 "page_output": dependency.get("page_output_digest"),
+                "input": dependency.get("last_attempt", {}).get("input_digest"),
             }
         )
     canonical = base / target["artifact"]
@@ -445,6 +472,8 @@ def _input_digest(root: pathlib.Path, state: dict, target: dict) -> str:
         "dependencies": dependencies,
         "language": state["language"],
         "reference": _file_digest(reference),
+        "contract": _file_digest(_contract()),
+        "template": _file_digest(template) if template else None,
         "prior_output": _file_digest(canonical) if canonical.is_file() else None,
         "actor": (
             state.get("review", {}).get("actor")
@@ -515,6 +544,19 @@ def _dispatch_inputs(root: pathlib.Path, state: dict, target: dict) -> list[dict
             if is_source_brief:
                 item["source"] = dependency["spec"]["source"]
             result.append(item)
+    if target["kind"] == "review":
+        subject = state["targets"].get(target["spec"].get("subject"))
+        for dependency_id in subject.get("depends_on", []) if subject else []:
+            dependency = state["targets"][dependency_id]
+            child = dependency.get("spec", {}).get("subject", "")
+            if dependency["kind"] == "review" and child.startswith("page:"):
+                result.append(
+                    {
+                        "role": "dependency_page",
+                        "target": child,
+                        "path": str(base / "candidate" / child.removeprefix("page:")),
+                    }
+                )
     canonical = base / target["artifact"]
     if canonical.is_file():
         result.append(
@@ -559,6 +601,7 @@ def _dispatch(root: pathlib.Path, state: dict, target: dict) -> dict:
         "attempt": attempt["token"],
         "language": state["language"],
         "reference": str(_reference(target)),
+        "contract": str(_contract()),
         "artifact": str(base / attempt["artifact"]),
         "packet_path": str(base / attempt["packet"]),
         "inputs": inputs,
@@ -580,6 +623,9 @@ def _dispatch(root: pathlib.Path, state: dict, target: dict) -> dict:
         ),
         "navigation": {"calls_used": 0, "bytes_used": 0},
     }
+    template = _template(state, target)
+    if template:
+        packet["template"] = str(template)
     if target["kind"] == "review":
         subject = target["spec"]["subject"]
         subject_target = state["targets"][subject]

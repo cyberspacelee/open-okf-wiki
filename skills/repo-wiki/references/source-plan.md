@@ -1,7 +1,7 @@
 # Source Plan
 
-Read contract.md, then investigate exactly the Git/files Source named by the
-packet. Read its `source_index`, use only the packet's single-Source scope and
+Read the packet's `contract`, then investigate exactly the Git/files Source
+named by the packet. Read its `source_index`, use only the packet's single-Source scope and
 bounded `outline`, `search` and `read` commands, and write one Source Brief.
 The Brief routes the Workspace planner; it does not choose Wiki pages.
 

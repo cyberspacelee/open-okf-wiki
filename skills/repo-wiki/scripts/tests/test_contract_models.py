@@ -18,6 +18,13 @@ def page(path: str, *, depends_on=None, **overrides) -> dict:
         "scopes": [scope()],
         "evidence_seeds": ["SourceA/src/core/File.java#L1-L2"],
         "depends_on": depends_on or [],
+        "diagrams": [
+            {
+                "id": "component-map",
+                "kind": "flowchart",
+                "question": "Which components depend on each other?",
+            }
+        ],
         **overrides,
     }
 
@@ -120,6 +127,88 @@ def test_page_plan_entry_keeps_dependency_shape_without_a_mode_field():
         PagePlanEntry.model_validate(page("sourcea/architecture.md", mode="synthesis"))
 
 
+@pytest.mark.parametrize(
+    ("page_type", "diagrams"),
+    [
+        ("Overview", []),
+        (
+            "Architecture",
+            [{"id": "map", "kind": "flowchart", "question": "What depends on what?"}],
+        ),
+        ("Domain", []),
+        (
+            "Flow",
+            [
+                {
+                    "id": "request",
+                    "kind": "sequence",
+                    "question": "Who handles the request?",
+                }
+            ],
+        ),
+        (
+            "Lifecycle",
+            [
+                {
+                    "id": "states",
+                    "kind": "state",
+                    "question": "How does it change state?",
+                }
+            ],
+        ),
+        (
+            "DataModel",
+            [{"id": "relations", "kind": "er", "question": "Which records relate?"}],
+        ),
+        ("Table", []),
+    ],
+)
+def test_page_types_define_their_representation_contract(page_type, diagrams):
+    entry = PagePlanEntry.model_validate(
+        page("a.md", type=page_type, diagrams=diagrams)
+    )
+    assert entry.type == page_type
+
+
+@pytest.mark.parametrize(
+    ("page_type", "diagrams"),
+    [
+        ("Overview", [{"id": "map", "kind": "flowchart", "question": "Why?"}]),
+        ("Architecture", []),
+        ("Flow", [{"id": "states", "kind": "state", "question": "Why?"}]),
+        ("Lifecycle", [{"id": "flow", "kind": "flowchart", "question": "Why?"}]),
+        ("DataModel", []),
+        ("Table", [{"id": "relations", "kind": "er", "question": "Why?"}]),
+    ],
+)
+def test_page_types_reject_the_wrong_representation(page_type, diagrams):
+    with pytest.raises(ValidationError):
+        PagePlanEntry.model_validate(page("a.md", type=page_type, diagrams=diagrams))
+
+
+def test_diagram_specs_are_required_bounded_and_page_local_unique():
+    without_diagrams = page("a.md")
+    without_diagrams.pop("diagrams")
+    with pytest.raises(ValidationError):
+        PagePlanEntry.model_validate(without_diagrams)
+    with pytest.raises(ValidationError, match="diagram ids must be unique"):
+        PagePlanEntry.model_validate(
+            page("a.md", diagrams=page("a.md")["diagrams"] * 2)
+        )
+    with pytest.raises(ValidationError):
+        PagePlanEntry.model_validate(
+            page(
+                "a.md",
+                diagrams=[
+                    {"id": f"map-{index}", "kind": "flowchart", "question": "Why?"}
+                    for index in range(5)
+                ],
+            )
+        )
+    with pytest.raises(ValidationError):
+        PagePlanEntry.model_validate(page("a.md", type="Essay", diagrams=[]))
+
+
 def test_page_plan_entry_scope_bounds():
     with pytest.raises(ValidationError):
         PagePlanEntry.model_validate(page("a.md", scopes=[]))
@@ -209,6 +298,26 @@ def test_review_report_is_subject_and_digest_bound():
         }
     )
     assert report.subject_digest == digest
+
+    representation = {
+        "category": "representation",
+        "claim": "The diagram omits the retry branch.",
+        "resolution": "Add the evidenced retry message.",
+        "reopen_target": "page:a.md",
+    }
+    assert (
+        ReviewReport.model_validate(
+            {
+                "subject": "page:a.md",
+                "subject_digest": digest,
+                "verdict": "changes_requested",
+                "issues": [representation],
+            }
+        )
+        .issues[0]
+        .category
+        == "representation"
+    )
 
     issue = {
         "category": "unsupported-claim",

@@ -78,8 +78,23 @@ _Avoid_: Page Plan shard, Source Wiki, file inventory
 
 **Page Plan**:
 The bounded Workspace decision that assigns concept paths, owners, routing
-metadata, Page Scopes, evidence seeds and child dependencies.
+metadata, Page Scopes, evidence seeds, Diagram Specs and child dependencies.
 _Avoid_: Suggested outline, Source Brief
+
+**Page Type**:
+The closed semantic class of a planned concept page, selected by the reader
+question the page answers.
+_Avoid_: Template name, arbitrary frontmatter label
+
+**Diagram Spec**:
+A Page Plan decision naming one page-local visual question by stable id and
+kind; the page supplies its evidence-backed expression.
+_Avoid_: Diagram body, rendered image, graph sidecar
+
+**Representation Test**:
+The admission check that chooses prose, table or diagram according to which
+form minimizes reconstruction of an admitted relationship.
+_Avoid_: Mermaid quota, visual decoration
 
 **Plan Review**:
 Independent verification of domain recall, concept boundaries and routing,

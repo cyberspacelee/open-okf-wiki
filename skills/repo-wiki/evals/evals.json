@@ -49,6 +49,8 @@
         "Chinese runs use Chinese page titles and routing descriptions",
         "review:plan catches domain, boundary and language defects before Page fan-out",
         "review routes Page Plan-owned metadata defects back to plan:workspace",
+        "Plan separates Domain, Flow and Lifecycle questions and review audits representation semantics",
+        "Chinese runs localize Diagram Spec questions",
         "a repair review converges without reopening already-resolved issues",
         "the published architecture and overview connect all four repositories"
       ]

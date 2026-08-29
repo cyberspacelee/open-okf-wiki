@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import unquote, urlparse
 
+from _diagram import validate as validate_diagrams
 from _files import directory_digest
 from _frontmatter import parse_file, render
 from _markdown import extract
@@ -445,6 +446,21 @@ def _validate_page_plan(
                 "plan must include architecture.md",
             )
         )
+    roots = {page.path: page for page in plan.pages}
+    for root_path, page_type in (
+        ("overview.md", "Overview"),
+        ("architecture.md", "Architecture"),
+    ):
+        root_page = roots.get(root_path)
+        if root_page is not None and root_page.type != page_type:
+            issues.append(
+                issue(
+                    "error",
+                    "root-page-type-invalid",
+                    str(path),
+                    f"{root_path} must use type {page_type}",
+                )
+            )
     for page in plan.pages:
         if pathlib.PurePosixPath(page.path).name in {"index.md", "log.md"}:
             issues.append(issue("error", "reserved-page", str(path), page.path))
@@ -566,7 +582,12 @@ def _validate_page_target(
     root: pathlib.Path, state: dict, task: dict, path: pathlib.Path
 ) -> list[Issue]:
     issues = validate_page(
-        root, state, path, owner=task["spec"].get("owner"), published=False
+        root,
+        state,
+        path,
+        owner=task["spec"].get("owner"),
+        expected=task["spec"],
+        published=False,
     )
     parsed = parse_file(path)
     if parsed.errors:
@@ -620,6 +641,7 @@ def render_generated_page(
             "title": spec["title"],
             "description": spec["description"],
             "tags": spec["tags"],
+            "diagrams": spec["diagrams"],
             "language": state["language"],
             "status": "draft",
             "generated": {"by": state["producer"], "at": datetime.now(timezone.utc)},
@@ -655,6 +677,7 @@ def validate_page(
     path: pathlib.Path,
     *,
     owner: str | None = None,
+    expected: dict | None = None,
     published: bool = False,
 ) -> list[Issue]:
     parsed = parse_file(path)
@@ -671,6 +694,21 @@ def validate_page(
             for message in model_errors(exc)
         ]
     issues = []
+    if expected is not None:
+        actual_diagrams = [
+            diagram.model_dump(mode="json") for diagram in frontmatter.diagrams
+        ]
+        if frontmatter.type != expected.get("type") or actual_diagrams != expected.get(
+            "diagrams"
+        ):
+            issues.append(
+                issue(
+                    "error",
+                    "page-plan-metadata-mismatch",
+                    str(path),
+                    "page type and diagrams must exactly match the Page Plan",
+                )
+            )
     for field in ("title", "description", "coverage", "language", "generated"):
         if getattr(frontmatter, field) is None:
             issues.append(
@@ -692,6 +730,8 @@ def validate_page(
             )
         )
     structure = extract(parsed.body)
+    for code, message, line in validate_diagrams(structure, frontmatter.diagrams):
+        issues.append(issue("error", code, str(path), message, line))
     refs = {ref for ref, _ in structure.footnote_refs}
     defs = set(structure.footnote_defs)
     source_ids = [source.id for source in frontmatter.sources]
@@ -795,8 +835,16 @@ def validate_candidate(
     for path in pages:
         rel = path.relative_to(candidate).as_posix()
         owner = task_by_path.get(rel, {}).get("spec", {}).get("owner")
+        expected = task_by_path.get(rel, {}).get("spec")
         issues.extend(
-            validate_page(root, state, path, owner=owner, published=published)
+            validate_page(
+                root,
+                state,
+                path,
+                owner=owner,
+                expected=expected,
+                published=published,
+            )
         )
     issues.extend(_link_issues(candidate, pages, page_set))
     return issues
@@ -909,6 +957,11 @@ def validate_bundle(path: pathlib.Path) -> list[Issue]:
                                 "published concepts must be stable, verified and have stale_after",
                             )
                         )
+                    structure = extract(parsed.body)
+                    for code, message, line in validate_diagrams(
+                        structure, concept.diagrams
+                    ):
+                        issues.append(issue("error", code, str(page), message, line))
                 except ValidationError as exc:
                     issues.extend(
                         issue("error", "frontmatter-invalid", str(page), message)

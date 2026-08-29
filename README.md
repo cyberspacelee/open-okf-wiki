@@ -8,8 +8,8 @@ publish OKF v0.2 generations.
 ## Install
 
 Prerequisites: Git, [uv](https://docs.astral.sh/uv/) and Node.js 22.20+ for the
-cross-agent skills installer. Until this release reaches the default branch,
-clone its published branch explicitly:
+skills installer and pinned Mermaid syntax gate. Until this release reaches
+the default branch, clone its published branch explicitly:
 
 ```text
 git clone --depth 1 --branch v2/skill-harness https://github.com/cyberspacelee/open-okf-wiki.git open-okf-wiki
@@ -20,6 +20,7 @@ scope. This example assumes the two repositories are siblings:
 
 ```text
 npx skills@latest add ../open-okf-wiki/skills/repo-wiki --skill repo-wiki --agent codex --copy -y
+npm ci --prefix .agents/skills/repo-wiki
 ```
 
 Use `--agent claude-code` for Claude Code, or omit `--agent` to let the
@@ -131,6 +132,8 @@ design behaves consistently on Windows, Linux and macOS without symlinks.
   recorded Git commit; line ranges must exist at that revision.
 - Frontmatter is parsed as bounded YAML with duplicate keys and aliases
   rejected, then validated by Pydantic.
+- Page types and planned Diagram Specs are machine-readable; pinned Mermaid
+  syntax, accessibility fields and adjacent evidence captions are gated.
 - generated, verified, status and stale_after make lifecycle and trust
   machine-readable.
 - Unchanged artifacts and pages are reused only from Git commits, cited blob
@@ -147,6 +150,7 @@ design behaves consistently on Windows, Linux and macOS without symlinks.
 
 Cross-platform deterministic QA:
 
+    npm ci --prefix skills/repo-wiki
     uv run --with pytest --with pydantic --with PyYAML --with "psycopg[binary]" pytest -q skills/repo-wiki/scripts/tests
     uv run skills/repo-wiki/evals/run_cli_e2e.py
 

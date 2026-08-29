@@ -1,19 +1,20 @@
 ---
 type: Overview
 title: "{title}"
-description: "{routing: what this wiki covers, first stop for any task}"
+description: "{routing: what this wiki covers and where a task starts}"
 coverage: full
 resource: "{optional workspace URI}"
 tags: [overview]
+diagrams: []
 sources: []
 ---
 
 ## Scope and boundaries
 
-What the system does and does not cover; external actors at the boundary.
-Link the architecture page for structure — do not repeat it.
+State what the system does and does not cover. Link Architecture for structure;
+an Overview does not contain diagrams or repeat topology.
 
 ## Task entry points
 
-Concrete maintenance, debugging, extension, and operations intents; each
-links only the pages needed to start that task.
+Use a compact table of concrete maintenance, debugging, extension and
+operations intents. Each row links only the pages needed to start that task.

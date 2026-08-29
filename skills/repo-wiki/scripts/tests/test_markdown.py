@@ -102,6 +102,17 @@ def test_code_block_excluded():
 
     fn_ids = [fid for fid, _ in s.footnote_refs]
     assert "notref" not in fn_ids
+    assert s.fences[0].language == "python"
+    assert s.fences[0].start_line == 4
+    assert s.fences[0].end_line == 9
+    assert "## Not a heading" in s.fences[0].content
+
+
+def test_unclosed_fence_is_recorded():
+    s = extract("## Diagram\n\n```mermaid\nflowchart LR\nA-->B\n")
+    assert len(s.fences) == 1
+    assert s.fences[0].language == "mermaid"
+    assert s.fences[0].end_line is None
 
 
 def test_links_internal_only():

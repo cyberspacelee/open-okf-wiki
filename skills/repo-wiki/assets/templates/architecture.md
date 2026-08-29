@@ -1,36 +1,30 @@
 ---
 type: Architecture
 title: "{title}"
-description: "{routing: structural map — modules, boundaries, failure paths}"
+description: "{routing: which boundaries and propagation paths this page answers}"
 coverage: full
 resource: "{optional asset URI}"
 tags: [architecture]
+diagrams: []
 sources: []
 ---
 
-## Modules and responsibilities
+## Responsibility map
 
-Source-level modules and external systems, each with its responsibility and
-the surface it exposes to others.
+Name the participating modules or systems and the responsibility each owns.
+Render every planned flowchart here; group modules by Source or trust boundary.
 
-## Boundaries and dependencies
+## Boundary contracts
 
-Ownership, allowed dependency directions, trust or process boundaries, and
-the contracts that cross them.
-
-For every cross-source boundary, link to both source-owned pages. Markdown
-links are graph edges; do not duplicate either page's content here.
+For each boundary, state the allowed direction and the contract that crosses it.
+Link source-owned pages instead of copying them.
 
 ## Failure and change propagation
 
-How key failures propagate; which modules, contracts, and validation paths a
-structural change touches.
-
-## Diagram
-
-Mermaid flowchart; node IDs are source identifiers.
+Use a compact table for the initiating failure or change, propagation path and
+affected validation surface.
 
 ## Decisions
 
-Link existing ADRs. Without one, state the observed decision with a locator —
-never invent its rationale (see contract: coverage honesty).
+Link existing ADRs. Without one, state only the observed decision with a
+Locator; never invent rationale.

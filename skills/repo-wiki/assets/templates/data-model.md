@@ -1,22 +1,31 @@
 ---
 type: DataModel
 title: "{title}"
-description: "{routing: which database assets this page routes to}"
+description: "{routing: which entity relationships and ownership this page answers}"
 coverage: full
 resource: "{canonical schema URI}"
 tags: [data-model]
+diagrams: []
 sources: []
 ---
 
+## Relationship model
+
+Render every planned ER diagram with only entities in the selected scope.
+Show relationship names, cardinality and optionality; do not imply that
+unselected tables were inspected.
+
 ## Ownership and boundaries
 
-Which source owns each selected schema and where application boundaries meet it.
+State which Source owns each selected entity and where code or service
+boundaries meet persistence.
 
 ## Selected tables
 
-Link each generated table page. Record omitted areas as gaps; never imply that
-unselected tables were inspected.
+Link only Table pages received as `dependency_page` inputs. Keep columns out
+of this page; do not invent a page for an unplanned table.
 
-## Relationships
+## Code-to-data mapping
 
-Cross-table and code-to-data relationships supported by catalog or source evidence.
+Use a compact table for the write/read path, lifecycle event and owning code
+concept. Record omitted evidence as gaps.

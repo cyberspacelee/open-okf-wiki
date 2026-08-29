@@ -75,6 +75,10 @@ def complete(cwd: pathlib.Path, target: str, content: str) -> dict:
 def finish(cwd: pathlib.Path, target: str, packet: dict, content: str) -> dict:
     if not all(key in packet for key in ("attempt", "artifact", "complete_command")):
         raise RuntimeError(f"incomplete dispatch packet for {target}: {sorted(packet)}")
+    if "contract" not in packet or (
+        target.startswith("page:") and "template" not in packet
+    ):
+        raise RuntimeError(f"dispatch packet omitted contract assets for {target}")
     replayed = run(cwd, "task", "packet", target, "--attempt", packet["attempt"])
     if replayed != packet:
         raise RuntimeError(f"persisted packet changed for {target}")
@@ -123,7 +127,16 @@ def brief(source_name: str, counterpart: str) -> str:
     )
 
 
-def page(title: str, refs: list[tuple[str, str]], links: str) -> str:
+def page(
+    title: str,
+    refs: list[tuple[str, str]],
+    links: str,
+    *,
+    diagram: tuple[str, str] | None = (
+        "component-map",
+        "flowchart LR\n    Entry --> Implementation",
+    ),
+) -> str:
     sources = "\n".join(
         f"  - id: {source_id}\n    resource: {resource}" for source_id, resource in refs
     )
@@ -131,13 +144,25 @@ def page(title: str, refs: list[tuple[str, str]], links: str) -> str:
     definitions = "\n".join(
         f"[^{source_id}]: revision-bound entry point" for source_id, _ in refs
     )
+    visual = (
+        "```mermaid\n"
+        f"%% okf-id: {diagram[0]}\n"
+        f"{diagram[1]}\n"
+        f"    accTitle: {title} representation\n"
+        "    accDescr: The diagram answers its planned relationship question.\n"
+        "```\n\n"
+        f"The diagram summarizes the planned relationship.[^{refs[0][0]}]\n\n"
+        if diagram
+        else ""
+    )
     return (
         "---\n"
         f"type: Architecture\ntitle: {title}\n"
         "description: Open before changing this boundary.\n"
         "tags: [architecture]\ncoverage: full\n"
         f"sources:\n{sources}\n---\n\n"
-        f"## Responsibility\n\n{title} is routed by pinned entry points. {citations}\n\n"
+        f"## Responsibility\n\n{visual}"
+        f"{title} is routed by pinned entry points. {citations}\n\n"
         f"## Related concepts\n\n{links}\n\n{definitions}\n"
     )
 
@@ -234,26 +259,58 @@ def evaluate(base: pathlib.Path) -> dict:
     plan = {
         "pages": [
             {
-                "path": "data/api/architecture.md",
-                "type": "Architecture",
+                "path": "data/api/request-flow.md",
+                "type": "Flow",
                 "owner": "API",
-                "title": "API architecture",
-                "description": "Open before API changes.",
-                "tags": ["architecture"],
+                "title": "API request flow",
+                "description": "Open before changing request interactions.",
+                "tags": ["flow"],
                 "scopes": [{"source": "API", "paths": ["."]}],
                 "evidence_seeds": ["API/src/main/java/example/App.java#L1-L2"],
                 "depends_on": [],
+                "diagrams": [
+                    {
+                        "id": "request-flow",
+                        "kind": "sequence",
+                        "question": "How does a request cross participants?",
+                    }
+                ],
             },
             {
-                "path": "data/webui/architecture.md",
-                "type": "Architecture",
+                "path": "data/webui/app-lifecycle.md",
+                "type": "Lifecycle",
                 "owner": "WebUI",
-                "title": "Web architecture",
-                "description": "Open before web changes.",
-                "tags": ["architecture"],
+                "title": "Web application lifecycle",
+                "description": "Open before changing application state.",
+                "tags": ["lifecycle"],
                 "scopes": [{"source": "WebUI", "paths": ["."]}],
                 "evidence_seeds": ["WebUI/src/main/java/example/App.java#L1-L2"],
                 "depends_on": [],
+                "diagrams": [
+                    {
+                        "id": "app-state",
+                        "kind": "state",
+                        "question": "How does the application change state?",
+                    }
+                ],
+            },
+            {
+                "path": "data/api/data-model.md",
+                "type": "DataModel",
+                "owner": "API",
+                "title": "API data model",
+                "description": "Open before changing stored request relationships.",
+                "tags": ["data-model"],
+                "scopes": [{"source": "API", "paths": ["."]}],
+                "evidence_seeds": ["API/src/main/java/example/App.java#L1-L2"],
+                "depends_on": [],
+                "diagrams": [
+                    {
+                        "id": "request-records",
+                        "kind": "er",
+                        "question": "How do application and request records relate?",
+                    }
+                ],
             },
             {
                 "path": "architecture.md",
@@ -268,8 +325,16 @@ def evaluate(base: pathlib.Path) -> dict:
                 ],
                 "evidence_seeds": [],
                 "depends_on": [
-                    "data/api/architecture.md",
-                    "data/webui/architecture.md",
+                    "data/api/request-flow.md",
+                    "data/webui/app-lifecycle.md",
+                    "data/api/data-model.md",
+                ],
+                "diagrams": [
+                    {
+                        "id": "component-map",
+                        "kind": "flowchart",
+                        "question": "How do the Sources depend on each other?",
+                    }
                 ],
             },
             {
@@ -285,6 +350,7 @@ def evaluate(base: pathlib.Path) -> dict:
                 ],
                 "evidence_seeds": [],
                 "depends_on": ["architecture.md"],
+                "diagrams": [],
             },
         ],
         "gaps": [],
@@ -315,8 +381,9 @@ def evaluate(base: pathlib.Path) -> dict:
         raise RuntimeError(f"plan review did not bind: {review}")
     approve(ws, "review:plan")
     leaves = {
-        "page:data/api/architecture.md",
-        "page:data/webui/architecture.md",
+        "page:data/api/request-flow.md",
+        "page:data/webui/app-lifecycle.md",
+        "page:data/api/data-model.md",
     }
     status = run(ws, "run", "status")
     if ready_ids(status) != leaves:
@@ -326,25 +393,50 @@ def evaluate(base: pathlib.Path) -> dict:
     web_ref = "WebUI/src/main/java/example/App.java#L1-L2"
     complete(
         ws,
-        "page:data/api/architecture.md",
-        page("API architecture", [("api", api_ref)], "[Workspace](/architecture.md)"),
+        "page:data/api/request-flow.md",
+        page(
+            "API request flow",
+            [("api", api_ref)],
+            "[Workspace](/architecture.md)",
+            diagram=("request-flow", "sequenceDiagram\n    API->>WebUI: Request"),
+        ),
     )
     complete(
         ws,
-        "page:data/webui/architecture.md",
-        page("Web architecture", [("web", web_ref)], "[Workspace](/architecture.md)"),
+        "page:data/webui/app-lifecycle.md",
+        page(
+            "Web application lifecycle",
+            [("web", web_ref)],
+            "[Workspace](/architecture.md)",
+            diagram=("app-state", "stateDiagram-v2\n    [*] --> Ready"),
+        ),
+    )
+    complete(
+        ws,
+        "page:data/api/data-model.md",
+        page(
+            "API data model",
+            [("api", api_ref)],
+            "[Workspace](/architecture.md)",
+            diagram=(
+                "request-records",
+                "erDiagram\n    APPLICATION ||--o{ REQUEST : handles",
+            ),
+        ),
     )
     if "page:architecture.md" in ready_ids(run(ws, "run", "status")):
         raise RuntimeError("parent page became ready before child review")
 
     expected_reviews = {
-        "review:data/api/architecture.md",
-        "review:data/webui/architecture.md",
+        "review:data/api/request-flow.md",
+        "review:data/webui/app-lifecycle.md",
+        "review:data/api/data-model.md",
     }
     if ready_ids(run(ws, "run", "status")) != expected_reviews:
         raise RuntimeError(f"review session did not bind: {review}")
-    approve(ws, "review:data/api/architecture.md")
-    approve(ws, "review:data/webui/architecture.md")
+    approve(ws, "review:data/api/request-flow.md")
+    approve(ws, "review:data/webui/app-lifecycle.md")
+    approve(ws, "review:data/api/data-model.md")
     if ready_ids(run(ws, "run", "status")) != {"page:architecture.md"}:
         raise RuntimeError("Machine-confirmed children did not unlock architecture.md")
 
@@ -354,8 +446,9 @@ def evaluate(base: pathlib.Path) -> dict:
         page(
             "Architecture",
             [("api", api_ref), ("web", web_ref)],
-            "[API](/data/api/architecture.md) "
-            "[Web](/data/webui/architecture.md) "
+            "[API flow](/data/api/request-flow.md) "
+            "[Web lifecycle](/data/webui/app-lifecycle.md) "
+            "[Data model](/data/api/data-model.md) "
             "[Overview](/overview.md)",
         ),
     )
@@ -372,6 +465,7 @@ def evaluate(base: pathlib.Path) -> dict:
             "Overview",
             [("api", api_ref), ("web", web_ref)],
             "[Architecture](/architecture.md)",
+            diagram=None,
         ),
     )
     approve(ws, "review:overview.md")
@@ -382,9 +476,8 @@ def evaluate(base: pathlib.Path) -> dict:
     if validation["errors"]:
         raise RuntimeError(f"published validation failed: {validation}")
 
-    manifest = json.loads(
-        (pathlib.Path(published["path"]) / ".okf-manifest.json").read_text()
-    )
+    published_path = pathlib.Path(published["path"])
+    manifest = json.loads((published_path / ".okf-manifest.json").read_text())
     page_digests = {
         path: entry.get("output_digest") for path, entry in manifest["pages"].items()
     }

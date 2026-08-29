@@ -40,6 +40,7 @@ skills/repo-wiki/evals/                # tier-1 deterministic e2e + tier-2 live-
 ## Verify
 
 ```text
+npm ci --prefix skills/repo-wiki
 cd skills/repo-wiki/scripts && uv run --with pytest --with "pydantic>=2.12" \
   --with PyYAML --with "psycopg[binary]" -m pytest tests -q
 uv run skills/repo-wiki/evals/run_cli_e2e.py     # deterministic lifecycle e2e

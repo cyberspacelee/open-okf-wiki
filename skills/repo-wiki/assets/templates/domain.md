@@ -1,27 +1,29 @@
 ---
 type: Domain
 title: "{title}"
-description: "{routing: which capability this owns, when to open it}"
+description: "{routing: which capability this owns and when to open it}"
 coverage: full
 resource: "{optional asset URI}"
 tags: [domain]
+diagrams: []
 sources: []
 ---
 
-## Responsibility and boundary
+## Responsibility and public surface
 
-What this domain owns, its public surface, and where its boundary runs.
+State what this capability owns, what it exposes and where its boundary ends.
 
 ## Invariants and rules
 
-Constraints the code enforces, with the enforcement locator.
-
-## Lifecycle and failure paths
-
-How the domain's central objects change state and how failures surface.
+Use a compact table for each rule, enforcement point and observable failure.
 
 ## Concepts
 
-Sub-concepts worth knowing, each one paragraph with locators. A concept gets
-its own H3 here — not its own page — unless its knowledge alone fails the
-Grep Test.
+Define only terms whose meaning is specific to this capability. Link independent
+Flows and Lifecycles instead of embedding their full execution prose here.
+
+## Change points
+
+Route common maintenance intents to the relevant enforcement or extension
+surface. Render a planned diagram only when it answers one bounded question
+that does not justify a separate Flow or Lifecycle page.

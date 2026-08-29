@@ -102,9 +102,16 @@ def plan_page(
     source_path: str = "app.py",
     depends_on: list[str] | None = None,
 ) -> dict:
+    page_type = (
+        "Architecture"
+        if "architecture" in path
+        else "Overview"
+        if path == "overview.md"
+        else "Domain"
+    )
     return {
         "path": path,
-        "type": "Architecture" if "architecture" in path else "Overview",
+        "type": page_type,
         "owner": owner,
         "title": pathlib.PurePosixPath(path).stem.title(),
         "description": "Open before changing this behavior.",
@@ -114,6 +121,17 @@ def plan_page(
             [] if owner == "workspace" else [f"{source}/{source_path}#L1-L1"]
         ),
         "depends_on": depends_on or [],
+        "diagrams": (
+            [
+                {
+                    "id": "component-map",
+                    "kind": "flowchart",
+                    "question": "Which components depend on each other?",
+                }
+            ]
+            if page_type == "Architecture"
+            else []
+        ),
     }
 
 
@@ -156,7 +174,23 @@ def chain_plan() -> dict:
     )
 
 
-def page_text(resource: str = "src/app.py#L1-L2") -> str:
+def page_text(resource: str = "src/app.py#L1-L2", *, diagram: bool = False) -> str:
+    visual = (
+        """\
+```mermaid
+%% okf-id: component-map
+flowchart LR
+    accTitle: Component dependency map
+    accDescr: The entry point depends on the implementation.
+    Entry --> Implementation
+```
+
+The component map shows the dependency direction.[^code]
+
+"""
+        if diagram
+        else ""
+    )
     return f"""---
 type: Overview
 title: Temporary
@@ -169,6 +203,7 @@ sources:
 
 ## Responsibility
 
+{visual}
 The selected behavior is implemented at the cited entry point.[^code]
 
 [^code]: Source entry point
@@ -177,6 +212,9 @@ The selected behavior is implemented at the cited entry point.[^code]
 
 def submit(root: pathlib.Path, target_id: str, content: str) -> tuple[dict, dict]:
     packet = _state.task_start(root, target_id)
+    assert pathlib.Path(packet["contract"]).name == "contract.md"
+    if target_id.startswith("page:"):
+        assert pathlib.Path(packet["template"]).is_file()
     write(pathlib.Path(packet["artifact"]), content)
     result = _state.task_complete(root, target_id, packet["attempt"])
     return packet, result
@@ -191,6 +229,9 @@ def approve_review_target(root: pathlib.Path, target_id: str) -> tuple[dict, dic
     if "review" not in state:
         _state.review_start(root, "repo-wiki/reviewer", "review-session")
     packet = _state.task_start(root, target_id)
+    assert pathlib.Path(packet["contract"]).name == "contract.md"
+    if packet["subject"].startswith("page:"):
+        assert pathlib.Path(packet["template"]).is_file()
     report = {
         "subject": packet["subject"],
         "subject_digest": packet["subject_digest"],
@@ -239,12 +280,29 @@ def target_statuses(root: pathlib.Path) -> dict[str, str]:
     return {item["id"]: item["status"] for item in _state.status(root)["targets"]}
 
 
+@pytest.mark.parametrize(
+    ("page_type", "template"),
+    [
+        ("Overview", "overview.md"),
+        ("Architecture", "architecture.md"),
+        ("Domain", "domain.md"),
+        ("Flow", "flow.md"),
+        ("Lifecycle", "lifecycle.md"),
+        ("DataModel", "data-model.md"),
+        ("Table", "table.md"),
+    ],
+)
+def test_every_page_type_dispatches_its_exact_template(page_type, template):
+    target = {"kind": "page", "spec": {"type": page_type}}
+    assert _state._template({}, target).name == template
+
+
 def test_run_start_exposes_only_workspace_plan(tmp_path):
     root, _ = workspace(tmp_path)
 
     result = _state.start_run(root, "repo-wiki/test", "producer-session")
 
-    assert result["contract"] == "source-plan-dag"
+    assert result["contract"] == "source-plan-diagram-dag"
     assert result["ready_targets"] == ["plan:workspace"]
     assert result["targets"] == [
         {"id": "plan:workspace", "kind": "plan", "status": "pending"}
@@ -260,7 +318,7 @@ def test_legacy_run_contract_is_rejected_without_migration(tmp_path):
     state["contract"] = "target-dag"
     write(path, json.dumps(state))
 
-    with pytest.raises(_state.StateError, match="source-plan-dag is required"):
+    with pytest.raises(_state.StateError, match="source-plan-diagram-dag is required"):
         _state.read(root)
 
 
@@ -448,6 +506,7 @@ def test_plan_review_blocks_pages_and_follow_up_receives_prior_report(tmp_path):
         ("roots", {"overview-missing", "architecture-missing"}),
         ("scope", {"scope-path-invalid"}),
         ("cycle", {"schema-invalid"}),
+        ("root-type", {"root-page-type-invalid"}),
     ],
 )
 def test_plan_gate_rejects_invalid_roots_scopes_and_dag(tmp_path, case, expected):
@@ -463,6 +522,9 @@ def test_plan_gate_rejects_invalid_roots_scopes_and_dag(tmp_path, case, expected
             plan_page("architecture.md", depends_on=["overview.md"]),
             plan_page("overview.md", depends_on=["architecture.md"]),
         )
+    elif case == "root-type":
+        payload = root_plan()
+        payload["pages"][1]["type"] = "Domain"
 
     _, result = submit_plan(root, payload)
 
@@ -551,6 +613,12 @@ def test_review_is_page_bound_and_unlocks_parent_without_branch_barrier(tmp_path
     assert "page:architecture.md" in approved["state"]["ready_targets"]
     assert "page:data/src/branch.md" in approved["state"]["ready_targets"]
 
+    assert submit(root, "page:architecture.md", page_text(diagram=True))[1]["ok"]
+    parent_review = _state.task_start(root, "review:architecture.md")
+    assert {(item["role"], item.get("target")) for item in parent_review["inputs"]} >= {
+        ("dependency_page", f"page:{leaf}")
+    }
+
 
 def test_review_page_reopen_keeps_all_ancestors_blocked(tmp_path):
     root, _ = workspace(tmp_path)
@@ -592,12 +660,12 @@ def test_two_review_repair_rounds_pause_for_human_decision(tmp_path):
     assert submit_plan(root, root_plan())[1]["ok"]
     assert approve_plan_review(root)[1]["ok"]
     page = "architecture.md"
-    assert submit(root, f"page:{page}", page_text())[1]["ok"]
+    assert submit(root, f"page:{page}", page_text(diagram=True))[1]["ok"]
 
     first, changed = request_changes(root, f"review:{page}", f"page:{page}")
     assert first["review_mode"] == "initial"
     assert changed["review_round"] == 1 and not changed["paused"]
-    assert submit(root, f"page:{page}", page_text())[1]["ok"]
+    assert submit(root, f"page:{page}", page_text(diagram=True))[1]["ok"]
     second, changed = request_changes(root, f"review:{page}", f"page:{page}")
 
     assert second["review_mode"] == "follow_up"
@@ -619,7 +687,7 @@ def test_plan_metadata_repair_preserves_page_body_and_reopens_only_review(tmp_pa
     assert submit_plan(root, payload)[1]["ok"]
     assert approve_plan_review(root)[1]["ok"]
     page = "architecture.md"
-    assert submit(root, f"page:{page}", page_text())[1]["ok"]
+    assert submit(root, f"page:{page}", page_text(diagram=True))[1]["ok"]
     before = _state.read(root)["targets"][f"page:{page}"]
     before_digest = before["output_digest"]
     before_input = before["last_attempt"]["input_digest"]
@@ -765,7 +833,7 @@ def test_candidate_tamper_is_detected_before_more_work(tmp_path):
     run = start(root)
     assert submit_plan(root, root_plan())[1]["ok"]
     assert approve_plan_review(root)[1]["ok"]
-    assert submit(root, "page:architecture.md", page_text())[1]["ok"]
+    assert submit(root, "page:architecture.md", page_text(diagram=True))[1]["ok"]
     page = run / "candidate/architecture.md"
     write(page, page.read_text() + "\ntampered\n")
 
@@ -841,7 +909,11 @@ def test_publication_requires_every_page_to_be_machine_confirmed(tmp_path):
     assert submit_plan(root, root_plan())[1]["ok"]
     assert approve_plan_review(root)[1]["ok"]
     for page in ("architecture.md", "overview.md"):
-        assert submit(root, f"page:{page}", page_text())[1]["ok"]
+        assert submit(
+            root,
+            f"page:{page}",
+            page_text(diagram=page == "architecture.md"),
+        )[1]["ok"]
     _state.review_start(root, "repo-wiki/reviewer", "review-session")
 
     approve_review(root, "architecture.md")

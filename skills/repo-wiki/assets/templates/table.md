@@ -5,6 +5,7 @@ description: "{routing: what this table stores and when to inspect it}"
 coverage: full
 resource: "{canonical table URI}"
 tags: [data-model, table]
+diagrams: []
 sources: []
 ---
 
@@ -18,9 +19,11 @@ sources: []
 
 ## Keys and relationships
 
-Primary key and foreign keys from the captured catalog.
+Record keys from the captured Catalog. A Table page does not contain diagrams
+or try to discover parent pages; a later DataModel parent links its Table
+children.
 
 ## Usage
 
-Only evidence-backed application ownership and lifecycle. Link code concepts
-instead of copying their content.
+State only evidence-backed application ownership and lifecycle. Link code
+concepts instead of copying them.

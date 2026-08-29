@@ -303,6 +303,19 @@ def grade(ws: pathlib.Path) -> list[dict]:
             len(planned) <= 24,
             f"planned_pages={len(planned)}",
         )
+        planned_types = {entry.get("type") for entry in planned.values()}
+        missing_types = {
+            "Overview",
+            "Architecture",
+            "Domain",
+            "Flow",
+            "Lifecycle",
+        } - planned_types
+        check(
+            "Kill Bill separates capability, flow and lifecycle questions",
+            not missing_types,
+            f"missing_types={sorted(missing_types)}",
+        )
         output_chars = sum(
             len(str(item.get("aggregated_output", item.get("output", ""))))
             for item in commands
@@ -316,12 +329,22 @@ def grade(ws: pathlib.Path) -> list[dict]:
         cjk = re.compile(r"[\u3400-\u9fff]")
         titles = [entry.get("title", "") for entry in planned.values()]
         descriptions = [entry.get("description", "") for entry in planned.values()]
+        questions = [
+            diagram.get("question", "")
+            for entry in planned.values()
+            for diagram in entry.get("diagrams", [])
+        ]
         check(
             "Chinese plans use Chinese routing metadata",
             all(cjk.search(text) for text in descriptions)
             and sum(bool(cjk.search(text)) for text in titles)
             >= max(1, len(titles) * 4 // 5),
             f"titles={len(titles)}, descriptions={len(descriptions)}",
+        )
+        check(
+            "Chinese plans localize diagram questions",
+            bool(questions) and all(cjk.search(text) for text in questions),
+            f"questions={len(questions)}",
         )
     validation = subprocess.run(
         [

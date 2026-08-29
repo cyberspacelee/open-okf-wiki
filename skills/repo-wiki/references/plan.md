@@ -1,7 +1,8 @@
 # Plan
 
-Read contract.md, then build the one bounded Workspace Page Plan. This Target
-is the only writer of page paths, owners, scopes and dependencies.
+Read the packet's `contract`, then build the one bounded Workspace Page Plan.
+This Target is the only writer of page paths, owners, scopes, dependencies and
+Diagram Specs.
 
 When the packet has `source_brief` inputs, read every Brief before navigating
 Pins. Account for every reported role, concept, connection and gap; merge
@@ -34,13 +35,20 @@ Before choosing pages, complete this domain pass:
    implementation or consumer. Distinguish public API, internal API and plugin
    SPI where they coexist.
 4. Admit a concept only when its behavior is expensive to reconstruct and its
-   Page Scope can support an honest page. Merge package clusters that explain
-   one lifecycle; split a cluster only when it contains independent lifecycles.
+   Page Scope can support an honest page. Apply the contract's split rule to
+   each proposed child; do not use length, package or diagram count as a proxy.
 
 The pass is complete when every Source role is accounted for, every planned
 business concept names a lifecycle or invariant rather than a module, and
 unresolved domain evidence is recorded in Plan `gaps`. It does not require
 classifying every file or package.
+
+Choose the page type from the question it answers: routing (`Overview`),
+static boundaries (`Architecture`), capability and invariants (`Domain`),
+cross-participant execution (`Flow`), object state transitions (`Lifecycle`),
+selected entity relationships (`DataModel`) or one table schema (`Table`).
+Then apply the type-specific diagram matrix in the contract. Plan a diagram
+only when its question passes both the Grep Test and Representation Test.
 
 Plan at most 64 concept pages, choosing the smallest set that passes the Grep
 Test. Each entry in a page's `scopes` names one Source and the paths its worker
@@ -53,7 +61,7 @@ Write one JSON Attempt Artifact at the packet's `artifact` path:
     {
       "pages": [{
         "path": "data/api/request-lifecycle.md",
-        "type": "Domain",
+        "type": "Lifecycle",
         "owner": "API",
         "title": "Request lifecycle",
         "description": "Open before changing request state or retry behavior.",
@@ -65,7 +73,12 @@ Write one JSON Attempt Artifact at the packet's `artifact` path:
         "evidence_seeds": [
           "API/api-core/src/main/java/com/example/request/Request.java#L20-L48"
         ],
-        "depends_on": []
+        "depends_on": [],
+        "diagrams": [{
+          "id": "request-state",
+          "kind": "state",
+          "question": "How does a request enter failure and recover?"
+        }]
       }, {
         "path": "architecture.md",
         "type": "Architecture",
@@ -78,7 +91,12 @@ Write one JSON Attempt Artifact at the packet's `artifact` path:
           {"source": "web", "paths": ["src/client"]}
         ],
         "evidence_seeds": [],
-        "depends_on": ["data/api/request-lifecycle.md"]
+        "depends_on": ["data/api/request-lifecycle.md"],
+        "diagrams": [{
+          "id": "system-boundaries",
+          "kind": "flowchart",
+          "question": "What are the system boundaries and dependency directions?"
+        }]
       }, {
         "path": "overview.md",
         "type": "Overview",
@@ -91,7 +109,8 @@ Write one JSON Attempt Artifact at the packet's `artifact` path:
           {"source": "web", "paths": ["."]}
         ],
         "evidence_seeds": [],
-        "depends_on": ["architecture.md"]
+        "depends_on": ["architecture.md"],
+        "diagrams": []
       }],
       "gaps": []
     }
@@ -101,7 +120,9 @@ every listed child is Machine-confirmed. Every dependency names a planned
 page, and the graph stays acyclic.
 
 Paths are lowercase portable bundle-relative Markdown paths. Every page has an
-`owner` and non-empty `scopes`. Scope paths are
+`owner`, non-empty `scopes` and an explicit `diagrams` list. Diagram ids are
+unique within the page, the list has at most four items and questions use the
+packet language. Scope paths are
 normalized Source-relative POSIX paths; `.` selects the eligible Source root.
 For a Catalog Source, paths are selected table page slugs from the packet's
 catalog index. Every scope must resolve inside a registered Source.
@@ -124,9 +145,9 @@ indexes and typed inputs, never `state.json`, Candidate directories or a full
 `catalog.json`.
 
 Run `complete_command` from `workdir`. The State Gate validates paths, scopes,
-required pages, dependency references and cycles before promoting the plan and
-creating `review:plan`. Page Targets remain blocked until that independent
-review approves the exact Plan digest. Repair the Attempt Artifact until the
-gate passes.
+required pages, page types, Diagram Specs, dependency references and cycles
+before promoting the plan and creating `review:plan`. Page Targets remain
+blocked until that independent review approves the exact Plan digest. Repair
+the Attempt Artifact until the gate passes.
 
 Handoff: Attempt Artifact path, gate verdict, page count, leaf count.

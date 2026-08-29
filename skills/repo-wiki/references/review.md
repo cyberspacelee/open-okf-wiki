@@ -2,8 +2,9 @@
 
 Review exactly the packet's `subject` in a session distinct from the producer.
 The packet binds its `subject_digest`; do not use writer conversation history.
-Read contract.md, the typed `subject` input and any `previous_review` before
-navigating revision-bound evidence.
+Read the packet's `contract`, the typed `subject` input and any
+`previous_review` before navigating revision-bound evidence. For a page subject,
+also read the packet's exact `template`.
 
 ## Plan subject
 
@@ -16,6 +17,8 @@ For `plan:workspace`, independently test whether the Plan:
 - distinguishes public API, internal API and plugin SPI where applicable;
 - uses coherent concept boundaries, owners, scopes, evidence seeds and child
   dependencies without overloaded pages;
+- chooses page types and splits by independently routable questions, and plans
+  each required diagram with a question supported by its scope;
 - records evidence gaps honestly and writes titles and descriptions in the
   packet language.
 
@@ -36,12 +39,20 @@ claims, invented rationale, padded gaps, scope bleed, missing cross-Source
 evidence, broken routing, coverage honesty and language. For a parent page,
 inspect its `dependency_page` inputs for overlap and missing links.
 
+Apply the Representation Test. Verify that each diagram kind fits its question;
+every decision-changing node, edge, message, transition and cardinality agrees
+with reopened evidence; normal, failure, retry, compensation, terminal and
+optional paths are not materially omitted; direction, grouping and labels are
+readable in the packet language; and `accDescr` conveys the diagram's purpose.
+Parse success proves syntax only. Flag decorative diagrams and prose that
+repeats every edge.
+
 Ownership determines repair routing:
 
 | Owner | Fields |
 |---|---|
-| `plan:workspace` | page set, Plan gaps, path, type, owner, title, description, tags, scopes, evidence_seeds, depends_on |
-| `page:<path>` | body, headings, links, sources, citations, coverage, Page Gaps |
+| `plan:workspace` | page set/splits, Plan gaps, path, type, owner, title, description, tags, scopes, evidence_seeds, depends_on, Diagram Specs/questions |
+| `page:<path>` | body, headings, links, sources, citations, coverage, Page Gaps, diagram semantics and readability |
 
 Never reopen a page for a Plan-owned defect: the State Gate will restore Plan
 metadata. A Plan review may reopen `plan:workspace` or an exact dispatched
@@ -70,10 +81,10 @@ Write one JSON Attempt Artifact at the packet's `artifact` path:
 
 Categories are `domain-coverage`, `concept-boundary`, `dependency`,
 `grep-test`, `unsupported-claim`, `invented-rationale`, `padded-gap`,
-`ownership`, `routing`, `coverage` and `language`. An approved report has
-`verdict: "approved"` and no issues. Approval remains valid only while the
-subject digest matches. Page approval stamps Machine-confirmed metadata; Plan
-approval unlocks leaf pages. Neither is human review.
+`ownership`, `routing`, `coverage`, `language` and `representation`. An
+approved report has `verdict: "approved"` and no issues. Approval remains valid
+only while the subject digest matches. Page approval stamps Machine-confirmed
+metadata; Plan approval unlocks leaf pages. Neither is human review.
 
 Run `complete_command` from `workdir`. Repair schema or evidence-check errors
 until the gate accepts the report.

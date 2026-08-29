@@ -7,7 +7,9 @@ description: Generate or incrementally refresh a thin, evidence-anchored reposit
 
 Produce an OKF v0.2 Wiki from frozen Git revisions and selected OpenGauss
 catalogs. `scripts/okf.py` owns Run state, validation and Publication; never
-edit `.okf-wiki` state by hand. Requires Git, Python 3.12+ and `uv` on PATH.
+edit `.okf-wiki` state by hand. Requires Git, Python 3.12+, `uv` and Node.js
+22.20+ on PATH. Run `npm ci --prefix <skill>` once after installation so the
+pinned Mermaid syntax gate is available.
 
 Run every command from the Workspace root. `<skill>` is this directory; the
 short form `okf` below means:
@@ -81,7 +83,8 @@ role. Recover a lost dispatch only with:
 
 The worker:
 
-1. Reads the packet's `reference` and `references/contract.md`.
+1. Reads the packet's `reference` and `contract`; page workers and page
+   reviewers also read the packet's exact `template`.
 2. Uses only the named inputs, Page Scope, Catalog indexes and bounded
    `outline`, `search` and `read` commands.
 3. Writes the Attempt Artifact at the packet's `artifact` path.
@@ -113,10 +116,16 @@ the smallest Page Plan that passes the Grep Test; package clusters are
 navigation scopes, not automatic Targets. Every source-owned Git/files concept
 carries one to three opened evidence seeds inside its Page Scope.
 
+The planner selects one of seven page types by reader question and plans each
+required Mermaid view with a stable id, kind and question. It splits a child
+only for an independently routable, independently evidenced question, never
+for length, package count or diagram count. Flow and Lifecycle pages keep
+cross-participant execution and object state transitions out of Domain prose.
+
 The State Gate validates each Source Brief and the complete Page DAG before
 creating page Targets. An independent `review:plan` receives the Page Plan and
 all Briefs, then audits domain recall, concept boundaries, cross-Source
-connections, routing ownership and output language. It routes Source-specific
+connections, representation choices, routing ownership and output language. It routes Source-specific
 recall defects to `plan:<source>` and synthesis or DAG defects to
 `plan:workspace`. No page is ready before that review is approved. Leaf pages
 research and write directly from their `scopes`. A parent page
@@ -124,6 +133,12 @@ becomes ready only after every child is Machine-confirmed, and receives those
 approved child pages as inputs. Each page Target still reopens Pin or Catalog
 evidence for every load-bearing claim; child pages are synthesis inputs, not
 provenance.
+
+Each planned diagram is one Mermaid fence with matching id/kind, accessibility
+title and description, and an adjacent cited conclusion. The pinned parser
+checks syntax; page review checks that nodes, edges, messages, transitions and
+cardinalities agree with code and do not omit material failure or recovery
+paths. Markdown remains canonical; no SVG or graph sidecar is published.
 
 Page boundaries are fixed by the Page Plan. Record an honest partial gap when
 evidence is incomplete. A routing or ownership error belongs to plan repair,

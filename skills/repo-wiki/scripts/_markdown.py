@@ -11,12 +11,22 @@ class Section:
 
 
 @dataclasses.dataclass
+class CodeFence:
+    language: str
+    content: str
+    start_line: int
+    end_line: int | None
+
+
+@dataclasses.dataclass
 class Structure:
     sections: list[Section]
     links: list[tuple[str, int]]
     footnote_refs: list[tuple[str, int]]
     footnote_defs: dict[str, str]
     placeholders: list[tuple[str, int]]
+    fences: list[CodeFence]
+    lines: list[str]
 
 
 _HEADING = re.compile(r"^(#{1,3}) (.+)$")
@@ -35,9 +45,13 @@ def extract(body: str) -> Structure:
     footnote_refs: list[tuple[str, int]] = []
     footnote_defs: dict[str, str] = {}
     placeholders: list[tuple[str, int]] = []
+    fences: list[CodeFence] = []
 
     fence_char: str | None = None
     fence_len: int = 0
+    fence_language = ""
+    fence_start = 0
+    fence_content: list[str] = []
 
     for lineno, raw in enumerate(lines, 1):
         line = raw
@@ -48,13 +62,25 @@ def extract(body: str) -> Structure:
             if m:
                 fence_char = m.group(1)[0]
                 fence_len = len(m.group(1))
+                fence_language = m.group(2).strip().split(maxsplit=1)[0].lower()
+                fence_start = lineno
+                fence_content = []
                 continue
         else:
             m = _FENCE.match(line)
             if m and m.group(1)[0] == fence_char and len(m.group(1)) >= fence_len:
+                fences.append(
+                    CodeFence(
+                        language=fence_language,
+                        content="\n".join(fence_content),
+                        start_line=fence_start,
+                        end_line=lineno,
+                    )
+                )
                 fence_char = None
                 fence_len = 0
                 continue
+            fence_content.append(line)
             continue  # inside any fence: skip all other processing
 
         # headings
@@ -62,7 +88,9 @@ def extract(body: str) -> Structure:
         if hm:
             level = len(hm.group(1))
             title = hm.group(2).strip()
-            sections.append(Section(title=title, level=level, start_line=lineno, content=""))
+            sections.append(
+                Section(title=title, level=level, start_line=lineno, content="")
+            )
             continue
 
         # footnote definition (must come before link scan)
@@ -85,6 +113,16 @@ def extract(body: str) -> Structure:
         for pm in _PLACEHOLDER.finditer(line):
             placeholders.append((pm.group(0), lineno))
 
+    if fence_char is not None:
+        fences.append(
+            CodeFence(
+                language=fence_language,
+                content="\n".join(fence_content),
+                start_line=fence_start,
+                end_line=None,
+            )
+        )
+
     # fill section content
     for i, sec in enumerate(sections):
         start = sec.start_line  # 1-based heading line
@@ -93,7 +131,9 @@ def extract(body: str) -> Structure:
         else:
             end = len(lines)
         # content = lines after heading up to next section
-        content_lines = lines[start:end]  # lines[start] is line after heading (0-indexed = start_line)
+        content_lines = lines[
+            start:end
+        ]  # lines[start] is line after heading (0-indexed = start_line)
         sec.content = "\n".join(content_lines).strip()
 
     return Structure(
@@ -102,4 +142,6 @@ def extract(body: str) -> Structure:
         footnote_refs=footnote_refs,
         footnote_defs=footnote_defs,
         placeholders=placeholders,
+        fences=fences,
+        lines=lines,
     )
