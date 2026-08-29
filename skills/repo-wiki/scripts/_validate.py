@@ -12,10 +12,11 @@ from _files import directory_digest
 from _frontmatter import parse_file, render
 from _markdown import extract
 from _models import (
+    CompositionMap,
     ConceptFrontmatter,
-    PagePlan,
+    KnowledgeDossier,
+    KnowledgePlan,
     ReviewReport,
-    SourceBrief,
     model_errors,
 )
 from pydantic import ValidationError
@@ -207,7 +208,9 @@ def _check_range(
     return []
 
 
-def _model_issues(path: pathlib.Path, model) -> tuple[object | None, list[Issue]]:
+def _model_issues(
+    path: pathlib.Path, model, *, markdown: bool = False
+) -> tuple[object | None, list[Issue]]:
     size = path.stat().st_size
     if size > MAX_STRUCTURED_ARTIFACT_BYTES:
         return None, [
@@ -221,11 +224,27 @@ def _model_issues(path: pathlib.Path, model) -> tuple[object | None, list[Issue]
             )
         ]
     try:
+        if markdown:
+            parsed = parse_file(path)
+            if parsed.errors:
+                return None, [
+                    issue("error", "frontmatter-invalid", str(path), message)
+                    for message in parsed.errors
+                ]
+            if not parsed.body.strip():
+                return None, [
+                    issue(
+                        "error",
+                        "artifact-body-empty",
+                        str(path),
+                        "Markdown artifact requires an analysis body",
+                    )
+                ]
+            return model.model_validate(parsed.meta, strict=True), []
         raw = path.read_text(encoding="utf-8")
+        return model.model_validate_json(raw, strict=True), []
     except (OSError, UnicodeDecodeError) as exc:
         return None, [issue("error", "artifact-invalid", str(path), str(exc))]
-    try:
-        return model.model_validate_json(raw, strict=True), []
     except ValidationError as exc:
         return None, [
             issue("error", "schema-invalid", str(path), message)
@@ -244,20 +263,25 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[Issue]:
         ]
     kind = task["kind"]
     if kind == "plan":
-        mode = task["spec"].get("mode")
-        model = SourceBrief if mode == "source" else PagePlan
-        value, issues = _model_issues(path, model)
-        if value and mode == "source":
-            issues.extend(_validate_source_brief(root, state, task, value, path))
-        elif value and mode == "workspace":
-            issues.extend(_validate_page_plan(root, state, value, path))
-        elif mode not in {"source", "workspace"}:
-            issues.append(
-                issue("error", "plan-mode-invalid", str(path), f"unknown mode {mode!r}")
-            )
+        value, issues = _model_issues(path, KnowledgePlan, markdown=True)
+        if value:
+            issues.extend(_validate_knowledge_plan(root, state, value, path))
         return issues
     if kind == "page":
-        return _validate_page_target(root, state, task, path)
+        mode = task["spec"].get("mode")
+        if mode == "research":
+            value, issues = _model_issues(path, KnowledgeDossier, markdown=True)
+            if value:
+                issues.extend(_validate_dossier(root, state, task, value, path))
+            return issues
+        if mode == "compose":
+            value, issues = _model_issues(path, CompositionMap, markdown=True)
+            if value:
+                issues.extend(_validate_composition(root, state, value, path))
+            return issues
+        if mode == "write":
+            return _validate_page_target(root, state, task, path)
+        return [issue("error", "page-mode-invalid", str(path), str(mode))]
     if kind == "review":
         value, issues = _model_issues(path, ReviewReport)
         if value:
@@ -276,10 +300,19 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[Issue]:
                         "review does not bind the dispatched subject digest",
                     )
                 )
+            allowed = {subject, "plan:workspace"}
+            if subject == "page:compose":
+                allowed.update(
+                    target_id
+                    for target_id in state["targets"]
+                    if target_id.startswith("page:research/")
+                )
+            elif subject.startswith("page:write/"):
+                allowed.add("page:compose")
             for report_issue in value.issues:
-                reopened = state["targets"].get(report_issue.reopen_target)
-                if reopened is None or (
-                    subject == "plan:workspace" and reopened["kind"] != "plan"
+                if report_issue.reopen_target not in allowed or (
+                    report_issue.operation != "repair"
+                    and report_issue.reopen_target != "page:compose"
                 ):
                     issues.append(
                         issue(
@@ -302,279 +335,199 @@ def _path_in_scope(path: str, roots: list[str]) -> bool:
     )
 
 
-def _validate_source_brief(
-    root: pathlib.Path,
-    state: dict,
-    task: dict,
-    brief: SourceBrief,
-    path: pathlib.Path,
+def _validate_scopes(
+    root: pathlib.Path, state: dict, item, path: pathlib.Path
 ) -> list[Issue]:
     import _workspace
 
-    expected = task["spec"].get("source")
     issues = []
-    if brief.source != expected:
+    workspace = _workspace.load(root)
+    owner = getattr(item, "owner", None)
+    if owner != "workspace" and owner not in workspace.sources:
+        issues.append(issue("error", "owner-invalid", str(path), str(owner)))
+    if owner != "workspace" and any(scope.source != owner for scope in item.scopes):
         issues.append(
             issue(
                 "error",
-                "source-brief-owner-invalid",
+                "owner-scope-invalid",
                 str(path),
-                f"expected {expected}, got {brief.source}",
+                f"{owner} owns scopes from another Source",
             )
         )
-        return issues
-    workspace = _workspace.load(root)
-    source = workspace.sources.get(brief.source)
-    if source is None or source.kind not in ("git", "files"):
-        return [
-            issue(
-                "error",
-                "source-brief-owner-invalid",
-                str(path),
-                f"{brief.source} is not a Git/files Source",
+    roots: dict[str, list[str]] = {}
+    for scope in item.scopes:
+        roots.setdefault(scope.source, []).extend(scope.paths)
+        source = workspace.sources.get(scope.source)
+        if source is None:
+            issues.append(
+                issue("error", "scope-source-invalid", str(path), scope.source)
             )
-        ]
-    pin = _workspace.pin_dir(root, state["run_id"], brief.source)
-    target_roots = [
-        item
-        for scope in task["spec"].get("scopes", [])
-        if scope["source"] == brief.source
-        for item in scope["paths"]
-    ]
-    for concept in brief.concepts:
-        for concept_path in concept.paths:
-            candidate = pin if concept_path == "." else pin / concept_path
-            if not _path_in_scope(concept_path, target_roots) or not candidate.exists():
+            continue
+        if source.kind in ("opengauss", "postgres"):
+            catalog = next(
+                (entry for entry in state["catalogs"] if entry["name"] == scope.source),
+                None,
+            )
+            allowed = {"."}
+            if catalog:
+                allowed.update(table["page_slug"] for table in catalog["tables"])
+                allowed.update(table["name"] for table in catalog["tables"])
+            invalid = set(scope.paths) - allowed
+            for scope_path in sorted(invalid):
                 issues.append(
                     issue(
                         "error",
-                        "source-brief-path-invalid",
+                        "scope-path-invalid",
                         str(path),
-                        f"{brief.source}/{concept_path}",
+                        f"{scope.source}/{scope_path}",
                     )
                 )
-        issues.extend(
-            _source_brief_evidence_issues(
-                root,
-                state,
-                path,
-                brief.source,
-                concept.paths,
-                concept.evidence_seeds,
-            )
-        )
-    known = {item["name"] for item in [*state["revisions"], *state["catalogs"]]}
-    for connection in brief.connections:
-        invalid = set(connection.counterpart_sources) - (known - {brief.source})
-        if invalid:
-            issues.append(
-                issue(
-                    "error",
-                    "source-brief-counterpart-invalid",
-                    str(path),
-                    ", ".join(sorted(invalid)),
+            continue
+        pin = _workspace.pin_dir(root, state["run_id"], scope.source)
+        for scope_path in scope.paths:
+            candidate = pin if scope_path == "." else pin / scope_path
+            if not candidate.exists():
+                issues.append(
+                    issue(
+                        "error",
+                        "scope-path-invalid",
+                        str(path),
+                        f"{scope.source}/{scope_path}",
+                    )
                 )
-            )
-        issues.extend(
-            _source_brief_evidence_issues(
-                root,
-                state,
-                path,
-                brief.source,
-                target_roots,
-                connection.evidence_seeds,
-            )
-        )
-    return issues
-
-
-def _source_brief_evidence_issues(
-    root: pathlib.Path,
-    state: dict,
-    artifact: pathlib.Path,
-    source: str,
-    roots: list[str],
-    resources: list[str],
-) -> list[Issue]:
-    issues = []
-    for resource in resources:
-        parsed = parse_resource(resource)
+    for resource in item.evidence_seeds:
+        if _catalog_resource(state, resource):
+            continue
         resolved = _resolve_resource(root, state, resource)
-        if parsed is None or resolved is None:
-            issues.append(
-                issue(
-                    "error", "source-brief-evidence-unresolved", str(artifact), resource
-                )
-            )
+        parsed = parse_resource(resource)
+        if resolved is None or parsed is None:
+            issues.append(issue("error", "evidence-unresolved", str(path), resource))
             continue
         source_name, rel, _, _ = parsed
-        if source_name != source or not _path_in_scope(rel, roots):
-            issues.append(
-                issue(
-                    "error",
-                    "source-brief-evidence-outside-scope",
-                    str(artifact),
-                    resource,
-                )
-            )
+        if source_name not in roots or not _path_in_scope(rel, roots[source_name]):
+            issues.append(issue("error", "evidence-outside-scope", str(path), resource))
             continue
         issues.extend(_check_range(*resolved, resource))
     return issues
 
 
-def _validate_page_plan(
-    root: pathlib.Path, state: dict, plan: PagePlan, path: pathlib.Path
+def _validate_knowledge_plan(
+    root: pathlib.Path, state: dict, plan: KnowledgePlan, path: pathlib.Path
 ) -> list[Issue]:
-    import _workspace
+    return [
+        problem
+        for unit in plan.units
+        for problem in _validate_scopes(root, state, unit, path)
+    ]
 
+
+def _validate_dossier(
+    root: pathlib.Path,
+    state: dict,
+    task: dict,
+    dossier: KnowledgeDossier,
+    path: pathlib.Path,
+) -> list[Issue]:
     issues = []
-    workspace = _workspace.load(root)
-    known = set(workspace.sources)
-    planned_paths = {page.path for page in plan.pages}
-    if "overview.md" not in planned_paths:
+    if dossier.unit_id != task["spec"]["unit_id"]:
         issues.append(
-            issue(
-                "error", "overview-missing", str(path), "plan must include overview.md"
-            )
+            issue("error", "dossier-unit-invalid", str(path), dossier.unit_id)
         )
-    if "architecture.md" not in planned_paths:
+    parent_scopes = task["spec"]["scopes"]
+    roots: dict[str, list[str]] = {}
+    for scope in parent_scopes:
+        roots.setdefault(scope["source"], []).extend(scope["paths"])
+    if dossier.disposition == "split" and task["spec"]["depth"] >= 3:
         issues.append(
             issue(
                 "error",
-                "architecture-missing",
+                "dossier-split-depth-invalid",
                 str(path),
-                "plan must include architecture.md",
+                "knowledge dossier split depth exceeds 3",
             )
         )
-    roots = {page.path: page for page in plan.pages}
-    for root_path, page_type in (
-        ("overview.md", "Overview"),
-        ("architecture.md", "Architecture"),
-    ):
-        root_page = roots.get(root_path)
-        if root_page is not None and root_page.type != page_type:
-            issues.append(
-                issue(
-                    "error",
-                    "root-page-type-invalid",
-                    str(path),
-                    f"{root_path} must use type {page_type}",
-                )
+    research_count = sum(
+        target["kind"] == "page" and target["spec"].get("mode") == "research"
+        for target in state["targets"].values()
+    )
+    if research_count + len(dossier.children) > 96:
+        issues.append(
+            issue(
+                "error",
+                "dossier-count-invalid",
+                str(path),
+                "knowledge dossier count exceeds 96",
             )
+        )
+    for child in dossier.children:
+        if f"page:research/{child.id}" in state["targets"]:
+            issues.append(
+                issue("error", "dossier-child-duplicate", str(path), child.id)
+            )
+        for scope in child.scopes:
+            if scope.source not in roots or any(
+                not _path_in_scope(value, roots[scope.source]) for value in scope.paths
+            ):
+                issues.append(
+                    issue("error", "dossier-child-outside-parent", str(path), child.id)
+                )
+        issues.extend(_validate_scopes(root, state, child, path))
+    return issues
+
+
+def _validate_composition(
+    root: pathlib.Path, state: dict, plan: CompositionMap, path: pathlib.Path
+) -> list[Issue]:
+    issues = []
     for page in plan.pages:
         if pathlib.PurePosixPath(page.path).name in {"index.md", "log.md"}:
             issues.append(issue("error", "reserved-page", str(path), page.path))
-        if page.owner != "workspace" and not page.path.startswith(
-            f"data/{page.owner.lower()}/"
-        ):
-            issues.append(
-                issue(
-                    "error",
-                    "page-owner-path-invalid",
-                    str(path),
-                    f"{page.path} must live under data/{page.owner.lower()}/",
-                )
+        issues.extend(_validate_scopes(root, state, page, path))
+    active_units = {
+        target["spec"]["unit_id"]
+        for target in state["targets"].values()
+        if target["kind"] == "page"
+        and target["spec"].get("mode") == "research"
+        and not target["spec"].get("superseded")
+    }
+    mapped = [unit for page in plan.pages for unit in page.units]
+    if set(mapped) != active_units or len(mapped) != len(set(mapped)):
+        issues.append(
+            issue(
+                "error",
+                "composition-coverage-invalid",
+                str(path),
+                "active knowledge units must be assigned to exactly one page",
             )
+        )
+    research = {
+        target["spec"]["unit_id"]: target
+        for target in state["targets"].values()
+        if target["kind"] == "page"
+        and target["spec"].get("mode") == "research"
+        and not target["spec"].get("superseded")
+    }
+    for page in plan.pages:
+        page_roots: dict[str, list[str]] = {}
         for scope in page.scopes:
-            if scope.source not in known:
-                issues.append(
-                    issue("error", "scope-source-invalid", str(path), scope.source)
-                )
+            page_roots.setdefault(scope.source, []).extend(scope.paths)
+        for unit_id in page.units:
+            unit = research.get(unit_id)
+            if unit is None:
                 continue
-            source = workspace.sources[scope.source]
-            if source.kind in ("opengauss", "postgres"):
-                catalog = next(
-                    (
-                        item
-                        for item in state["catalogs"]
-                        if item["name"] == scope.source
-                    ),
-                    None,
-                )
-                allowed = {"."}
-                if catalog:
-                    allowed.update(table["page_slug"] for table in catalog["tables"])
-                    allowed.update(table["name"] for table in catalog["tables"])
-                for scope_path in scope.paths:
-                    if scope_path not in allowed:
-                        issues.append(
-                            issue(
-                                "error",
-                                "scope-path-invalid",
-                                str(path),
-                                f"{scope.source}/{scope_path}",
-                            )
-                        )
-                continue
-            pin = _workspace.pin_dir(root, state["run_id"], scope.source)
-            for scope_path in scope.paths:
-                candidate = pin if scope_path == "." else pin / scope_path
-                if not candidate.exists():
+            for scope in unit["spec"]["scopes"]:
+                if scope["source"] not in page_roots or any(
+                    not _path_in_scope(value, page_roots[scope["source"]])
+                    for value in scope["paths"]
+                ):
                     issues.append(
                         issue(
                             "error",
-                            "scope-path-invalid",
+                            "composition-scope-coverage-invalid",
                             str(path),
-                            f"{scope.source}/{scope_path}",
+                            f"{page.id} does not cover {unit_id} scope {scope}",
                         )
                     )
-        if page.owner != "workspace" and any(
-            scope.source != page.owner for scope in page.scopes
-        ):
-            issues.append(
-                issue(
-                    "error",
-                    "page-owner-scope-invalid",
-                    str(path),
-                    f"{page.path} includes a scope outside owner {page.owner}",
-                )
-            )
-        owner = workspace.sources.get(page.owner)
-        if (
-            page.owner != "workspace"
-            and owner is not None
-            and owner.kind not in ("opengauss", "postgres")
-            and not page.evidence_seeds
-        ):
-            issues.append(
-                issue(
-                    "error",
-                    "plan-evidence-seed-missing",
-                    str(path),
-                    f"{page.path} requires source evidence",
-                )
-            )
-        roots: dict[str, list[str]] = {}
-        for scope in page.scopes:
-            roots.setdefault(scope.source, []).extend(scope.paths)
-        for resource in page.evidence_seeds:
-            if _catalog_resource(state, resource):
-                continue
-            resolved = _resolve_resource(root, state, resource)
-            if resolved is None:
-                issues.append(
-                    issue(
-                        "error",
-                        "plan-evidence-unresolved",
-                        str(path),
-                        resource,
-                    )
-                )
-                continue
-            parsed = parse_resource(resource)
-            assert parsed is not None
-            source_name, rel, _, _ = parsed
-            if source_name not in roots or not _path_in_scope(rel, roots[source_name]):
-                issues.append(
-                    issue(
-                        "error",
-                        "plan-evidence-outside-scope",
-                        str(path),
-                        resource,
-                    )
-                )
-                continue
-            issues.extend(_check_range(*resolved, resource))
     return issues
 
 
@@ -637,6 +590,7 @@ def render_generated_page(
     spec = task["spec"]
     meta.update(
         {
+            "id": spec["id"],
             "type": spec["type"],
             "title": spec["title"],
             "description": spec["description"],
@@ -698,15 +652,17 @@ def validate_page(
         actual_diagrams = [
             diagram.model_dump(mode="json") for diagram in frontmatter.diagrams
         ]
-        if frontmatter.type != expected.get("type") or actual_diagrams != expected.get(
-            "diagrams"
+        if (
+            frontmatter.id != expected.get("id")
+            or frontmatter.type != expected.get("type")
+            or actual_diagrams != expected.get("diagrams")
         ):
             issues.append(
                 issue(
                     "error",
                     "page-plan-metadata-mismatch",
                     str(path),
-                    "page type and diagrams must exactly match the Page Plan",
+                    "page id, type and diagrams must exactly match the Composition Map",
                 )
             )
     for field in ("title", "description", "coverage", "language", "generated"):
@@ -819,9 +775,9 @@ def validate_candidate(
     issues = []
     page_set = {path.relative_to(candidate).as_posix() for path in pages}
     task_by_path = {
-        target["name"]: target
+        target["spec"]["path"]: target
         for target in state["targets"].values()
-        if target["kind"] == "page"
+        if target["kind"] == "page" and target["spec"].get("mode") == "write"
     }
     if page_set != set(task_by_path):
         issues.append(
@@ -829,7 +785,7 @@ def validate_candidate(
                 "error",
                 "page-set-mismatch",
                 str(candidate),
-                "candidate pages must exactly match the page plan",
+                "candidate pages must exactly match the Composition Map",
             )
         )
     for path in pages:

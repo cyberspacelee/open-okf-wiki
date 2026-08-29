@@ -70,16 +70,31 @@ One registered Source paired with relative paths that a planned page may
 investigate and cite; a page carries one or more entries as `scopes`.
 _Avoid_: Package task, file inventory
 
-**Source Brief**:
-A bounded, evidence-seeded account of one Git/files Source's roles, candidate
-lifecycles, cross-Source counterpart queries and gaps, produced before
-Workspace planning when multiple code Sources exist.
-_Avoid_: Page Plan shard, Source Wiki, file inventory
+**Knowledge Plan**:
+The durable Workspace analysis that defines stable knowledge units, evidence
+scopes, seeds and gaps without choosing Wiki pages or paths.
+_Avoid_: Page tree, Source shard, file inventory
 
-**Page Plan**:
-The bounded Workspace decision that assigns concept paths, owners, routing
-metadata, Page Scopes, evidence seeds, Diagram Specs and child dependencies.
-_Avoid_: Suggested outline, Source Brief
+**Knowledge Unit**:
+A stable, evidence-seeded capability, lifecycle, flow, data model, integration
+or operations question that requires one bounded research pass.
+_Avoid_: Package, planned page, directory row
+
+**Knowledge Dossier**:
+The Markdown evidence analysis for one Knowledge Unit. It is ready for global
+composition or splits into bounded child units inside the parent scope.
+_Avoid_: Wiki page, Source summary, transcript
+
+**Composition Map**:
+The global information-architecture decision that assigns active Knowledge
+Units to stable page IDs, hierarchy, relations, representation and proposed
+publication paths.
+_Avoid_: Knowledge Plan, page body, directory tree
+
+**Page ID**:
+A stable logical identity used by Targets and page relations independently of
+the page's current publication path.
+_Avoid_: Markdown path, title, Target artifact path
 
 **Page Type**:
 The closed semantic class of a planned concept page, selected by the reader
@@ -87,8 +102,8 @@ question the page answers.
 _Avoid_: Template name, arbitrary frontmatter label
 
 **Diagram Spec**:
-A Page Plan decision naming one page-local visual question by stable id and
-kind; the page supplies its evidence-backed expression.
+A Composition Map decision naming one page-local visual question by stable id
+and kind; the page supplies its evidence-backed expression.
 _Avoid_: Diagram body, rendered image, graph sidecar
 
 **Representation Test**:
@@ -97,18 +112,24 @@ form minimizes reconstruction of an admitted relationship.
 _Avoid_: Mermaid quota, visual decoration
 
 **Plan Review**:
-Independent verification of domain recall, concept boundaries and routing,
-bound to one exact Page Plan before page work is released.
-_Avoid_: Schema validation, page review, planning retry
+Independent verification of domain recall, Knowledge Unit boundaries and
+evidence, bound to one exact Knowledge Plan before dossier work is released.
+_Avoid_: Composition Review, schema validation, planning retry
+
+**Composition Review**:
+Independent verification of coverage, split, merge, move, hierarchy and
+representation before page writing is released.
+_Avoid_: Plan Review, page content review
 
 **Page DAG**:
-The dependency graph of planned pages in which Machine-confirmed children
-unlock parent synthesis pages.
+The stable-ID `depends_on` graph in which Machine-confirmed dependency pages
+unlock synthesis pages; it is separate from the `parent` information-
+architecture hierarchy and physical paths are bound later.
 _Avoid_: Phase pipeline, directory tree
 
 **Candidate**:
-The exact concept page tree produced by one Run before reserved files and
-Publication metadata are generated.
+The exact page tree produced by deterministic ID-to-path binding after all
+content reviews and before Publication metadata is generated.
 _Avoid_: Wiki export, Publication
 
 **Publication**:
@@ -147,6 +168,11 @@ that requires human ratification and never blocks Publication.
 _Avoid_: Applied change, Wiki Target
 
 **Refresh**:
-Replacement of one Source's Pin and Revision followed by invalidation of
-pages whose Page Scopes use it and their dependent parents.
+Replacement of one Source's Pin and Revision followed by reopening the durable
+Knowledge Plan and rebuilding evidence-dependent downstream Targets.
 _Avoid_: New Run, follow branch
+
+**Checkpoint**:
+A bounded Markdown Attempt record of completed analysis, findings, hypotheses,
+gaps and next actions used to resume after compaction or worker failure.
+_Avoid_: Conversation summary, artifact body, State file

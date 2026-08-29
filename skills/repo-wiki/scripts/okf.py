@@ -143,6 +143,8 @@ def cmd_task(args) -> int:
         result = _state.task_start(root, args.target)
     elif args.action == "packet":
         result = _state.task_packet(root, args.target, args.attempt)
+    elif args.action == "checkpoint":
+        result = _state.task_checkpoint(root, args.target, args.attempt)
     elif args.action == "outline":
         result = _state.task_outline(
             root,
@@ -391,6 +393,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     packet.add_argument("target", help="in-progress target id")
     packet.add_argument("--attempt", required=True, help="active attempt token")
+    checkpoint = leaf(
+        task_actions.add_parser(
+            "checkpoint", help="validate and persist an attempt progress checkpoint"
+        )
+    )
+    checkpoint.add_argument("target", help="in-progress target id")
+    checkpoint.add_argument("--attempt", required=True, help="active attempt token")
     outline = leaf(
         task_actions.add_parser(
             "outline", help="list one bounded directory inside the target scope"

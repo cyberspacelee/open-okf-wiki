@@ -1,190 +1,156 @@
 ---
 name: repo-wiki
-description: Generate or incrementally refresh a thin, evidence-anchored repository Wiki and human-reviewed onboarding proposals. Use for codebase Wiki, architecture map, onboarding documentation, AGENTS.md or CONTEXT.md proposals, and resuming an existing Wiki run.
+description: Generate or refresh a thin, evidence-anchored repository Wiki and human-reviewed onboarding proposals. Use for codebase Wiki, architecture maps, onboarding documentation, AGENTS.md or CONTEXT.md proposals, and resuming an existing Wiki run.
 ---
 
 # Repo Wiki
 
-Produce an OKF v0.2 Wiki from frozen Git revisions and selected OpenGauss
+Produce an OKF v0.2 Wiki from frozen Source revisions and selected database
 catalogs. `scripts/okf.py` owns Run state, validation and Publication; never
-edit `.okf-wiki` state by hand. Requires Git, Python 3.12+ and `uv` on PATH.
+edit `.okf-wiki` state by hand. Requires Git, Python 3.12+ and `uv`.
 
-Run every command from the Workspace root. `<skill>` is this directory; the
-short form `okf` below means:
+Run commands from the Workspace root. `<skill>` is this directory; `okf` means:
 
     uv run <skill>/scripts/okf.py
 
-Dispatch packets are the worker command contract; do not probe CLI help during a
-Target.
-
-## Start here
-
-On entry, resume or uncertainty:
+## Resume first
 
 1. Run `okf run status --json`.
-2. If a Run exists, perform its `next_actions`. Disk state wins over
-   conversation memory; a completed Target changes only through State Gate
-   invalidation.
-3. If there is no Workspace, run `okf workspace init --lang en|zh
-   --freshness-days 90`, register every Source explicitly, then run
-   `okf run start --producer repo-wiki/<model> --session <unique-id>`.
+2. If a Run exists, execute its `next_actions`. Disk state and persisted
+   checkpoints win over conversation memory.
+3. Otherwise initialize the Workspace, register every Source, and start:
 
-Drive the Run to Publication. A rejected completion is a worker repair, not a
-reason to bypass the gate. Stop only for a genuine human dependency such as
-missing credentials or ambiguous Source selection.
+       okf workspace init --lang en --freshness-days 90
+       okf source add link ../service --name service
+       okf run start --producer repo-wiki/<model> --session <unique-id>
 
-## Sources
+Drive the Run through Publication. Stop only for a real human dependency such
+as credentials or ambiguous Source selection.
 
-Register each Source before starting a Run:
+## Lifecycle
 
-    okf source add link ../API --name API
-    okf source add clone https://host/web.git --name web --ref main
-    okf source add files ../contracts --name contracts
-    okf source add opengauss --name appdb --url-env DATABASE_URL --schema public --table orders --table customers
+Capture, Index, binding and Publication are deterministic. Agent work has only
+the Target kinds `plan`, `page` and `review`:
 
-The Workspace is a hub, not a Source. `link` mounts an external worktree at
-`<workspace>/<name>/`; `clone` places a clone there. Use `okf db tables` and
-`okf db describe` before selecting database tables. Credentials never enter
-Run state or citations.
+    plan:workspace
+      -> review:plan
+      -> page:research/<unit-id>*
+      -> page:compose
+      -> review:composition
+      -> page:write/<page-id>*
+      -> review:<page-id>*
+      -> deterministic bind and approve
 
-`run start` records each Git/files Source Revision, materializes its Pin and
-captures selected Catalogs. Workers read Pins and captured Catalog shards, not
-live Sources or databases. `source refresh --name` may reopen the current
-active, paused or approved Run: it replaces one Pin and Index, reopens that
-Source's planning scout and Workspace synthesis, then invalidates pages whose
-scopes use that Source and their dependent parent pages. Other scouts and
-unrelated Page DAG branches remain complete.
+There are no per-Source Plan shards. Assign `plan:workspace` to one
+long-lifecycle planner that owns the cross-Source mental model. It may use
+focused evidence workers for bounded searches, call paths or database facts,
+but those workers return evidence and gaps only; they do not create competing
+plans or page paths.
 
-## Target loop
-
-Capture and Index are deterministic setup; Publication is deterministic
-finalization. Agent work has only three Target kinds:
-
-    plan:<source> -> plan:workspace -> review:plan -> page:<path> -> review:<path>
-
-`plan:<source>` exists only when a Run has more than one Git/files Source; all
-such scouts enter the Ready Set together. A single-Source Run starts directly
-at `plan:workspace`. Catalog Sources have no scout.
-
-There is no global phase cursor. `run status --json` returns the ready set:
-every pending or failed Target whose dependencies are satisfied. Independent
-branches may run concurrently. For each ready Target:
+`run status --json` exposes the Ready Set. Independent research or write
+Targets may run concurrently. For each ready Target:
 
     okf task start <target-id> --json
-    # dispatch one short-lived worker with the returned packet
 
-The packet's `artifact` path is inside an attempt-specific temporary directory;
-`packet_path` persists the exact dispatch, and `inputs` label every path by
-role. Recover a lost dispatch only with:
+Read the returned `reference`, `contract` and typed `inputs`; a write or write
+review also reads its exact `template`. Use only packet scopes and the bounded
+`outline`, `search` and `read` commands. Write to the attempt-specific
+`artifact`, then run `complete_command`.
+
+For long work, write the packet's `checkpoint` Markdown with the exact headings
+`Completed`, `Findings`, `Hypotheses`, `Gaps` and `Next actions`, then run
+`checkpoint_command`. Plan and composition cannot complete without a current
+checkpoint. On failure the checkpoint remains on disk and the retry packet
+includes it as `previous_checkpoint`; resume from it instead of rescanning.
+
+Recover a lost packet only with:
 
     okf task packet <target-id> --attempt <token> --json
 
-The worker:
+On rejection, repair the same Attempt Artifact. On an unrecoverable worker
+failure run `okf task fail <target-id> --reason <short-reason>`. Handoffs contain
+only paths, gate verdicts, counts and blockers, never artifact bodies.
 
-1. Reads the packet's `reference` and `contract`; page workers and page
-   reviewers also read the packet's exact `template`.
-2. Uses only the named inputs, Page Scope, Catalog indexes and bounded
-   `outline`, `search` and `read` commands.
-3. Writes the Attempt Artifact at the packet's `artifact` path.
-4. Runs `complete_command` from `workdir`.
-5. Repairs gate issues and completes again, or runs `task fail` when the
-   failure cannot be repaired inside the Target.
+## Index and navigation
 
-On success the State Gate promotes the Attempt Artifact to its canonical
-plan, Candidate page or review location. On rejection it remains attempt-local
-and cannot affect downstream Targets.
+Index builds a complete canonical directory tree in the deterministic kernel
+and emits a compact visible projection. A maximal directory chain is one line
+when intermediate nodes have no direct files and one child. Full deepest paths
+remain visible. Build modules, source sets, branch nodes and direct-file nodes
+stop compaction. `compressed` counts structural folding; `truncated` means the
+byte budget coarsened the projection. Use `outline` to expand either case.
 
-The worker Handoff contains only the artifact path, gate verdict, item or gap
-counts requested by the reference, and any blocking reason. It never repeats
-artifact bodies.
+The Index is navigation, not semantic ranking. Maven modules, source roots and
+package clusters are not automatic Wiki pages.
 
-## Plan and pages
+## Knowledge planning
 
-In a multi-code-Source Run, each `plan:<source>` worker navigates only its Pin
-as `Source -> build module -> source set -> package cluster` and writes one
-bounded Source Brief: Source roles, lifecycle/invariant candidates, local
-evidence, cross-Source counterpart queries and gaps. Scouts do not choose page
-paths or dependencies. Their independent Targets may run concurrently.
+The planner reads every Source Index and Catalog index, navigates all relevant
+Sources and writes a Markdown Knowledge Plan. Its small YAML frontmatter lists
+stable knowledge units with kind, owner, question, scopes and one to three
+opened evidence seeds. The body records cross-Source understanding, lifecycle
+relationships, decisions, gaps and rejected hypotheses.
 
-`plan:workspace` waits for every Source Brief, then becomes the only Page Plan
-writer. It merges duplicate concepts, follows cross-Source queries, reopens
-both sides of important boundaries and incorporates Catalog inputs. In a
-single-code-Source Run it performs the Source investigation itself. It writes
-the smallest Page Plan that passes the Grep Test; package clusters are
-navigation scopes, not automatic Targets. Every source-owned Git/files concept
-carries one to three opened evidence seeds inside its Page Scope.
+The Plan answers what knowledge must be covered. It must not choose Wiki page
+paths, titles, hierarchy, diagrams or page dependencies. `review:plan`
+independently checks domain recall, boundaries, evidence and gaps before
+research fan-out.
 
-The planner selects one of seven page types by reader question and plans each
-required Mermaid view with a stable id, kind and question. It splits a child
-only for an independently routable, independently evidenced question, never
-for length, package count or diagram count. Flow and Lifecycle pages keep
-cross-participant execution and object state transitions out of Domain prose.
+Each `page:research/<unit-id>` deepens one unit into a Knowledge Dossier. A
+dossier is `ready`, or `split` with two to eight child units inside its parent
+scope. Split is for an incoherent research boundary, not length or package
+count. The State Gate creates child research Targets dynamically and waits for
+all active leaves.
 
-The State Gate validates each Source Brief and the complete Page DAG before
-creating page Targets. An independent `review:plan` receives the Page Plan and
-all Briefs, then audits domain recall, concept boundaries, cross-Source
-connections, representation choices, routing ownership and output language. It routes Source-specific
-recall defects to `plan:<source>` and synthesis or DAG defects to
-`plan:workspace`. No page is ready before that review is approved. Leaf pages
-research and write directly from their `scopes`. A parent page
-becomes ready only after every child is Machine-confirmed, and receives those
-approved child pages as inputs. Each page Target still reopens Pin or Catalog
-evidence for every load-bearing claim; child pages are synthesis inputs, not
-provenance.
+## Composition and writing
 
-Each planned diagram is one Mermaid fence with matching id/kind, accessibility
-title and description, and an adjacent cited conclusion. The State Gate checks
-the supported declaration and basic structure; page review checks renderability
-and that nodes, edges, messages, transitions and cardinalities agree with code
-without omitting material failure or recovery paths. Markdown remains
-canonical; no SVG or graph sidecar is published.
+`page:compose` reads the complete dossier set and is the first Target allowed
+to define pages. Its Markdown Composition Map assigns every active unit to
+exactly one stable `page_id`, selects page type and representation, defines
+hierarchy and dependencies by ID, and proposes final paths. IDs, paths and the
+two relation graphs are unique and independently acyclic. `parent` defines
+information architecture only. `depends_on` defines scheduling and names the
+reviewed pages a synthesis writer consumes.
 
-Page boundaries are fixed by the Page Plan. Record an honest partial gap when
-evidence is incomplete. A routing or ownership error belongs to plan repair,
-not an invented page or dynamic split.
+`review:composition` checks coverage and may request `split`, `merge` or `move`.
+Only after approval do writers run. A writer works at
+`drafts/pages/<page-id>.md`; its Target identity never contains the final path.
+Reviews for every page in `depends_on` unlock the synthesis writer.
 
-## Coordinator conservation
+Use standard Markdown reference links for logical page links:
 
-The host coordinator consumes only `run status --json`, dispatch packets,
-Handoffs and validator issue lists. It does not read Pins, plan bodies,
-Candidate pages or review reports. Every content Target runs in a worker
-session. If workers are unavailable, use `okf run pause`; resume with
-`okf run resume`.
+    See [request recovery][request-recovery].
 
-Long-form Markdown stays on disk. Structured Source Brief, plan and review
-decisions are bounded JSON Attempt Artifacts. Dispatch packets contain typed
-paths, commands and budgets, never copied file bodies or whole-repository JSON.
-Workers never inspect `state.json`, other attempts or Candidate directories to
-reconstruct context.
+Do not add a reference definition. The deterministic binder resolves known
+page IDs to root-relative final paths after all page reviews. An unknown ID
+fails binding. A path-only move therefore preserves the page draft and its
+content review.
+
+Every page reopens Source evidence for load-bearing claims. Dossiers and child
+pages are synthesis inputs, not provenance. Implement planned Mermaid diagrams
+with matching ID/kind, accessibility title and description, and an adjacent
+cited conclusion. Use honest partial coverage with a Gaps section when needed.
 
 ## Review and Publication
 
-Bind an independent review session when review Targets first become ready:
+When a review first becomes ready, bind a distinct session:
 
     okf review start --actor repo-wiki/<reviewer> --session <new-session> --json
 
-Review is per subject: first the Page Plan, then one page at a time rather than
-an owner batch. Each review Target binds the exact subject digest and writes one
-verdict. Page approval stamps that page Machine-confirmed and may unlock its
-parent. A page repair invalidates its review and dependent parents; plan repair
-reruns Plan review before more page work. Follow-up review receives the prior
-report and verifies those issues first. Two consecutive change rounds pause the
-Run for an explicit human `run resume` decision.
+Review reports remain small strict JSON because they control state transitions.
+They bind the exact subject digest. Content repair reopens the write Target;
+structural `split`, `merge` or `move` reopens `page:compose`; missing knowledge
+may reopen an exact research Target or `plan:workspace`. Two consecutive change
+rounds pause the Run for an explicit resume decision.
 
-When every required root page is Machine-confirmed, status exposes:
+When all Targets complete, the kernel binds IDs to paths, validates the exact
+Candidate and marks the Run approved. Then run:
 
     okf publication publish
 
-Publication validates the approved Candidate, writes reserved `index.md` and
-`log.md`, installs an immutable content-addressed generation and atomically
-switches the current pointer. Optional operations remain:
-
-    okf publication export --to wiki
-    okf publication rollback
-    okf publication verify --actor human:<identity> --page overview.md
-
-Human verification creates a new Publication generation; it is distinct from
-Machine-confirmed review.
+Publication writes reserved `index.md` and `log.md`, installs an immutable
+content-addressed generation and atomically switches the current pointer.
+Human verification is separate from Machine-confirmed review.
 
 Optional source-facing proposals run only after Publication:
 

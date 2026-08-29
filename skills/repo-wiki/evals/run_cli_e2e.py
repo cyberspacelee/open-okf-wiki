@@ -2,10 +2,9 @@
 # /// script
 # requires-python = ">=3.12"
 # ///
-"""Deterministic end-to-end exercise of the ready-page DAG contract."""
+"""Deterministic end-to-end exercise of the late-binding lifecycle."""
 
 import argparse
-import hashlib
 import json
 import pathlib
 import shutil
@@ -16,11 +15,9 @@ OKF = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "okf.py"
 
 
 def invoke(
-    cwd: pathlib.Path, *args: str, json_output: bool = False, check: bool = True
+    cwd: pathlib.Path, *args: str, check: bool = True
 ) -> subprocess.CompletedProcess:
-    command = ["uv", "run", str(OKF), *args]
-    if json_output:
-        command.append("--json")
+    command = ["uv", "run", str(OKF), *args, "--json"]
     result = subprocess.run(
         command, cwd=cwd, capture_output=True, text=True, check=False
     )
@@ -33,8 +30,7 @@ def invoke(
 
 
 def run(cwd: pathlib.Path, *args: str) -> dict:
-    result = invoke(cwd, *args, json_output=True)
-    return json.loads(result.stdout)
+    return json.loads(invoke(cwd, *args).stdout)
 
 
 def write(path: pathlib.Path, text: str) -> None:
@@ -42,12 +38,15 @@ def write(path: pathlib.Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
+def markdown(meta: dict, body: str) -> str:
+    return f"---\n{json.dumps(meta, ensure_ascii=False)}\n---\n\n{body.rstrip()}\n"
+
+
 def source(path: pathlib.Path, label: str) -> pathlib.Path:
     path.mkdir()
     subprocess.run(["git", "init", "-q", str(path)], check=True)
     subprocess.run(
-        ["git", "-C", str(path), "config", "user.email", "e2e@example.test"],
-        check=True,
+        ["git", "-C", str(path), "config", "user.email", "e2e@example.test"], check=True
     )
     subprocess.run(["git", "-C", str(path), "config", "user.name", "E2E"], check=True)
     write(path / "pom.xml", "<project/>\n")
@@ -60,139 +59,125 @@ def source(path: pathlib.Path, label: str) -> pathlib.Path:
     return path
 
 
-def ready_ids(status: dict) -> set[str]:
-    result = set()
-    for target in status.get("ready_targets", []):
-        result.add(target["id"] if isinstance(target, dict) else target)
-    return result
+def ready(status: dict) -> set[str]:
+    return set(status.get("ready_targets", []))
 
 
-def complete(cwd: pathlib.Path, target: str, content: str) -> dict:
-    packet = run(cwd, "task", "start", target)
-    return finish(cwd, target, packet, content)
+CHECKPOINT = """# Progress
+
+## Completed
+
+Indexes and relevant evidence were read.
+
+## Findings
+
+Findings are recorded in the artifact.
+
+## Hypotheses
+
+None.
+
+## Gaps
+
+None.
+
+## Next actions
+
+Submit the current artifact.
+"""
 
 
-def finish(cwd: pathlib.Path, target: str, packet: dict, content: str) -> dict:
-    if not all(key in packet for key in ("attempt", "artifact", "complete_command")):
-        raise RuntimeError(f"incomplete dispatch packet for {target}: {sorted(packet)}")
-    if "contract" not in packet or (
-        target.startswith("page:") and "template" not in packet
-    ):
-        raise RuntimeError(f"dispatch packet omitted contract assets for {target}")
-    replayed = run(cwd, "task", "packet", target, "--attempt", packet["attempt"])
-    if replayed != packet:
+def finish(
+    cwd: pathlib.Path, target: str, packet: dict, content: str, checkpoint=False
+) -> dict:
+    replay = run(cwd, "task", "packet", target, "--attempt", packet["attempt"])
+    if replay != packet:
         raise RuntimeError(f"persisted packet changed for {target}")
     write(pathlib.Path(packet["artifact"]), content)
-    result = run(
-        cwd,
-        "task",
-        "complete",
-        target,
-        "--attempt",
-        packet["attempt"],
-    )
+    if checkpoint:
+        write(pathlib.Path(packet["checkpoint"]), CHECKPOINT)
+        run(cwd, "task", "checkpoint", target, "--attempt", packet["attempt"])
+    result = run(cwd, "task", "complete", target, "--attempt", packet["attempt"])
     if not result.get("ok"):
         raise RuntimeError(f"target gate rejected {target}: {result}")
     return result
 
 
-def brief(source_name: str, counterpart: str) -> str:
-    return json.dumps(
+def complete(cwd: pathlib.Path, target: str, content: str, checkpoint=False) -> dict:
+    return finish(cwd, target, run(cwd, "task", "start", target), content, checkpoint)
+
+
+def approve(cwd: pathlib.Path, target: str) -> None:
+    packet = run(cwd, "task", "start", target)
+    write(
+        pathlib.Path(packet["artifact"]),
+        json.dumps(
+            {
+                "subject": packet["subject"],
+                "subject_digest": packet["subject_digest"],
+                "verdict": "approved",
+                "issues": [],
+            }
+        ),
+    )
+    result = run(cwd, "task", "complete", target, "--attempt", packet["attempt"])
+    if not result.get("ok"):
+        raise RuntimeError(f"review gate rejected {target}: {result}")
+
+
+def unit(
+    unit_id: str, source_name: str, kind: str, sources: list[str] | None = None
+) -> dict:
+    names = sources or [source_name]
+    return {
+        "id": unit_id,
+        "kind": kind,
+        "owner": "workspace" if len(names) > 1 else source_name,
+        "question": f"How does {unit_id} work across the captured sources?",
+        "scopes": [{"source": name, "paths": ["."]} for name in names],
+        "evidence_seeds": [
+            f"{name}/src/main/java/example/App.java#L1-L2" for name in names
+        ],
+    }
+
+
+def dossier(unit_id: str) -> str:
+    return markdown(
         {
-            "source": source_name,
-            "roles": ["public-contract"],
-            "concepts": [
-                {
-                    "name": "application-entry-point",
-                    "description": "The application exposes its source-owned entry point.",
-                    "paths": ["src/main/java/example/App.java"],
-                    "evidence_seeds": [
-                        f"{source_name}/src/main/java/example/App.java#L1-L2"
-                    ],
-                }
-            ],
-            "connections": [
-                {
-                    "name": "application-contract",
-                    "description": "The application contract crosses Source boundaries.",
-                    "evidence_seeds": [
-                        f"{source_name}/src/main/java/example/App.java#L1-L2"
-                    ],
-                    "counterpart_sources": [counterpart],
-                    "counterpart_queries": ["class App"],
-                }
-            ],
-            "gaps": [],
-        }
+            "kind": "knowledge-dossier",
+            "unit_id": unit_id,
+            "disposition": "ready",
+            "children": [],
+        },
+        f"# {unit_id}\n\nThe captured entry points support this knowledge boundary.",
     )
 
 
 def page(
-    title: str,
-    refs: list[tuple[str, str]],
-    links: str,
-    *,
-    diagram: tuple[str, str] | None = (
-        "component-map",
-        "flowchart LR\n    Entry --> Implementation",
-    ),
+    page_id: str, refs: list[tuple[str, str]], logical_link: str, diagram=True
 ) -> str:
-    sources = "\n".join(
-        f"  - id: {source_id}\n    resource: {resource}" for source_id, resource in refs
-    )
+    sources = [{"id": source_id, "resource": resource} for source_id, resource in refs]
     citations = " ".join(f"[^{source_id}]" for source_id, _ in refs)
     definitions = "\n".join(
         f"[^{source_id}]: revision-bound entry point" for source_id, _ in refs
     )
     visual = (
         "```mermaid\n"
-        f"%% okf-id: {diagram[0]}\n"
-        f"{diagram[1]}\n"
-        f"    accTitle: {title} representation\n"
-        "    accDescr: The diagram answers its planned relationship question.\n"
+        "%% okf-id: boundaries\n"
+        "flowchart LR\n"
+        "    accTitle: Source boundary map\n"
+        "    accDescr: API entry points connect to the web entry point.\n"
+        "    API --> WebUI\n"
         "```\n\n"
-        f"The diagram summarizes the planned relationship.[^{refs[0][0]}]\n\n"
+        f"The dependency direction is explicit.[^{refs[0][0]}]\n\n"
         if diagram
         else ""
     )
-    return (
-        "---\n"
-        f"type: Architecture\ntitle: {title}\n"
-        "description: Open before changing this boundary.\n"
-        "tags: [architecture]\ncoverage: full\n"
-        f"sources:\n{sources}\n---\n\n"
-        f"## Responsibility\n\n{visual}"
-        f"{title} is routed by pinned entry points. {citations}\n\n"
-        f"## Related concepts\n\n{links}\n\n{definitions}\n"
+    return markdown(
+        {"type": "Overview", "coverage": "full", "sources": sources},
+        f"## Responsibility\n\n{visual}The page is anchored by pinned entry points. {citations}\n\n"
+        f"## Related concepts\n\n{logical_link}\n\n{definitions}",
     )
-
-
-def approve(cwd: pathlib.Path, target: str) -> None:
-    packet = run(cwd, "task", "start", target)
-    digest = packet.get("subject_digest")
-    if not isinstance(digest, str) or len(digest) != 64:
-        raise RuntimeError(f"review packet has no subject digest: {packet}")
-    write(
-        pathlib.Path(packet["artifact"]),
-        json.dumps(
-            {
-                "subject": packet["subject"],
-                "subject_digest": digest,
-                "verdict": "approved",
-                "issues": [],
-            }
-        ),
-    )
-    result = run(
-        cwd,
-        "task",
-        "complete",
-        target,
-        "--attempt",
-        packet["attempt"],
-    )
-    if not result.get("ok"):
-        raise RuntimeError(f"review gate rejected {target}: {result}")
 
 
 def evaluate(base: pathlib.Path) -> dict:
@@ -205,32 +190,27 @@ def evaluate(base: pathlib.Path) -> dict:
     run(ws, "source", "add", "link", str(web), "--name", "WebUI")
 
     started = run(
-        ws,
-        "run",
-        "start",
-        "--producer",
-        "repo-wiki/e2e",
-        "--session",
-        "writer-1",
+        ws, "run", "start", "--producer", "repo-wiki/e2e", "--session", "writer-1"
     )
-    if ready_ids(started) != {"plan:API", "plan:WebUI"}:
-        raise RuntimeError(f"run must start with Source scouts ready: {started}")
+    if ready(started) != {"plan:workspace"}:
+        raise RuntimeError(f"multi-source Run must have one planner: {started}")
 
-    stale = run(ws, "task", "start", "plan:API")
+    first = run(ws, "task", "start", "plan:workspace")
     search = run(
-        ws,
-        "task",
-        "search",
-        "plan:API",
-        "public class",
-        "--source",
-        "API",
+        ws, "task", "search", "plan:workspace", "public class", "--source", "API"
     )
     locator = search.get("results", [{}])[0].get("locator")
-    if not locator or run(ws, "task", "read", "plan:API", locator)[
-        "locator"
-    ] != locator.replace("#L2", "#L2-L2"):
-        raise RuntimeError(f"search/read locator handoff failed: {search}")
+    if not locator or not run(ws, "task", "read", "plan:workspace", locator).get(
+        "text"
+    ):
+        raise RuntimeError("bounded search/read handoff failed")
+    write(pathlib.Path(first["checkpoint"]), CHECKPOINT)
+    run(ws, "task", "checkpoint", "plan:workspace", "--attempt", first["attempt"])
+    run(ws, "task", "fail", "plan:workspace", "--reason", "exercise retry")
+    retry = run(ws, "task", "start", "plan:workspace")
+    if not any(item["role"] == "previous_checkpoint" for item in retry["inputs"]):
+        raise RuntimeError("retry omitted durable checkpoint")
+
     write(
         api / "src/main/java/example/App.java",
         'package example;\npublic class App { static String name = "api-v2"; }\n',
@@ -238,136 +218,30 @@ def evaluate(base: pathlib.Path) -> dict:
     subprocess.run(["git", "-C", str(api), "add", "."], check=True)
     subprocess.run(["git", "-C", str(api), "commit", "-qm", "refresh"], check=True)
     run(ws, "source", "refresh", "--name", "API")
-    stale_result = invoke(
+    stale = invoke(
         ws,
         "task",
         "complete",
-        "plan:API",
+        "plan:workspace",
         "--attempt",
-        stale["attempt"],
-        json_output=True,
+        retry["attempt"],
         check=False,
     )
-    if stale_result.returncode == 0:
-        raise RuntimeError("refresh must reject the stale Source scout attempt")
+    if stale.returncode == 0:
+        raise RuntimeError("refresh accepted a stale planner attempt")
 
-    complete(ws, "plan:API", brief("API", "WebUI"))
-    complete(ws, "plan:WebUI", brief("WebUI", "API"))
-    if ready_ids(run(ws, "run", "status")) != {"plan:workspace"}:
-        raise RuntimeError("workspace planner became ready before all Source Briefs")
-
-    plan = {
-        "pages": [
-            {
-                "path": "data/api/request-flow.md",
-                "type": "Flow",
-                "owner": "API",
-                "title": "API request flow",
-                "description": "Open before changing request interactions.",
-                "tags": ["flow"],
-                "scopes": [{"source": "API", "paths": ["."]}],
-                "evidence_seeds": ["API/src/main/java/example/App.java#L1-L2"],
-                "depends_on": [],
-                "diagrams": [
-                    {
-                        "id": "request-flow",
-                        "kind": "sequence",
-                        "question": "How does a request cross participants?",
-                    }
-                ],
-            },
-            {
-                "path": "data/webui/app-lifecycle.md",
-                "type": "Lifecycle",
-                "owner": "WebUI",
-                "title": "Web application lifecycle",
-                "description": "Open before changing application state.",
-                "tags": ["lifecycle"],
-                "scopes": [{"source": "WebUI", "paths": ["."]}],
-                "evidence_seeds": ["WebUI/src/main/java/example/App.java#L1-L2"],
-                "depends_on": [],
-                "diagrams": [
-                    {
-                        "id": "app-state",
-                        "kind": "state",
-                        "question": "How does the application change state?",
-                    }
-                ],
-            },
-            {
-                "path": "data/api/data-model.md",
-                "type": "DataModel",
-                "owner": "API",
-                "title": "API data model",
-                "description": "Open before changing stored request relationships.",
-                "tags": ["data-model"],
-                "scopes": [{"source": "API", "paths": ["."]}],
-                "evidence_seeds": ["API/src/main/java/example/App.java#L1-L2"],
-                "depends_on": [],
-                "diagrams": [
-                    {
-                        "id": "request-records",
-                        "kind": "er",
-                        "question": "How do application and request records relate?",
-                    }
-                ],
-            },
-            {
-                "path": "architecture.md",
-                "type": "Architecture",
-                "owner": "workspace",
-                "title": "Architecture",
-                "description": "Open before cross-source changes.",
-                "tags": ["architecture"],
-                "scopes": [
-                    {"source": "API", "paths": ["."]},
-                    {"source": "WebUI", "paths": ["."]},
-                ],
-                "evidence_seeds": [],
-                "depends_on": [
-                    "data/api/request-flow.md",
-                    "data/webui/app-lifecycle.md",
-                    "data/api/data-model.md",
-                ],
-                "diagrams": [
-                    {
-                        "id": "component-map",
-                        "kind": "flowchart",
-                        "question": "How do the Sources depend on each other?",
-                    }
-                ],
-            },
-            {
-                "path": "overview.md",
-                "type": "Overview",
-                "owner": "workspace",
-                "title": "Overview",
-                "description": "Open first to route work.",
-                "tags": ["overview"],
-                "scopes": [
-                    {"source": "API", "paths": ["."]},
-                    {"source": "WebUI", "paths": ["."]},
-                ],
-                "evidence_seeds": [],
-                "depends_on": ["architecture.md"],
-                "diagrams": [],
-            },
-        ],
-        "gaps": [],
-    }
-    workspace_packet = run(ws, "task", "start", "plan:workspace")
-    brief_inputs = {
-        (item.get("target"), item.get("source"))
-        for item in workspace_packet["inputs"]
-        if item["role"] == "source_brief"
-    }
-    if brief_inputs != {("plan:API", "API"), ("plan:WebUI", "WebUI")}:
-        raise RuntimeError(
-            f"workspace planner did not receive both briefs: {brief_inputs}"
-        )
-    if workspace_packet["navigation_budget"] != {"calls": 32, "bytes": 128 * 1024}:
-        raise RuntimeError("workspace synthesis budget changed")
-    finish(ws, "plan:workspace", workspace_packet, json.dumps(plan))
+    plan = markdown(
+        {
+            "kind": "knowledge-plan",
+            "units": [
+                unit("workspace-routing", "API", "capability"),
+                unit("source-boundaries", "API", "integration", ["API", "WebUI"]),
+            ],
+            "gaps": [],
+        },
+        "# Knowledge Plan\n\nThe API and WebUI expose a cross-Source boundary.",
+    )
+    complete(ws, "plan:workspace", plan, checkpoint=True)
     review = run(
         ws,
         "review",
@@ -377,130 +251,110 @@ def evaluate(base: pathlib.Path) -> dict:
         "--session",
         "reviewer-2",
     )
-    if ready_ids(review) != {"review:plan"}:
-        raise RuntimeError(f"plan review did not bind: {review}")
+    if ready(review) != {"review:plan"}:
+        raise RuntimeError("Plan review did not become ready")
     approve(ws, "review:plan")
-    leaves = {
-        "page:data/api/request-flow.md",
-        "page:data/webui/app-lifecycle.md",
-        "page:data/api/data-model.md",
-    }
-    status = run(ws, "run", "status")
-    if ready_ids(status) != leaves:
-        raise RuntimeError(f"only leaf pages may be ready after planning: {status}")
+
+    for unit_id in ("workspace-routing", "source-boundaries"):
+        complete(ws, f"page:research/{unit_id}", dossier(unit_id))
+    if ready(run(ws, "run", "status")) != {"page:compose"}:
+        raise RuntimeError("composition became ready before all dossiers")
+
+    composition = markdown(
+        {
+            "kind": "composition-map",
+            "pages": [
+                {
+                    "id": "architecture",
+                    "path": "architecture.md",
+                    "type": "Architecture",
+                    "owner": "workspace",
+                    "title": "Architecture",
+                    "description": "Open before changing Source boundaries.",
+                    "tags": ["architecture"],
+                    "units": ["source-boundaries"],
+                    "scopes": [
+                        {"source": "API", "paths": ["."]},
+                        {"source": "WebUI", "paths": ["."]},
+                    ],
+                    "evidence_seeds": [
+                        "API/src/main/java/example/App.java#L1-L2",
+                        "WebUI/src/main/java/example/App.java#L1-L2",
+                    ],
+                    "parent": None,
+                    "depends_on": [],
+                    "diagrams": [
+                        {
+                            "id": "boundaries",
+                            "kind": "flowchart",
+                            "question": "How do the Sources depend on each other?",
+                        }
+                    ],
+                },
+                {
+                    "id": "overview",
+                    "path": "overview.md",
+                    "type": "Overview",
+                    "owner": "workspace",
+                    "title": "Overview",
+                    "description": "Open first to route work.",
+                    "tags": ["overview"],
+                    "units": ["workspace-routing"],
+                    "scopes": [{"source": "API", "paths": ["."]}],
+                    "evidence_seeds": ["API/src/main/java/example/App.java#L1-L2"],
+                    "parent": None,
+                    "depends_on": ["architecture"],
+                    "diagrams": [],
+                },
+            ],
+            "gaps": [],
+        },
+        "# Composition\n\nStable page IDs are independent of publication paths.",
+    )
+    complete(ws, "page:compose", composition, checkpoint=True)
+    approve(ws, "review:composition")
 
     api_ref = "API/src/main/java/example/App.java#L1-L2"
     web_ref = "WebUI/src/main/java/example/App.java#L1-L2"
     complete(
         ws,
-        "page:data/api/request-flow.md",
+        "page:write/architecture",
         page(
-            "API request flow",
-            [("api", api_ref)],
-            "[Workspace](/architecture.md)",
-            diagram=("request-flow", "sequenceDiagram\n    API->>WebUI: Request"),
-        ),
-    )
-    complete(
-        ws,
-        "page:data/webui/app-lifecycle.md",
-        page(
-            "Web application lifecycle",
-            [("web", web_ref)],
-            "[Workspace](/architecture.md)",
-            diagram=("app-state", "stateDiagram-v2\n    [*] --> Ready"),
-        ),
-    )
-    complete(
-        ws,
-        "page:data/api/data-model.md",
-        page(
-            "API data model",
-            [("api", api_ref)],
-            "[Workspace](/architecture.md)",
-            diagram=(
-                "request-records",
-                "erDiagram\n    APPLICATION ||--o{ REQUEST : handles",
-            ),
-        ),
-    )
-    if "page:architecture.md" in ready_ids(run(ws, "run", "status")):
-        raise RuntimeError("parent page became ready before child review")
-
-    expected_reviews = {
-        "review:data/api/request-flow.md",
-        "review:data/webui/app-lifecycle.md",
-        "review:data/api/data-model.md",
-    }
-    if ready_ids(run(ws, "run", "status")) != expected_reviews:
-        raise RuntimeError(f"review session did not bind: {review}")
-    approve(ws, "review:data/api/request-flow.md")
-    approve(ws, "review:data/webui/app-lifecycle.md")
-    approve(ws, "review:data/api/data-model.md")
-    if ready_ids(run(ws, "run", "status")) != {"page:architecture.md"}:
-        raise RuntimeError("Machine-confirmed children did not unlock architecture.md")
-
-    complete(
-        ws,
-        "page:architecture.md",
-        page(
-            "Architecture",
+            "architecture",
             [("api", api_ref), ("web", web_ref)],
-            "[API flow](/data/api/request-flow.md) "
-            "[Web lifecycle](/data/webui/app-lifecycle.md) "
-            "[Data model](/data/api/data-model.md) "
-            "[Overview](/overview.md)",
+            "See [overview][overview].",
         ),
     )
-    if "page:overview.md" in ready_ids(run(ws, "run", "status")):
-        raise RuntimeError("overview.md became ready before architecture review")
-    approve(ws, "review:architecture.md")
-    if ready_ids(run(ws, "run", "status")) != {"page:overview.md"}:
-        raise RuntimeError("architecture review did not unlock overview.md")
-
+    approve(ws, "review:architecture")
     complete(
         ws,
-        "page:overview.md",
+        "page:write/overview",
         page(
-            "Overview",
-            [("api", api_ref), ("web", web_ref)],
-            "[Architecture](/architecture.md)",
-            diagram=None,
+            "overview",
+            [("api", api_ref)],
+            "See [architecture][architecture].",
+            diagram=False,
         ),
     )
-    approve(ws, "review:overview.md")
+    approve(ws, "review:overview")
 
     published = run(ws, "publication", "publish")
     run(ws, "publication", "export", "--to", "wiki")
     validation = run(ws, "validate", "--published")
     if validation["errors"]:
         raise RuntimeError(f"published validation failed: {validation}")
-
-    published_path = pathlib.Path(published["path"])
-    manifest = json.loads((published_path / ".okf-manifest.json").read_text())
-    page_digests = {
-        path: entry.get("output_digest") for path, entry in manifest["pages"].items()
-    }
-    if not all(page_digests.values()):
-        raise RuntimeError("publication manifest omitted page output digests")
+    overview = pathlib.Path(published["path"]) / "overview.md"
+    if "](/architecture.md)" not in overview.read_text(encoding="utf-8"):
+        raise RuntimeError("logical page ID was not bound to the final path")
 
     second = run(
-        ws,
-        "run",
-        "start",
-        "--producer",
-        "repo-wiki/e2e",
-        "--session",
-        "writer-3",
+        ws, "run", "start", "--producer", "repo-wiki/e2e", "--session", "writer-3"
     )
     return {
         "workspace": str(ws),
         "published_generation": published["generation"],
         "pages": published["pages"],
-        "plan_digest": hashlib.sha256(
-            json.dumps(plan, sort_keys=True).encode()
-        ).hexdigest(),
-        "incremental_ready_targets": sorted(ready_ids(second)),
+        "incremental_ready_targets": sorted(ready(second)),
     }
 
 

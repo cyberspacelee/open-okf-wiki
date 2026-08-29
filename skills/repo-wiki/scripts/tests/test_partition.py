@@ -40,9 +40,10 @@ def test_index_records_are_disjoint_and_outline_is_a_tree(tmp_path):
     assert rendered.startswith("# demo\n")
     assert "Stats columns" not in rendered
     assert "  - `app/` [build-module]" in rendered
-    assert "    - `app/src/` [directory]" in rendered
-    assert "      - `app/src/main/` [directory]" in rendered
-    assert "        - `app/src/main/java/` [source-set:main/java]" in rendered
+    assert "app/src/`" in rendered  # main/test source-set branch
+    assert "app/src/main/`" not in rendered
+    assert "    - `app/src/main/java/` [source-set:main/java]" in rendered
+    assert "app/src/main/java/com/acme/util/" in rendered
     assert "[package-cluster]" in rendered
     assert "test 1" in rendered
     assert "generated 1" in rendered
@@ -95,7 +96,7 @@ def test_thousands_of_files_keep_complete_inventory_and_bounded_outline(tmp_path
     assert len(outline.encode("utf-8")) <= _index.MAX_INDEX_BYTES
     assert "2501 files | inventory complete" in outline
     assert "outline truncated: true" in outline
-    assert "folded " in outline
+    assert "compressed " in outline or "truncated " in outline
     assert outline.count("C.java") == 0
 
 
@@ -108,7 +109,10 @@ def test_many_structural_anchors_fold_instead_of_exceeding_budget(tmp_path):
             f"{module}/src/main/java/org/example/m{number}/Main.java",
             f"{module}/src/test/java/org/example/m{number}/MainTest.java",
         ):
-            write(tmp_path / rel, "<project/>\n" if rel.endswith("pom.xml") else "class Main {}\n")
+            write(
+                tmp_path / rel,
+                "<project/>\n" if rel.endswith("pom.xml") else "class Main {}\n",
+            )
             files.append(rel)
     write(tmp_path / "pom.xml", "<project/>\n")
     files.append("pom.xml")
@@ -120,6 +124,39 @@ def test_many_structural_anchors_fold_instead_of_exceeding_budget(tmp_path):
     assert len(outline.encode("utf-8")) <= _index.MAX_INDEX_BYTES
     assert payload["truncated"]
     assert "inventory complete" in outline
+
+
+def test_java_package_chains_are_compacted_but_semantic_boundaries_remain(tmp_path):
+    files = []
+    for number in range(20):
+        rel = (
+            "service/src/main/java/com/company/division/platform/product/"
+            f"feature/component/internal/Thing{number}.java"
+        )
+        write(tmp_path / rel, "class Thing {}\n")
+        files.append(rel)
+    write(tmp_path / "service/pom.xml", "<project/>\n")
+    files.append("service/pom.xml")
+
+    payload = _index.build_index("java", tmp_path, sorted(files))
+    outline = _index.render_index(payload)
+
+    assert "`service/` [build-module]" in outline
+    assert "`service/src/main/java/` [source-set:main/java]" in outline
+    assert "`service/src/`" not in outline
+    assert "`service/src/main/`" not in outline
+    canonical_dirs = {"."}
+    for path in files:
+        parent = pathlib.PurePosixPath(path).parent
+        canonical_dirs.update(
+            ancestor.as_posix()
+            for ancestor in (parent, *parent.parents)
+            if ancestor.as_posix() != "."
+        )
+    visible_lines = sum(
+        1 for line in outline.splitlines() if line.lstrip().startswith("- `")
+    )
+    assert visible_lines <= len(canonical_dirs) * 0.4
 
 
 def test_scope_digest_changes_only_for_selected_inventory(tmp_path):

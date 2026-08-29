@@ -1,90 +1,59 @@
 import pytest
-from _models import PagePlan, PagePlanEntry, PageScope, ReviewReport, SourceBrief
+from _models import (
+    CompositionMap,
+    CompositionPage,
+    KnowledgeDossier,
+    KnowledgePlan,
+    PageScope,
+    ReviewReport,
+)
 from pydantic import ValidationError
 
 
 def scope(paths=None) -> dict:
-    return {"source": "SourceA", "paths": ["src/core"] if paths is None else paths}
+    return {"source": "src", "paths": ["app.py"] if paths is None else paths}
 
 
-def page(path: str, *, depends_on=None, **overrides) -> dict:
+def unit(unit_id="answer-lifecycle", **overrides) -> dict:
     return {
-        "path": path,
-        "type": "Architecture",
-        "owner": "SourceA",
-        "title": path,
-        "description": "Open before changing this area.",
-        "tags": [],
+        "id": unit_id,
+        "kind": "lifecycle",
+        "owner": "src",
+        "question": "How does the answer move through its lifecycle?",
         "scopes": [scope()],
-        "evidence_seeds": ["SourceA/src/core/File.java#L1-L2"],
-        "depends_on": depends_on or [],
-        "diagrams": [
-            {
-                "id": "component-map",
-                "kind": "flowchart",
-                "question": "Which components depend on each other?",
-            }
-        ],
+        "evidence_seeds": ["src/app.py#L1-L2"],
         **overrides,
     }
 
 
-def source_brief(**overrides) -> dict:
+def page(page_id: str, path: str, **overrides) -> dict:
+    page_type = "Overview" if path == "overview.md" else "Architecture"
     return {
-        "source": "SourceA",
-        "roles": ["business-domain-owner"],
-        "concepts": [
-            {
-                "name": "request-lifecycle",
-                "description": "Requests move through validated lifecycle states.",
-                "paths": ["src/core"],
-                "evidence_seeds": ["SourceA/src/core/Request.java#L1-L2"],
-            }
-        ],
-        "connections": [
-            {
-                "name": "public-api",
-                "description": "The public API is consumed by SourceB.",
-                "evidence_seeds": ["SourceA/src/core/RequestApi.java#L1-L2"],
-                "counterpart_sources": ["SourceB"],
-                "counterpart_queries": ["RequestApi"],
-            }
-        ],
-        "gaps": [],
+        "id": page_id,
+        "path": path,
+        "type": page_type,
+        "owner": "workspace",
+        "title": page_id.title(),
+        "description": "Read this before changing answer behavior.",
+        "tags": ["answer"],
+        "units": ["answer-lifecycle"],
+        "scopes": [scope()],
+        "evidence_seeds": ["src/app.py#L1-L2"],
+        "parent": None,
+        "depends_on": [],
+        "diagrams": (
+            []
+            if page_type == "Overview"
+            else [
+                {
+                    "id": "components",
+                    "kind": "flowchart",
+                    "question": "Which components depend on each other?",
+                }
+            ]
+        ),
         **overrides,
     }
-
-
-def test_source_brief_is_bounded_strict_and_allows_evidence_only_sources():
-    brief = SourceBrief.model_validate(source_brief())
-    assert brief.source == "SourceA"
-    assert brief.concepts[0].paths == ["src/core"]
-
-    evidence_only = source_brief(
-        roles=["evidence-only-dependency"], concepts=[], connections=[]
-    )
-    assert SourceBrief.model_validate(evidence_only).concepts == []
-
-    with pytest.raises(ValidationError):
-        SourceBrief.model_validate(source_brief(extra="forbidden"))
-    with pytest.raises(ValidationError):
-        SourceBrief.model_validate(source_brief(roles=["unknown-role"]))
-    with pytest.raises(ValidationError, match="roles must be unique"):
-        SourceBrief.model_validate(
-            source_brief(roles=["public-contract", "public-contract"])
-        )
-    with pytest.raises(ValidationError, match="concept names must be unique"):
-        payload = source_brief()
-        payload["concepts"] *= 2
-        SourceBrief.model_validate(payload)
-
-
-@pytest.mark.parametrize("path", ["../src", "./src", "src/", r"src\core"])
-def test_source_brief_rejects_non_normalized_concept_paths(path):
-    payload = source_brief()
-    payload["concepts"][0]["paths"] = [path]
-    with pytest.raises(ValidationError):
-        SourceBrief.model_validate(payload)
 
 
 @pytest.mark.parametrize("path", [".", "src", "src/main/java", "build.gradle.kts"])
@@ -93,316 +62,193 @@ def test_page_scope_accepts_normalized_relative_paths(path):
 
 
 @pytest.mark.parametrize(
-    "path",
-    [
-        "",
-        "/src",
-        "C:/src",
-        "../src",
-        "src/../main",
-        "./src",
-        "src/",
-        "src//main",
-        r"src\\main",
-    ],
+    "path", ["", "/src", "C:/src", "../src", "./src", "src/", "src//main", r"src\main"]
 )
 def test_page_scope_rejects_non_normalized_paths(path):
     with pytest.raises(ValidationError):
         PageScope.model_validate(scope([path]))
 
 
-def test_page_scope_bounds_and_forbids_extra_fields():
-    with pytest.raises(ValidationError):
-        PageScope.model_validate(scope([]))
-    with pytest.raises(ValidationError):
-        PageScope.model_validate(scope([f"pkg/{index}" for index in range(33)]))
-    with pytest.raises(ValidationError):
-        PageScope.model_validate({**scope(), "tier": "deep"})
-
-
-def test_page_plan_entry_keeps_dependency_shape_without_a_mode_field():
-    entry = PagePlanEntry.model_validate(page("sourcea/architecture.md"))
-    assert entry.depends_on == []
-    with pytest.raises(ValidationError):
-        PagePlanEntry.model_validate(page("sourcea/architecture.md", mode="synthesis"))
-
-
-@pytest.mark.parametrize(
-    ("page_type", "diagrams"),
-    [
-        ("Overview", []),
-        (
-            "Architecture",
-            [{"id": "map", "kind": "flowchart", "question": "What depends on what?"}],
-        ),
-        ("Domain", []),
-        (
-            "Flow",
-            [
-                {
-                    "id": "request",
-                    "kind": "sequence",
-                    "question": "Who handles the request?",
-                }
-            ],
-        ),
-        (
-            "Lifecycle",
-            [
-                {
-                    "id": "states",
-                    "kind": "state",
-                    "question": "How does it change state?",
-                }
-            ],
-        ),
-        (
-            "DataModel",
-            [{"id": "relations", "kind": "er", "question": "Which records relate?"}],
-        ),
-        ("Table", []),
-    ],
-)
-def test_page_types_define_their_representation_contract(page_type, diagrams):
-    entry = PagePlanEntry.model_validate(
-        page("a.md", type=page_type, diagrams=diagrams)
+def test_knowledge_plan_is_strict_bounded_and_uses_stable_ids():
+    plan = KnowledgePlan.model_validate(
+        {"kind": "knowledge-plan", "units": [unit()], "gaps": []}
     )
-    assert entry.type == page_type
+    assert plan.units[0].id == "answer-lifecycle"
+    assert not hasattr(plan.units[0], "path")
 
-
-@pytest.mark.parametrize(
-    ("page_type", "diagrams"),
-    [
-        ("Overview", [{"id": "map", "kind": "flowchart", "question": "Why?"}]),
-        ("Architecture", []),
-        ("Flow", [{"id": "states", "kind": "state", "question": "Why?"}]),
-        ("Lifecycle", [{"id": "flow", "kind": "flowchart", "question": "Why?"}]),
-        ("DataModel", []),
-        ("Table", [{"id": "relations", "kind": "er", "question": "Why?"}]),
-    ],
-)
-def test_page_types_reject_the_wrong_representation(page_type, diagrams):
     with pytest.raises(ValidationError):
-        PagePlanEntry.model_validate(page("a.md", type=page_type, diagrams=diagrams))
-
-
-def test_diagram_specs_are_required_bounded_and_page_local_unique():
-    without_diagrams = page("a.md")
-    without_diagrams.pop("diagrams")
-    with pytest.raises(ValidationError):
-        PagePlanEntry.model_validate(without_diagrams)
-    with pytest.raises(ValidationError, match="diagram ids must be unique"):
-        PagePlanEntry.model_validate(
-            page("a.md", diagrams=page("a.md")["diagrams"] * 2)
+        KnowledgePlan.model_validate(
+            {"kind": "knowledge-plan", "units": [unit(), unit()], "gaps": []}
         )
     with pytest.raises(ValidationError):
-        PagePlanEntry.model_validate(
-            page(
-                "a.md",
-                diagrams=[
-                    {"id": f"map-{index}", "kind": "flowchart", "question": "Why?"}
-                    for index in range(5)
-                ],
-            )
+        KnowledgePlan.model_validate(
+            {"kind": "knowledge-plan", "units": [unit()], "paths": []}
         )
     with pytest.raises(ValidationError):
-        PagePlanEntry.model_validate(page("a.md", type="Essay", diagrams=[]))
-
-
-def test_page_plan_entry_scope_bounds():
-    with pytest.raises(ValidationError):
-        PagePlanEntry.model_validate(page("a.md", scopes=[]))
-    with pytest.raises(ValidationError):
-        PagePlanEntry.model_validate(
-            page("a.md", scopes=[scope([f"pkg/{index}"]) for index in range(17)])
+        KnowledgePlan.model_validate(
+            {"kind": "knowledge-plan", "units": [unit("Upper_ID")], "gaps": []}
         )
 
 
-@pytest.mark.parametrize("path", ["../x.md", "CON.md", "x//y.md", "Upper.md", "x.txt"])
-def test_page_and_dependency_paths_are_portable(path):
-    field = "path" if path != "x.txt" else "depends_on"
-    payload = page("sourcea/architecture.md")
-    payload[field] = path if field == "path" else [path]
-    with pytest.raises(ValidationError):
-        PagePlanEntry.model_validate(payload)
-
-
-def test_page_plan_requires_unique_nonempty_bounded_pages():
-    plan = PagePlan.model_validate({"pages": [page("a.md")]})
-    assert [item.path for item in plan.pages] == ["a.md"]
-
-    with pytest.raises(ValidationError):
-        PagePlan.model_validate({"source": "SourceA", "pages": [page("a.md")]})
-
-    with pytest.raises(ValidationError):
-        PagePlan.model_validate({"pages": []})
-    with pytest.raises(ValidationError):
-        PagePlan.model_validate({"pages": [page("same.md"), page("same.md")]})
-    with pytest.raises(ValidationError):
-        PagePlan.model_validate(
-            {"pages": [page(f"p-{index}.md") for index in range(65)]}
-        )
-    with pytest.raises(ValidationError):
-        PagePlan.model_validate({"pages": [page("a.md")], "gaps": ["gap"] * 17})
-
-
-def test_page_plan_text_and_tag_fields_are_bounded():
-    with pytest.raises(ValidationError):
-        PagePlanEntry.model_validate(page("a.md", title="x" * 121))
-    with pytest.raises(ValidationError):
-        PagePlanEntry.model_validate(page("a.md", description="x" * 801))
-    with pytest.raises(ValidationError):
-        PagePlanEntry.model_validate(page("a.md", tags=["tag"] * 17))
-    with pytest.raises(ValidationError):
-        PagePlanEntry.model_validate(
-            page("a.md", evidence_seeds=[f"SourceA/src/F{i}.java" for i in range(4)])
-        )
-    with pytest.raises(ValidationError):
-        PagePlanEntry.model_validate(
-            {
-                key: value
-                for key, value in page("a.md").items()
-                if key != "evidence_seeds"
-            }
-        )
-
-
-def test_page_plan_rejects_unknown_and_self_dependencies():
-    with pytest.raises(ValidationError, match="planned pages"):
-        PagePlan.model_validate({"pages": [page("a.md", depends_on=["missing.md"])]})
-    with pytest.raises(ValidationError, match="itself"):
-        PagePlan.model_validate({"pages": [page("a.md", depends_on=["a.md"])]})
-
-
-def test_page_plan_rejects_dependency_cycles():
-    with pytest.raises(ValidationError, match="cycle"):
-        PagePlan.model_validate(
-            {
-                "pages": [
-                    page("a.md", depends_on=["b.md"]),
-                    page("b.md", depends_on=["c.md"]),
-                    page("c.md", depends_on=["a.md"]),
-                ]
-            }
-        )
-
-
-def test_review_report_is_subject_and_digest_bound():
-    digest = "a" * 64
-    report = ReviewReport.model_validate(
+def test_dossier_ready_or_bounded_split_contract():
+    ready = KnowledgeDossier.model_validate(
         {
-            "subject": "page:a.md",
-            "subject_digest": digest,
-            "verdict": "approved",
-            "issues": [],
+            "kind": "knowledge-dossier",
+            "unit_id": "answer-lifecycle",
+            "disposition": "ready",
+            "children": [],
         }
     )
-    assert report.subject_digest == digest
+    assert ready.children == []
 
-    representation = {
-        "category": "representation",
-        "claim": "The diagram omits the retry branch.",
-        "resolution": "Add the evidenced retry message.",
-        "reopen_target": "page:a.md",
-    }
-    assert (
-        ReviewReport.model_validate(
-            {
-                "subject": "page:a.md",
-                "subject_digest": digest,
-                "verdict": "changes_requested",
-                "issues": [representation],
-            }
-        )
-        .issues[0]
-        .category
-        == "representation"
+    split = KnowledgeDossier.model_validate(
+        {
+            "kind": "knowledge-dossier",
+            "unit_id": "answer-lifecycle",
+            "disposition": "split",
+            "children": [unit("answer-read"), unit("answer-write")],
+        }
     )
+    assert len(split.children) == 2
 
-    issue = {
-        "category": "unsupported-claim",
-        "claim": "Unsupported statement.",
-        "resolution": "Add evidence or remove it.",
-        "reopen_target": "page:a.md",
-    }
-    with pytest.raises(ValidationError):
-        ReviewReport.model_validate(
+    with pytest.raises(ValidationError, match="at least two"):
+        KnowledgeDossier.model_validate(
             {
-                "subject": "page:a.md",
-                "subject_digest": digest,
-                "verdict": "approved",
-                "issues": [issue],
+                "kind": "knowledge-dossier",
+                "unit_id": "answer-lifecycle",
+                "disposition": "split",
+                "children": [unit("answer-read")],
             }
         )
+    with pytest.raises(ValidationError, match="must not define children"):
+        KnowledgeDossier.model_validate(
+            {
+                "kind": "knowledge-dossier",
+                "unit_id": "answer-lifecycle",
+                "disposition": "ready",
+                "children": [unit("answer-read")],
+            }
+        )
+
+
+def test_composition_uses_id_relations_and_keeps_path_as_a_binding():
+    composition = CompositionMap.model_validate(
+        {
+            "kind": "composition-map",
+            "pages": [
+                page("answer-details", "guides/answer.md"),
+                page(
+                    "overview",
+                    "overview.md",
+                    units=["workspace-overview"],
+                    depends_on=["answer-details"],
+                ),
+            ],
+            "gaps": [],
+        }
+    )
+    moved = CompositionPage.model_validate(
+        {**composition.pages[0].model_dump(mode="json"), "path": "reference/answer.md"}
+    )
+    assert moved.id == composition.pages[0].id
+    assert moved.path != composition.pages[0].path
+
+
+def test_composition_rejects_duplicate_paths_unknown_relations_and_cycles():
+    with pytest.raises(ValidationError, match="paths must be unique"):
+        CompositionMap.model_validate(
+            {
+                "kind": "composition-map",
+                "pages": [page("one", "overview.md"), page("two", "overview.md")],
+            }
+        )
+    with pytest.raises(ValidationError, match="composed page ids"):
+        CompositionMap.model_validate(
+            {
+                "kind": "composition-map",
+                "pages": [page("one", "overview.md", depends_on=["missing"])],
+            }
+        )
+    with pytest.raises(ValidationError, match="cycle"):
+        CompositionMap.model_validate(
+            {
+                "kind": "composition-map",
+                "pages": [
+                    page("one", "one.md", depends_on=["two"]),
+                    page("two", "two.md", depends_on=["one"]),
+                ],
+            }
+        )
+
+
+def test_composition_validates_hierarchy_and_scheduling_as_separate_graphs():
+    composition = CompositionMap.model_validate(
+        {
+            "kind": "composition-map",
+            "pages": [
+                page("details", "details.md", parent="architecture"),
+                page(
+                    "architecture",
+                    "architecture.md",
+                    units=["system-architecture"],
+                    depends_on=["details"],
+                ),
+            ],
+        }
+    )
+    assert composition.pages[0].parent == "architecture"
+    assert composition.pages[1].depends_on == ["details"]
+
+
+def test_composition_enforces_page_representation_contract():
+    with pytest.raises(ValidationError, match="require a flowchart"):
+        CompositionPage.model_validate(
+            page("architecture", "architecture.md", diagrams=[])
+        )
+    with pytest.raises(ValidationError):
+        CompositionPage.model_validate(page("overview", "../overview.md"))
+
+
+def test_review_report_supports_structural_operations_on_stable_targets():
+    report = ReviewReport.model_validate(
+        {
+            "subject": "page:compose",
+            "subject_digest": "a" * 64,
+            "verdict": "changes_requested",
+            "issues": [
+                {
+                    "category": "concept-boundary",
+                    "claim": "Two unrelated capabilities share one page.",
+                    "resolution": "Split them in the Composition Map.",
+                    "reopen_target": "page:compose",
+                    "operation": "split",
+                }
+            ],
+        }
+    )
+    assert report.issues[0].operation == "split"
+
     with pytest.raises(ValidationError):
         ReviewReport.model_validate(
             {
-                "subject": "page:a.md",
-                "subject_digest": digest,
-                "verdict": "changes_requested",
+                "subject": "page:overview.md",
+                "subject_digest": "a" * 64,
+                "verdict": "approved",
                 "issues": [],
             }
         )
-    with pytest.raises(ValidationError, match="invalid target"):
+    with pytest.raises(ValidationError):
         ReviewReport.model_validate(
             {
-                "subject": "page:a.md",
-                "subject_digest": digest,
-                "verdict": "changes_requested",
-                "issues": [{**issue, "reopen_target": "page:b.md"}],
-            }
-        )
-
-
-def test_review_plan_reopen_may_target_the_plan_owner():
-    report = ReviewReport.model_validate(
-        {
-            "subject": "page:a.md",
-            "subject_digest": "b" * 64,
-            "verdict": "changes_requested",
-            "issues": [
-                {
-                    "category": "routing",
-                    "claim": "The page belongs elsewhere.",
-                    "resolution": "Replan the Source.",
-                    "reopen_target": "plan:workspace",
-                }
-            ],
-        }
-    )
-    assert report.issues[0].reopen_target == "plan:workspace"
-
-
-def test_plan_review_may_reopen_workspace_or_source_plan_but_not_pages():
-    report = ReviewReport.model_validate(
-        {
-            "subject": "plan:workspace",
-            "subject_digest": "c" * 64,
-            "verdict": "changes_requested",
-            "issues": [
-                {
-                    "category": "domain-coverage",
-                    "claim": "Usage is missing from the API brief.",
-                    "resolution": "Repair the API Source Brief.",
-                    "reopen_target": "plan:API",
-                }
-            ],
-        }
-    )
-    assert report.issues[0].reopen_target == "plan:API"
-
-    with pytest.raises(ValidationError, match="invalid target"):
-        ReviewReport.model_validate(
-            {
-                "subject": "plan:workspace",
-                "subject_digest": "c" * 64,
-                "verdict": "changes_requested",
+                "subject": "page:write/overview",
+                "subject_digest": "a" * 64,
+                "verdict": "approved",
                 "issues": [
                     {
-                        "category": "domain-coverage",
-                        "claim": "Usage is missing.",
-                        "resolution": "Add the usage domain.",
-                        "reopen_target": "page:usage.md",
+                        "category": "coverage",
+                        "claim": "Missing behavior.",
+                        "resolution": "Add it.",
+                        "reopen_target": "page:write/overview",
                     }
                 ],
             }

@@ -1,177 +1,100 @@
 # Writing Contract
 
-Read this before planning, writing or reviewing a page.
+## Admission and representation
 
-## Admission: the Grep Test
+Admit knowledge only when grep plus two or three files cannot reconstruct it in
+about a minute: cross-module architecture, lifecycle and failure propagation,
+enforced invariants, written decisions and task routing. Exclude inventories,
+signatures, directory trees, configuration lists and restated comments.
 
-If grep plus reading two or three files can rebuild a fact in about a minute,
-write a source pointer instead of prose. Admit cross-module architecture,
-enforced invariants, lifecycle and failure propagation, decisions with written
-rationale and task routing. Exclude inventories, signatures, directory trees,
-configuration lists and restated comments.
+Use prose for definitions and rationale, tables for repeated comparisons, and
+diagrams when topology, ordering, state reachability or cardinality would
+otherwise be reconstructed across sentences. Split only for an independently
+routable, independently evidenced question. Length, package boundaries and
+diagram count are not split criteria.
 
-## Representation Test
+## Scope and locators
 
-Use the representation that makes the admitted knowledge cheapest to recover.
-Use prose for definitions, rationale and a single rule; tables for repeated
-field comparisons; diagrams when readers would otherwise reconstruct topology,
-ordering, state reachability or cardinality across sentences. A diagram must
-make a relationship explicit, not replace words with unlabeled boxes.
+A scope pairs a registered Source with normalized relative POSIX paths. `.`
+selects the eligible Source root. Workers navigate and cite only within the
+assigned scopes. Cross-Source claims evidence each participant.
 
-Split a page only when the child answers an independently routable maintenance
-or debugging question, has distinct owner/scope/evidence or lifecycle, passes
-the Grep Test by itself, and lets the parent shrink to links plus synthesis.
-Length, package boundaries and diagram count are not split criteria.
+Locators are plain paths with an optional line range:
 
-## Page Scope
+    service/src/main/java/example/Request.java#L42-L68
 
-A Page Scope entry pairs one registered Source with relative paths; a page
-stores one or more entries in `scopes`. Git/files paths are normalized POSIX
-paths inside the captured Pin; `.` selects the eligible Source root. Catalog
-paths name selected table page slugs. Planning may group sibling packages or
-split a build module by concept, but no file or package receives a page merely
-to prove structural coverage.
+The first segment is the registered Source. No URI scheme or revision appears
+in locator text; Run state binds it to the frozen Pin or captured Catalog.
+Plans, dossiers and pages are routing inputs, never provenance.
 
-Page workers navigate and cite only inside their Page Scope. A source-owned
-page's `scopes` all name its owner. A workspace-owned page may span Sources;
-it names every participant in `scopes` and evidences each side of a boundary.
-Parent pages may also read their exact Machine-confirmed child inputs.
+## Artifact boundaries
 
-## Locators
+Knowledge Plan, Dossier and Composition Map are Markdown with a small,
+schema-validated YAML frontmatter manifest. Their bodies hold analysis. Review
+reports are strict JSON because the kernel consumes their verdict and reopen
+operations. Final pages are Markdown. Do not embed source files or large prose
+inside frontmatter.
 
-A Locator names evidence as a plain Source-relative path with an optional line
-range:
+The Knowledge Plan owns stable knowledge units and gaps, not pages. Dossiers
+own evidence findings and bounded research splits. The Composition Map owns
+stable page IDs, unit assignment, type, metadata, diagrams, ID relations and
+proposed final paths. Writers own page body, citations, coverage and diagram
+content. Review owns trust stamps.
 
-    src/service/UserService.java
-    src/service/UserService.java#L42-L68
-
-In a multi-source Workspace, prefix the registered Source name:
-`API/src/service/UserService.java#L42-L68`. No URI scheme or commit hash is
-embedded: the Run binds the Locator to its Revision and Pin. Line ranges must
-exist at that Revision.
-
-`search` returns Locators. Pass one directly to the packet's `read_command`;
-expand its `#Lx-Ly` range when surrounding evidence is needed. Do not split a
-Locator into source, path and line arguments. The attempt-wide navigation
-budget is cumulative across `outline`, `search` and `read`; when exhausted,
-finish from gathered evidence, record an honest gap or fail the Target.
-
-Cite only files actually opened. Plans and Candidate pages are routing inputs,
-not provenance. Unmaterialized LFS pointers and binary files are not evidence.
-Database concepts use credential-free resources from the captured Catalog.
-
-## Source Briefs
-
-When a Workspace has multiple Git/files Sources, one Source planning Target
-owns each Source Brief. A Brief accounts for that Source's roles, bounded
-lifecycle or invariant candidates, local evidence, cross-Source counterpart
-queries and gaps. It never owns Wiki pages. The Workspace planning Target is
-the single writer of the Page Plan and must reopen evidence before adopting a
-Brief decision.
-
-## Citations and metadata
-
-Every load-bearing claim carries a footnote id. The same id appears exactly
-once in frontmatter `sources:` and once as a footnote definition. The kernel
-fills Git author and last_modified metadata.
-
-The Page Plan owns page type, owner, title, routing description, tags, scopes,
-evidence seeds, dependencies and Diagram Specs. Page writers own body,
-coverage, gaps, sources and the content of planned diagrams. The State Gate
-copies Plan-owned metadata into the Candidate; review owns verified, status and
-stale_after. Workers never set trust fields.
-
-Partial coverage requires a non-empty Gaps section naming missing evidence and
-the searched scope. Causal language requires cited written rationale.
-
-Links are bundle-root-relative or page-relative; broken links block
-Publication. Links route between pages; inline diagrams express relationships
-inside one page. Do not create a separate connection graph or diagram sidecar.
+Knowledge units and pages use either a registered Source name or `workspace`
+as owner. Source-owned artifacts may scope only that Source. `parent` records
+information architecture; `depends_on` alone controls page readiness. Both
+graphs use stable page IDs and are independently acyclic.
 
 ## Page types and diagrams
 
 Types are closed: `Overview`, `Architecture`, `Domain`, `Flow`, `Lifecycle`,
 `DataModel` and `Table`.
 
-- `Overview` routes tasks and contains no diagram.
-- `Architecture` explains static boundaries and propagation and plans at least
-  one `flowchart`.
-- `Domain` explains capability ownership, public surface and invariants;
-  diagrams are optional.
-- `Flow` explains an end-to-end interaction or branch and plans at least one
-  `flowchart` or `sequence`.
-- `Lifecycle` explains one object's state transitions and plans at least one
-  `state` diagram.
-- `DataModel` explains relationships among selected entities and plans at
-  least one `er` diagram. Use `Table` or `Domain` when no relationship view is
-  admitted.
-- `Table` explains one captured schema table and contains no diagram.
+- `Overview` routes tasks and has no diagram.
+- `Architecture` explains static boundaries and requires a `flowchart`.
+- `Domain` explains capability ownership and invariants; diagrams are optional.
+- `Flow` requires a `flowchart` or `sequence`.
+- `Lifecycle` requires a `state` diagram.
+- `DataModel` requires an `er` diagram.
+- `Table` explains one captured table and has no diagram.
 
-Every Page Plan entry has a `diagrams` list. Each Diagram Spec contains a
-page-local unique ASCII `id`, `kind` (`flowchart`, `sequence`, `state` or `er`)
-and a short localized `question`. One diagram answers one question, and one
-page plans at most four; the bound protects dispatch size and is not a split
-criterion by itself.
-
-Each planned diagram appears exactly once in a `mermaid` fence:
+Each Diagram Spec has a page-local ASCII `id`, a supported `kind` and a short
+question. A page plans at most four. Each appears exactly once:
 
     ```mermaid
     %% okf-id: request-retry
     sequenceDiagram
         accTitle: Request retry interaction
-        accDescr: Queue dispatches a retry and the service schedules failure recovery.
+        accDescr: Dispatch, failure and recovery ordering.
     ```
 
-The `%% okf-id` and Mermaid kind must match the Plan. Every diagram has
-non-empty `accTitle` and `accDescr`, uses text labels rather than color alone,
-and is immediately followed by a short conclusion or caption with at least one
-ordinary page footnote. Keep citations outside the fence. The State Gate checks
-the supported declaration, non-empty diagram content and obvious dangling
-connectors. These basic checks do not prove that Mermaid will render or that the
-diagram is semantically correct; page review owns both judgments.
+Keep citations outside the fence. Follow it with a cited conclusion. Review
+owns semantic accuracy and renderability.
 
-## Page DAG
+## Citations and links
 
-The Page Plan is the single writer of page paths, owners, metadata, `scopes`,
-Diagram Specs and `depends_on` edges. Its `evidence_seeds` are one to three
-Locators the planner actually opened to justify each source-owned Git/files
-concept; they bootstrap page research but are not page provenance. Workspace
-synthesis pages may use an empty list. A dependency points from a parent
-synthesis page to a child. Paths are unique, every dependency names a planned
-page and dependencies are acyclic.
+Every load-bearing claim uses a footnote ID that appears exactly once in
+frontmatter `sources`, in body references and in a footnote definition. Partial
+coverage requires a non-empty `Gaps` section naming missing evidence and
+searched scope. Causal rationale must be cited.
 
-A Plan review bound to the exact Plan digest must approve domain recall,
-concept boundaries, routing metadata and the DAG before any page becomes
-ready. A leaf then researches and writes from Source evidence. A parent waits for all
-children to become Machine-confirmed, then synthesizes them with Source
-evidence. Review is per page and binds its exact digest. Changing a page
-invalidates its review and dependent parents.
+Before binding, logical page links use `[label][page-id]` without definitions.
+After binding, links are ordinary bundle-root-relative or page-relative links.
+Unknown logical IDs and broken bound links fail the gate.
 
-Workspace root pages use owner `workspace`. Source-owned pages use their
-Source name as owner, live under `data/<source-slug>/` and cite only that
-owner. Every plan includes `overview.md` and `architecture.md`. Multi-source
-plans add source-owned concepts only where they improve routing. Catalog pages
-may group related selected tables and use one or more table scopes; table
-selection alone never requires a page. Reserved `index.md` and `log.md` are
-generated by Publication.
+## Attempts and checkpoints
 
-## Attempts and gates
+Workers write only the packet's Attempt Artifact. A successful State Gate
+promotes it; rejected work cannot unlock downstream Targets. The packet and
+checkpoint persist under the attempt directory. A valid checkpoint is Markdown
+with `## Completed`, `## Findings`, `## Hypotheses`, `## Gaps` and
+`## Next actions`, is at most 64 KiB, and contains paths and conclusions rather
+than copied evidence.
 
-Workers write only the packet's Attempt Artifact inside its attempt-specific
-temporary directory. A successful State Gate promotes it to the canonical
-plan, Candidate page or review artifact. A rejected attempt cannot mutate
-completed artifacts or unlock downstream Targets. Target dependencies,
-ready-set calculation, retries and invalidation belong to the CLI, not the
-coordinator.
+Typed inputs include `source_index`, `catalog_index`, `subject`,
+`evidence_dossier`, `dependency_page`, `previous_output`, `previous_review`
+and `previous_checkpoint`. Never inspect `state.json` or unrelated attempts.
 
-The packet is persisted at `packet_path` and replayed only through `task
-packet`. Its `inputs` are typed: `source_index`, `source_brief`,
-`catalog_index`, `subject`, `dependency_page`, `previous_output` or
-`previous_review`. Read only roles required by the Target; never inspect run
-internals to discover more inputs.
-
-## Language
-
-The packet's `language` controls page prose, titles, routing descriptions,
-gaps and review text. Machine-facing frontmatter fields, tags, paths and
-Locators remain ASCII. Review flags language drift.
+The packet language controls prose, titles, descriptions, gaps and review text.
+Machine fields, IDs, paths, tags and Locators remain ASCII.

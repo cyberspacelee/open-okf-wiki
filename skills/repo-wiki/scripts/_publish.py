@@ -242,9 +242,9 @@ def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> 
     revisions = {item["name"]: item for item in state["revisions"]}
     result = {}
     for task in state["targets"].values():
-        if task["kind"] != "page":
+        if task["kind"] != "page" or task["spec"].get("mode") != "write":
             continue
-        page = candidate / task["name"]
+        page = candidate / task["spec"]["path"]
         parsed = parse_file(page)
         source_blobs = {}
         for source in parsed.meta.get("sources", []):
@@ -262,12 +262,12 @@ def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> 
                     blob = hashlib.sha256(content).hexdigest() if content else None
                 if blob:
                     source_blobs[f"{source_name}/{rel}"] = blob
-        result[task["name"]] = {
+        result[task["spec"]["path"]] = {
             "plan": task["spec"],
             "input_digest": task["last_attempt"]["input_digest"],
             "output_digest": task.get("output_digest"),
             "review_digest": state["targets"]
-            .get(f"review:{task['name']}", {})
+            .get(f"review:{task['spec']['id']}", {})
             .get("output_digest"),
             "source_blobs": source_blobs,
         }

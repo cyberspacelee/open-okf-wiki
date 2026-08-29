@@ -1,92 +1,48 @@
-# Review
+# Review Target
 
-Review exactly the packet's `subject` in a session distinct from the producer.
-The packet binds its `subject_digest`; do not use writer conversation history.
-Read the packet's `contract`, the typed `subject` input and any
-`previous_review` before navigating revision-bound evidence. For a page subject,
-also read the packet's exact `template`.
+Review the exact packet subject in a session distinct from the producer. Bind
+the report to `subject_digest`; do not use writer conversation history. Read
+the contract, typed subject, prior review and relevant bounded evidence.
 
-## Plan subject
+For `plan:workspace`, test domain recall, knowledge boundaries, Source roles,
+cross-Source contracts, evidence seeds and honest gaps. The Plan must not
+contain page structure. Reopen `plan:workspace` for material omissions.
 
-For `plan:workspace`, independently test whether the Plan:
+For `page:compose`, verify every active knowledge unit is assigned exactly once,
+page boundaries pass the Grep Test, type and representation fit the reader
+question, and hierarchy plus dependencies are coherent. Request structural
+`split`, `merge` or `move` against `page:compose`. Reopen an exact research
+Target for a dossier evidence gap, or `plan:workspace` for missing knowledge.
 
-- accounts for every Source role and the important domain nouns, lifecycles,
-  invariants, failure paths and cross-Source contracts;
-- distinguishes business concepts from packages, Maven modules and framework
-  structure;
-- distinguishes public API, internal API and plugin SPI where applicable;
-- uses coherent concept boundaries, owners, scopes, evidence seeds and child
-  dependencies without overloaded pages;
-- chooses page types and splits by independently routable questions, and plans
-  each required diagram with a question supported by its scope;
-- records evidence gaps honestly and writes titles and descriptions in the
-  packet language.
+For `page:write/<page-id>`, reopen evidence behind decision-changing claims.
+Judge unsupported claims, invented rationale, padded gaps, scope bleed,
+coverage, language, links, diagram semantics, readability and renderability.
+Use `repair` against the same write Target for content defects. Route page
+boundary, metadata, relation or path defects to `page:compose` with the matching
+structural operation.
 
-Read every `source_brief` input. Route a Source-specific role, concept or local
-contract omission to that Brief's `plan:<source>` Target. Route cross-Source
-reconciliation, page admission, metadata or DAG defects to `plan:workspace`.
-The State Gate rejects unknown scout targets.
+Write one strict JSON Attempt Artifact:
 
-Use bounded navigation to challenge omissions, not to repeat the entire Plan
-worker. Approve only when missing domain work would not materially change the
-page set or routing DAG.
+```json
+{
+  "subject": "page:compose",
+  "subject_digest": "<packet subject_digest>",
+  "verdict": "changes_requested",
+  "issues": [{
+    "category": "concept-boundary",
+    "claim": "Two unrelated capabilities share one page.",
+    "resolution": "Split them into independently routable pages.",
+    "reopen_target": "page:compose",
+    "operation": "split"
+  }]
+}
+```
 
-## Page subject
+Operations are `repair`, `split`, `merge` and `move`. Structural operations
+must reopen `page:compose`. Categories are `domain-coverage`,
+`concept-boundary`, `dependency`, `grep-test`, `unsupported-claim`,
+`invented-rationale`, `padded-gap`, `ownership`, `routing`, `coverage`,
+`language` and `representation`.
 
-For `page:<path>`, reopen evidence behind every decision-changing claim. Treat
-citations as assertions, not trusted excerpts. Judge the Grep Test, unsupported
-claims, invented rationale, padded gaps, scope bleed, missing cross-Source
-evidence, broken routing, coverage honesty and language. For a parent page,
-inspect its `dependency_page` inputs for overlap and missing links.
-
-Apply the Representation Test. Verify that each diagram kind fits its question;
-every decision-changing node, edge, message, transition and cardinality agrees
-with reopened evidence; normal, failure, retry, compensation, terminal and
-optional paths are not materially omitted; direction, grouping and labels are
-readable in the packet language; and `accDescr` conveys the diagram's purpose.
-Renderability is a review concern because the State Gate performs only basic
-structure checks. Flag decorative diagrams and prose that repeats every edge.
-
-Ownership determines repair routing:
-
-| Owner | Fields |
-|---|---|
-| `plan:workspace` | page set/splits, Plan gaps, path, type, owner, title, description, tags, scopes, evidence_seeds, depends_on, Diagram Specs/questions |
-| `page:<path>` | body, headings, links, sources, citations, coverage, Page Gaps, diagram semantics and readability |
-
-Never reopen a page for a Plan-owned defect: the State Gate will restore Plan
-metadata. A Plan review may reopen `plan:workspace` or an exact dispatched
-`plan:<source>`; a Page review may reopen its own subject or `plan:workspace`.
-
-## Follow-up
-
-When `review_mode` is `follow_up`, verify every issue in `previous_review`
-first. Add a new issue only when the repair introduced it or it blocks truthful
-approval; state in the claim why the initial review could not report it. Two
-consecutive change rounds pause the Run for a human resume decision.
-
-Write one JSON Attempt Artifact at the packet's `artifact` path:
-
-    {
-      "subject": "page:data/api/request-lifecycle.md",
-      "subject_digest": "<packet subject_digest>",
-      "verdict": "changes_requested",
-      "issues": [{
-        "category": "unsupported-claim",
-        "claim": "exact claim or Plan decision",
-        "resolution": "evidence, deletion or Plan change needed",
-        "reopen_target": "page:data/api/request-lifecycle.md"
-      }]
-    }
-
-Categories are `domain-coverage`, `concept-boundary`, `dependency`,
-`grep-test`, `unsupported-claim`, `invented-rationale`, `padded-gap`,
-`ownership`, `routing`, `coverage`, `language` and `representation`. An
-approved report has `verdict: "approved"` and no issues. Approval remains valid
-only while the subject digest matches. Page approval stamps Machine-confirmed
-metadata; Plan approval unlocks leaf pages. Neither is human review.
-
-Run `complete_command` from `workdir`. Repair schema or evidence-check errors
-until the gate accepts the report.
-
-Handoff: Attempt Artifact path, subject, verdict, issue count.
+An approved report has no issues. On follow-up, verify prior issues first. Run
+`complete_command`. Handoff: artifact path, subject, verdict and issue count.

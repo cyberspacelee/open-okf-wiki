@@ -5,14 +5,16 @@ import os
 import pathlib
 import re
 import secrets
+import shutil
 import time
 from datetime import datetime, timedelta, timezone
 
 from _files import atomic_json, directory_digest
-from _models import PagePlan, ReviewReport, SourceBrief
+from _frontmatter import parse_file
+from _models import CompositionMap, KnowledgeDossier, KnowledgePlan, ReviewReport
 
 VERSION = 2
-CONTRACT = "source-plan-diagram-dag"
+CONTRACT = "knowledge-composition-late-bind"
 KINDS = {"plan", "page", "review"}
 LOCK_TIMEOUT_SEC = 60
 MAX_SEARCH_RESULTS = 20
@@ -140,16 +142,22 @@ def read(root: pathlib.Path) -> dict | None:
         or "tasks" in state
     ):
         raise StateError(
-            "legacy or unsupported run state; source-plan-diagram-dag is required"
+            "legacy or unsupported run state; knowledge-composition-late-bind is required"
         )
     for target_id, target in state["targets"].items():
         if target.get("id") != target_id or target.get("kind") not in KINDS:
             raise StateError(f"invalid target state: {target_id}")
-        if target["kind"] == "plan" and target.get("spec", {}).get("mode") not in {
-            "source",
-            "workspace",
-        }:
+        if (
+            target["kind"] == "plan"
+            and target.get("spec", {}).get("mode") != "workspace"
+        ):
             raise StateError(f"invalid plan target state: {target_id}")
+        if target["kind"] == "page" and target.get("spec", {}).get("mode") not in {
+            "research",
+            "compose",
+            "write",
+        }:
+            raise StateError(f"invalid page target state: {target_id}")
     return state
 
 
@@ -258,6 +266,9 @@ def start_run(root: pathlib.Path, producer: str, session: str) -> dict:
     for relative in (
         "drafts/index",
         "drafts/plan",
+        "drafts/dossiers",
+        "drafts/composition",
+        "drafts/pages",
         "drafts/review",
         "attempts",
         "candidate",
@@ -269,31 +280,12 @@ def start_run(root: pathlib.Path, producer: str, session: str) -> dict:
             root, run_id, workspace.sources[revision["name"]], revision
         )
     plan_scopes = _plan_scopes(workspace, catalogs)
-    code_sources = [
-        source
-        for source in workspace.sources.values()
-        if source.kind in ("git", "files")
-    ]
-    source_plans = []
-    if len(code_sources) > 1:
-        for source in code_sources:
-            target = _target(
-                "plan",
-                source.name,
-                f"drafts/plan/{source.name.lower()}.json",
-                mode="source",
-                source=source.name,
-                scopes=[{"source": source.name, "paths": ["."]}],
-            )
-            _add_target(state, target)
-            source_plans.append(target["id"])
     _add_target(
         state,
         _target(
             "plan",
             "workspace",
-            "drafts/plan/workspace.json",
-            dependencies=source_plans,
+            "drafts/plan/workspace.md",
             mode="workspace",
             scopes=plan_scopes,
         ),
@@ -385,9 +377,15 @@ def assert_revisions_current(root: pathlib.Path, state: dict) -> None:
 
 def _reference(target: dict) -> pathlib.Path:
     if target["kind"] == "plan":
-        name = "source-plan.md" if target["spec"]["mode"] == "source" else "plan.md"
+        name = "plan.md"
+    elif target["kind"] == "page":
+        name = {
+            "research": "dossier.md",
+            "compose": "composition.md",
+            "write": "page.md",
+        }[target["spec"]["mode"]]
     else:
-        name = {"page": "page.md", "review": "review.md"}[target["kind"]]
+        name = "review.md"
     return pathlib.Path(__file__).resolve().parent.parent / "references" / name
 
 
@@ -396,10 +394,19 @@ def _contract() -> pathlib.Path:
 
 
 def _template(state: dict, target: dict) -> pathlib.Path | None:
-    page = target if target["kind"] == "page" else None
+    page = (
+        target
+        if target["kind"] == "page" and target["spec"].get("mode") == "write"
+        else None
+    )
     if target["kind"] == "review":
         subject = target["spec"].get("subject", "")
-        page = state["targets"].get(subject) if subject.startswith("page:") else None
+        candidate = state["targets"].get(subject)
+        page = (
+            candidate
+            if candidate and candidate["spec"].get("mode") == "write"
+            else None
+        )
     if page is None:
         return None
     name = {
@@ -475,6 +482,7 @@ def _input_digest(root: pathlib.Path, state: dict, target: dict) -> str:
         "contract": _file_digest(_contract()),
         "template": _file_digest(template) if template else None,
         "prior_output": _file_digest(canonical) if canonical.is_file() else None,
+        "prior_checkpoint": target.get("last_attempt", {}).get("checkpoint_digest"),
         "actor": (
             state.get("review", {}).get("actor")
             if target["kind"] == "review"
@@ -490,15 +498,22 @@ def _input_digest(root: pathlib.Path, state: dict, target: dict) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _attempt_path(target: dict, token: str) -> str:
-    suffix = pathlib.PurePosixPath(target["artifact"]).suffix or ".tmp"
+def _attempt_file(target: dict, token: str, suffix: str) -> str:
     key = hashlib.sha256(target["id"].encode()).hexdigest()[:16]
     return f"attempts/{key}/{token}{suffix}"
 
 
+def _attempt_path(target: dict, token: str) -> str:
+    suffix = pathlib.PurePosixPath(target["artifact"]).suffix or ".tmp"
+    return _attempt_file(target, token, suffix)
+
+
+def _checkpoint_path(target: dict, token: str) -> str:
+    return _attempt_file(target, token, ".checkpoint.md")
+
+
 def _packet_path(target: dict, token: str) -> str:
-    key = hashlib.sha256(target["id"].encode()).hexdigest()[:16]
-    return f"attempts/{key}/{token}.packet.json"
+    return _attempt_file(target, token, ".packet.json")
 
 
 def _catalog_inputs(root: pathlib.Path, state: dict, target: dict) -> list[dict]:
@@ -522,39 +537,51 @@ def _dispatch_inputs(root: pathlib.Path, state: dict, target: dict) -> list[dict
     for target_id in target["depends_on"]:
         dependency = state["targets"][target_id]
         subject = dependency.get("spec", {}).get("subject")
-        if dependency["kind"] == "review" and subject != "plan:workspace":
-            page = subject.removeprefix("page:")
+        if dependency["kind"] == "review":
+            subject_target = state["targets"][subject]
             result.append(
                 {
-                    "role": "dependency_page",
+                    "role": (
+                        "subject" if subject == "plan:workspace" else "dependency_page"
+                    ),
                     "target": subject,
-                    "path": str(base / "candidate" / page),
+                    "path": str(base / subject_target["artifact"]),
                 }
             )
         elif dependency["kind"] in ("plan", "page"):
-            is_source_brief = (
-                dependency["kind"] == "plan"
-                and dependency["spec"].get("mode") == "source"
+            result.append(
+                {
+                    "role": "subject",
+                    "target": dependency["id"],
+                    "path": str(base / dependency["artifact"]),
+                }
             )
-            item = {
-                "role": "source_brief" if is_source_brief else "subject",
-                "target": dependency["id"],
-                "path": str(base / dependency["artifact"]),
-            }
-            if is_source_brief:
-                item["source"] = dependency["spec"]["source"]
-            result.append(item)
     if target["kind"] == "review":
         subject = state["targets"].get(target["spec"].get("subject"))
         for dependency_id in subject.get("depends_on", []) if subject else []:
             dependency = state["targets"][dependency_id]
             child = dependency.get("spec", {}).get("subject", "")
-            if dependency["kind"] == "review" and child.startswith("page:"):
+            if (
+                dependency["kind"] == "review"
+                and child.startswith("page:")
+                and not any(item.get("target") == child for item in result)
+            ):
                 result.append(
                     {
                         "role": "dependency_page",
                         "target": child,
-                        "path": str(base / "candidate" / child.removeprefix("page:")),
+                        "path": str(base / state["targets"][child]["artifact"]),
+                    }
+                )
+    if target["kind"] == "page" and target["spec"].get("mode") == "write":
+        for unit_id in target["spec"].get("units", []):
+            dossier = state["targets"].get(f"page:research/{unit_id}")
+            if dossier:
+                result.append(
+                    {
+                        "role": "evidence_dossier",
+                        "target": dossier["id"],
+                        "path": str(base / dossier["artifact"]),
                     }
                 )
     canonical = base / target["artifact"]
@@ -568,6 +595,15 @@ def _dispatch_inputs(root: pathlib.Path, state: dict, target: dict) -> list[dict
                 ),
                 "target": target["id"],
                 "path": str(canonical),
+            }
+        )
+    checkpoint = target.get("last_attempt", {}).get("checkpoint")
+    if checkpoint and (base / checkpoint).is_file():
+        result.append(
+            {
+                "role": "previous_checkpoint",
+                "target": target["id"],
+                "path": str(base / checkpoint),
             }
         )
     if target["kind"] in ("plan", "review"):
@@ -603,11 +639,16 @@ def _dispatch(root: pathlib.Path, state: dict, target: dict) -> dict:
         "reference": str(_reference(target)),
         "contract": str(_contract()),
         "artifact": str(base / attempt["artifact"]),
+        "checkpoint": str(base / attempt["checkpoint"]),
         "packet_path": str(base / attempt["packet"]),
         "inputs": inputs,
         "workdir": str(root),
         "complete_command": (
             f"uv run {okf} task complete {target['id']} "
+            f"--attempt {attempt['token']} --json"
+        ),
+        "checkpoint_command": (
+            f"uv run {okf} task checkpoint {target['id']} "
             f"--attempt {attempt['token']} --json"
         ),
         "outline_command": (
@@ -664,6 +705,7 @@ def task_start(root: pathlib.Path, target_id: str) -> dict:
     target["active_attempt"] = {
         "token": token,
         "artifact": _attempt_path(target, token),
+        "checkpoint": _checkpoint_path(target, token),
         "packet": _packet_path(target, token),
         "input_digest": input_digest,
         "started_at": _now(),
@@ -696,6 +738,41 @@ def task_packet(root: pathlib.Path, target_id: str, attempt: str) -> dict:
     return packet
 
 
+@_locked
+def task_checkpoint(root: pathlib.Path, target_id: str, attempt: str) -> dict:
+    state = _require_run(root, {"active", "paused"})
+    target = state["targets"].get(target_id)
+    active = target.get("active_attempt") if target else None
+    if not active or active["token"] != attempt:
+        raise StateError("stale or inactive target attempt")
+    path = run_dir(root, state["run_id"]) / active["checkpoint"]
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise StateError(f"invalid checkpoint: {exc}") from exc
+    if len(raw.encode("utf-8")) > MAX_READ_BYTES:
+        raise StateError("checkpoint exceeds 64 KiB")
+    required = {
+        "## Completed",
+        "## Findings",
+        "## Hypotheses",
+        "## Gaps",
+        "## Next actions",
+    }
+    missing = sorted(required - set(raw.splitlines()))
+    if missing:
+        raise StateError(f"checkpoint is missing headings: {missing}")
+    active["checkpoint_digest"] = _file_digest(path)
+    active["checkpointed_at"] = _now()
+    _write(root, state)
+    return {
+        "ok": True,
+        "target": target_id,
+        "checkpoint": str(path),
+        "digest": active["checkpoint_digest"],
+    }
+
+
 def _attempt_target(target: dict) -> dict:
     return {**target, "artifact": target["active_attempt"]["artifact"]}
 
@@ -722,44 +799,160 @@ def _promote(root: pathlib.Path, state: dict, target: dict) -> pathlib.Path:
     return destination
 
 
-def _plan_targets(
-    plan: PagePlan, plan_scopes: list[dict], source_plans: list[str]
-) -> dict[str, dict]:
-    targets = {
+def _research_target(unit, *, depth: int = 0) -> dict:
+    spec = unit.model_dump(mode="json")
+    return _target(
+        "page",
+        f"research/{unit.id}",
+        f"drafts/dossiers/{unit.id}.md",
+        dependencies=["review:plan"],
+        mode="research",
+        unit_id=unit.id,
+        unit_kind=unit.kind,
+        depth=depth,
+        **{key: value for key, value in spec.items() if key not in {"id", "kind"}},
+    )
+
+
+def _materialize_knowledge_plan(
+    root: pathlib.Path, state: dict, plan: KnowledgePlan
+) -> None:
+    keep = {"plan:workspace"}
+    desired = {
         "review:plan": _target(
             "review",
             "plan",
             "drafts/review/plan.json",
-            dependencies=["plan:workspace", *source_plans],
+            dependencies=["plan:workspace"],
             subject="plan:workspace",
-            scopes=plan_scopes,
+            scopes=state["targets"]["plan:workspace"]["spec"]["scopes"],
+        ),
+        **{f"page:research/{unit.id}": _research_target(unit) for unit in plan.units},
+    }
+    _replace_downstream(root, state, keep, desired)
+
+
+def _materialize_dossier_children(
+    root: pathlib.Path,
+    state: dict,
+    target: dict,
+    dossier: KnowledgeDossier,
+) -> None:
+    if dossier.disposition != "split":
+        return
+    depth = target["spec"]["depth"] + 1
+    if depth > 3:
+        raise StateError("knowledge dossier split depth exceeds 3")
+    target["spec"]["superseded"] = True
+    for unit in dossier.children:
+        child = _research_target(unit, depth=depth)
+        if child["id"] in state["targets"]:
+            raise StateError(f"duplicate dossier child target: {child['id']}")
+        _add_target(state, child)
+    if (
+        sum(
+            item["spec"].get("mode") == "research"
+            for item in state["targets"].values()
+            if item["kind"] == "page"
+        )
+        > 96
+    ):
+        raise StateError("knowledge dossier count exceeds 96")
+
+
+def _sync_composition_target(state: dict) -> None:
+    research = [
+        target
+        for target in state["targets"].values()
+        if target["kind"] == "page" and target["spec"].get("mode") == "research"
+    ]
+    if not research or any(target["status"] != "complete" for target in research):
+        return
+    target_id = "page:compose"
+    dependencies = [target["id"] for target in research]
+    current = state["targets"].get(target_id)
+    desired = _target(
+        "page",
+        "compose",
+        "drafts/composition/map.md",
+        dependencies=dependencies,
+        mode="compose",
+        scopes=state["targets"]["plan:workspace"]["spec"]["scopes"],
+    )
+    if current is None:
+        _add_target(state, desired)
+    elif current["depends_on"] != dependencies:
+        current["depends_on"] = dependencies
+        _reset_target(current)
+
+
+def _composition_targets(plan: CompositionMap) -> dict[str, dict]:
+    targets = {
+        "review:composition": _target(
+            "review",
+            "composition",
+            "drafts/review/composition.json",
+            dependencies=["page:compose"],
+            subject="page:compose",
+            scopes=[],
         )
     }
     for page in plan.pages:
         spec = page.model_dump(mode="json")
-        page_id = f"page:{page.path}"
-        review_id = f"review:{page.path}"
-        page_dependencies = [
-            "review:plan",
-            *[f"review:{path}" for path in page.depends_on],
-        ]
-        targets[page_id] = _target(
+        page_target = f"page:write/{page.id}"
+        targets[page_target] = _target(
             "page",
-            page.path,
-            f"candidate/{page.path}",
-            dependencies=page_dependencies,
+            f"write/{page.id}",
+            f"drafts/pages/{page.id}.md",
+            dependencies=[
+                "review:composition",
+                *[f"review:{dependency}" for dependency in page.depends_on],
+            ],
+            mode="write",
             **spec,
         )
-        targets[review_id] = _target(
+        targets[f"review:{page.id}"] = _target(
             "review",
-            page.path,
-            f"drafts/review/{page.path.removesuffix('.md')}.json",
-            dependencies=[page_id, "review:plan"],
-            subject=page_id,
+            page.id,
+            f"drafts/review/pages/{page.id}.json",
+            dependencies=[page_target, "review:composition"],
+            subject=page_target,
             owner=page.owner,
             scopes=[scope.model_dump(mode="json") for scope in page.scopes],
         )
     return targets
+
+
+def _materialize_composition(
+    root: pathlib.Path, state: dict, plan: CompositionMap
+) -> None:
+    keep = {
+        target_id
+        for target_id, target in state["targets"].items()
+        if target["kind"] == "plan"
+        or target_id == "review:plan"
+        or target["spec"].get("mode") in {"research", "compose"}
+    }
+    replacements = _composition_targets(plan)
+    for page in plan.pages:
+        target_id = f"page:write/{page.id}"
+        previous = state["targets"].get(target_id)
+        desired = replacements[target_id]
+        if previous is None or _target_definition(previous) == _target_definition(
+            desired
+        ):
+            continue
+        changes = {
+            key
+            for key in set(previous["spec"]) | set(desired["spec"])
+            if previous["spec"].get(key) != desired["spec"].get(key)
+        }
+        if changes != {"path"}:
+            review = state["targets"].get(f"review:{page.id}")
+            if review:
+                _discard_attempt(root, state, review)
+                _reset_target(review)
+    _replace_downstream(root, state, keep, replacements, preserve_moves=True)
 
 
 def _target_definition(target: dict) -> dict:
@@ -791,78 +984,68 @@ def _discard_attempt(root: pathlib.Path, state: dict, target: dict) -> None:
             (base / active["packet"]).unlink(missing_ok=True)
 
 
-def _materialize_plan(root: pathlib.Path, state: dict, plan: PagePlan) -> None:
-    import _validate
-
+def _replace_downstream(
+    root: pathlib.Path,
+    state: dict,
+    keep: set[str],
+    replacements: dict[str, dict],
+    *,
+    preserve_moves: bool = False,
+) -> None:
     old = state["targets"]
-    planning = {
-        target_id: target
-        for target_id, target in old.items()
-        if target["kind"] == "plan"
-    }
-    workspace_plan = planning["plan:workspace"]
-    source_plans = list(workspace_plan["depends_on"])
-    planned = _plan_targets(plan, workspace_plan["spec"]["scopes"], source_plans)
-    desired = {**planning, **planned}
-    changed = set(old).symmetric_difference(desired)
-    metadata_pages = set()
-    for target_id in set(old).intersection(desired) - set(planning):
-        previous = old[target_id]
-        target = desired[target_id]
-        if _target_definition(previous) == _target_definition(target):
-            continue
-        if target["kind"] == "page" and previous["status"] == "complete":
-            spec_changes = {
-                key
-                for key in set(previous["spec"]) | set(target["spec"])
-                if previous["spec"].get(key) != target["spec"].get(key)
-            }
-            if (
-                spec_changes
-                and spec_changes <= {"title", "description", "tags"}
-                and previous["depends_on"] == target["depends_on"]
-            ):
-                metadata_pages.add(target_id)
-                changed.add(f"review:{target['name']}")
-                continue
-        changed.add(target_id)
-    changed = _dependent_closure({**old, **desired}, changed)
+    desired = {target_id: old[target_id] for target_id in keep if target_id in old}
+    desired.update(replacements)
     base = run_dir(root, state["run_id"])
     for target_id in set(old) - set(desired):
         _discard_attempt(root, state, old[target_id])
         (base / old[target_id]["artifact"]).unlink(missing_ok=True)
-    reconciled = dict(planning)
-    for target_id, target in planned.items():
+    reconciled = {
+        target_id: desired[target_id] for target_id in keep if target_id in desired
+    }
+    for target_id, target in replacements.items():
         previous = old.get(target_id)
-        if (
-            previous is not None
-            and target_id in metadata_pages
-            and target_id not in changed
-        ):
-            for key in ("artifact", "depends_on", "spec"):
-                previous[key] = target[key]
-            path = base / previous["artifact"]
-            rendered = _validate.render_generated_page(root, state, previous, path)
-            if rendered is None:
-                raise StateError(f"cannot apply Plan metadata to {target['name']}")
-            path.write_text(rendered, encoding="utf-8", newline="\n")
-            previous["output_digest"] = _file_digest(path)
-            previous["metadata_refreshed"] = True
-            reconciled[target_id] = previous
-            continue
-        if previous is not None and target_id not in changed:
-            reconciled[target_id] = previous
-            continue
         if previous is not None and _target_definition(previous) == _target_definition(
             target
         ):
-            _discard_attempt(root, state, previous)
-            _reset_target(previous)
             reconciled[target_id] = previous
-        else:
-            if previous is not None:
-                _discard_attempt(root, state, previous)
-            reconciled[target_id] = target
+            continue
+        spec_changes = (
+            {
+                key
+                for key in set(previous["spec"]) | set(target["spec"])
+                if previous["spec"].get(key) != target["spec"].get(key)
+            }
+            if previous
+            else set()
+        )
+        if (
+            preserve_moves
+            and previous
+            and previous["kind"] == "page"
+            and previous["spec"].get("mode") == "write"
+            and previous["status"] == "complete"
+            and spec_changes
+            and spec_changes <= {"path", "title", "description", "tags"}
+            and previous["depends_on"] == target["depends_on"]
+        ):
+            previous["spec"].update(target["spec"])
+            if spec_changes - {"path"}:
+                import _validate
+
+                path = base / previous["artifact"]
+                rendered = _validate.render_generated_page(root, state, previous, path)
+                if rendered is None:
+                    raise StateError(
+                        f"cannot refresh composed metadata for {target_id}"
+                    )
+                path.write_text(rendered, encoding="utf-8", newline="\n")
+                previous["output_digest"] = _file_digest(path)
+            reconciled[target_id] = previous
+            continue
+        if previous is not None:
+            _discard_attempt(root, state, previous)
+            (base / previous["artifact"]).unlink(missing_ok=True)
+        reconciled[target_id] = target
     state["targets"] = reconciled
 
 
@@ -873,7 +1056,6 @@ def _reset_target(target: dict) -> None:
     target.pop("completed_at", None)
     target.pop("output_digest", None)
     target.pop("page_output_digest", None)
-    target.pop("metadata_refreshed", None)
 
 
 def _invalidate_targets(root: pathlib.Path, state: dict, seeds: set[str]) -> None:
@@ -884,17 +1066,33 @@ def _invalidate_targets(root: pathlib.Path, state: dict, seeds: set[str]) -> Non
             _reset_target(target)
 
 
-def _reopen_plan(
-    root: pathlib.Path, state: dict, affected: set[str] | None = None
-) -> None:
+def _reopen_plan(root: pathlib.Path, state: dict) -> None:
     plan = state["targets"]["plan:workspace"]
     _discard_attempt(root, state, plan)
     _reset_target(plan)
-    plan_review = state["targets"].get("review:plan")
-    if plan_review is not None:
-        _discard_attempt(root, state, plan_review)
-        _reset_target(plan_review)
-    _invalidate_targets(root, state, affected or set())
+    _replace_downstream(root, state, {"plan:workspace"}, {})
+
+
+def _reopen_composition(root: pathlib.Path, state: dict) -> None:
+    for target_id in ("page:compose", "review:composition"):
+        target = state["targets"].get(target_id)
+        if target:
+            _discard_attempt(root, state, target)
+            _reset_target(target)
+
+
+def _reopen_research(root: pathlib.Path, state: dict, target_id: str) -> None:
+    target = state["targets"][target_id]
+    _discard_attempt(root, state, target)
+    _reset_target(target)
+    keep = {
+        item_id
+        for item_id, item in state["targets"].items()
+        if item["kind"] == "plan"
+        or item_id == "review:plan"
+        or item["spec"].get("mode") == "research"
+    }
+    _replace_downstream(root, state, keep, {})
 
 
 def _stamp_reviewed_page(
@@ -942,20 +1140,19 @@ def _finish_review(
     if report.verdict == "changes_requested":
         rounds = state["review_rounds"].get(subject, 0) + 1
         state["review_rounds"][subject] = rounds
-        plan_reopens = {
-            issue.reopen_target
-            for issue in report.issues
-            if issue.reopen_target.startswith("plan:")
-        }
-        if plan_reopens:
-            for target_id in plan_reopens - {"plan:workspace"}:
-                source_plan = state["targets"][target_id]
-                _discard_attempt(root, state, source_plan)
-                _reset_target(source_plan)
-            affected = {target["id"]} if subject.startswith("page:") else set()
-            _reopen_plan(root, state, affected)
+        reopened = {issue.reopen_target for issue in report.issues}
+        if "plan:workspace" in reopened:
+            _reopen_plan(root, state)
+        elif "page:compose" in reopened:
+            _reopen_composition(root, state)
+            if subject.startswith("page:write/"):
+                _reset_target(target)
+        elif any(item.startswith("page:research/") for item in reopened):
+            for item in reopened:
+                if item.startswith("page:research/"):
+                    _reopen_research(root, state, item)
         else:
-            _invalidate_targets(root, state, {subject})
+            _invalidate_targets(root, state, reopened)
         if rounds >= MAX_REVIEW_CHANGES:
             state["status"] = "paused"
             state["pause_reason"] = {
@@ -970,16 +1167,7 @@ def _finish_review(
             "paused": state["status"] == "paused",
         }
     state["review_rounds"].pop(subject, None)
-    if subject == "plan:workspace":
-        for page_target in state["targets"].values():
-            if page_target["kind"] != "page" or not page_target.pop(
-                "metadata_refreshed", False
-            ):
-                continue
-            page_target["last_attempt"]["input_digest"] = _input_digest(
-                root, state, page_target
-            )
-    if subject.startswith("page:"):
+    if subject.startswith("page:write/"):
         target["page_output_digest"] = _stamp_reviewed_page(
             root, state, target, state["review"]["actor"]
         )
@@ -993,6 +1181,7 @@ def _maybe_approve(root: pathlib.Path, state: dict) -> None:
         target["status"] == "complete" for target in state["targets"].values()
     ):
         return
+    _bind_candidate(root, state)
     issues = _validate.validate_candidate(root, state, published=False)
     errors = [item for item in issues if item.severity == "error"]
     if errors:
@@ -1002,6 +1191,51 @@ def _maybe_approve(root: pathlib.Path, state: dict) -> None:
     state["approved_digest"] = directory_digest(candidate_dir(root, state))
     state["approved_at"] = _now()
     state["status"] = "approved"
+
+
+_LOGICAL_LINK = re.compile(r"(?<!!)\[([^\]\n]+)\]\[([a-z0-9][a-z0-9.-]*)\]")
+
+
+def _markdown_model(path: pathlib.Path, model):
+    parsed = parse_file(path)
+    if parsed.errors:
+        raise StateError(f"invalid Markdown artifact {path}: {parsed.errors[0]}")
+    return model.model_validate(parsed.meta, strict=True)
+
+
+def _composition(root: pathlib.Path, state: dict) -> CompositionMap:
+    path = run_dir(root, state["run_id"]) / state["targets"]["page:compose"]["artifact"]
+    return _markdown_model(path, CompositionMap)
+
+
+def _bind_candidate(root: pathlib.Path, state: dict) -> None:
+    from _frontmatter import render
+
+    base = run_dir(root, state["run_id"])
+    candidate = candidate_dir(root, state)
+    shutil.rmtree(candidate, ignore_errors=True)
+    candidate.mkdir(parents=True)
+    plan = _composition(root, state)
+    paths = {page.id: page.path for page in plan.pages}
+
+    def resolve(match: re.Match) -> str:
+        label, page_id = match.groups()
+        path = paths.get(page_id)
+        if path is None:
+            raise StateError(f"unknown logical page link: {page_id}")
+        return f"[{label}](/{path})"
+
+    for page in plan.pages:
+        source = base / state["targets"][f"page:write/{page.id}"]["artifact"]
+        parsed = parse_file(source)
+        if parsed.errors:
+            raise StateError(f"cannot bind invalid page {page.id}: {parsed.errors[0]}")
+        body = _LOGICAL_LINK.sub(resolve, parsed.body)
+        destination = candidate / page.path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            render(parsed.meta, body), encoding="utf-8", newline="\n"
+        )
 
 
 @_locked
@@ -1018,8 +1252,21 @@ def task_complete(root: pathlib.Path, target_id: str, attempt: str) -> dict:
         raise StateError("stale or inactive target attempt")
     if _input_digest(root, state, target) != active["input_digest"]:
         raise StateError("target inputs changed during the attempt")
-    if target["kind"] == "page":
+    if target["kind"] == "page" and target["spec"].get("mode") == "write":
         _render_page_attempt(root, state, target)
+    if target["kind"] == "plan" or (
+        target["kind"] == "page" and target["spec"].get("mode") == "compose"
+    ):
+        checkpoint = active.get("checkpoint_digest")
+        checkpoint_path = run_dir(root, state["run_id"]) / active["checkpoint"]
+        if (
+            not checkpoint
+            or not checkpoint_path.is_file()
+            or _file_digest(checkpoint_path) != checkpoint
+        ):
+            raise StateError(
+                "plan and composition attempts require a current checkpoint"
+            )
     attempt_target = _attempt_target(target)
     issues = _validate.validate_task(root, state, attempt_target)
     errors = [item for item in issues if item.severity == "error"]
@@ -1028,14 +1275,13 @@ def task_complete(root: pathlib.Path, target_id: str, attempt: str) -> dict:
 
     attempt_path = run_dir(root, state["run_id"]) / active["artifact"]
     report = None
-    plan = None
+    value = None
     if target["kind"] == "plan":
-        model = SourceBrief if target["spec"]["mode"] == "source" else PagePlan
-        value = model.model_validate_json(
-            attempt_path.read_text(encoding="utf-8"), strict=True
-        )
-        if isinstance(value, PagePlan):
-            plan = value
+        value = _markdown_model(attempt_path, KnowledgePlan)
+    elif target["kind"] == "page" and target["spec"].get("mode") == "research":
+        value = _markdown_model(attempt_path, KnowledgeDossier)
+    elif target["kind"] == "page" and target["spec"].get("mode") == "compose":
+        value = _markdown_model(attempt_path, CompositionMap)
     elif target["kind"] == "review":
         report = ReviewReport.model_validate_json(
             attempt_path.read_text(encoding="utf-8"), strict=True
@@ -1049,8 +1295,13 @@ def task_complete(root: pathlib.Path, target_id: str, attempt: str) -> dict:
     target["last_attempt"] = active
     target.pop("active_attempt", None)
     result = {"ok": True}
-    if plan is not None:
-        _materialize_plan(root, state, plan)
+    if isinstance(value, KnowledgePlan):
+        _materialize_knowledge_plan(root, state, value)
+    elif isinstance(value, KnowledgeDossier):
+        _materialize_dossier_children(root, state, target, value)
+        _sync_composition_target(state)
+    elif isinstance(value, CompositionMap):
+        _materialize_composition(root, state, value)
     elif report is not None:
         result.update(_finish_review(root, state, target, report))
     _maybe_approve(root, state)
@@ -1172,14 +1423,6 @@ def _inside_roots(path: str, roots: list[str]) -> bool:
 
 
 def _navigation_limits(target: dict) -> tuple[int, int]:
-    if target["kind"] == "plan" and target["spec"].get("mode") == "source":
-        return 12, 64 * 1024
-    if (
-        target["kind"] == "plan"
-        and target["spec"].get("mode") == "workspace"
-        and target["depends_on"]
-    ):
-        return 32, 128 * 1024
     base_calls, base_bytes, source_calls, source_bytes, max_calls, max_bytes = (
         NAVIGATION_LIMITS[target["kind"]]
     )
@@ -1387,15 +1630,6 @@ def refresh_source(root: pathlib.Path, name: str) -> dict:
     previous = next(item for item in state["revisions"] if item["name"] == name)
     if record == previous:
         return status(root)
-    before = {
-        target_id: [
-            item
-            for item in _scope_digests(root, state, target)
-            if item["source"] == name
-        ]
-        for target_id, target in state["targets"].items()
-        if target["kind"] == "page" and _target_scopes(target, name)
-    }
     try:
         _workspace.remove_pin(root, state["run_id"], source)
         _workspace.materialize_pin(root, state["run_id"], source, record)
@@ -1403,21 +1637,7 @@ def refresh_source(root: pathlib.Path, name: str) -> dict:
             record if item["name"] == name else item for item in state["revisions"]
         ]
         _index.write_source_index(root, state["run_id"], source, record)
-        affected = {
-            target_id
-            for target_id, old_digest in before.items()
-            if old_digest
-            != [
-                item
-                for item in _scope_digests(root, state, state["targets"][target_id])
-                if item["source"] == name
-            ]
-        }
-        source_plan = state["targets"].get(f"plan:{name}")
-        if source_plan is not None and source_plan["spec"].get("mode") == "source":
-            _discard_attempt(root, state, source_plan)
-            _reset_target(source_plan)
-        _reopen_plan(root, state, affected)
+        _reopen_plan(root, state)
         state["status"] = "active" if state["status"] != "paused" else "paused"
         state.pop("approved_digest", None)
         state.pop("approved_at", None)
@@ -1446,7 +1666,7 @@ def propose_start(root: pathlib.Path) -> dict:
         ),
         "artifact": str(proposals),
         "candidate": _publication_path(root),
-        "inputs": [str(run_dir(root, state["run_id"]) / "drafts/plan/workspace.json")],
+        "inputs": [str(run_dir(root, state["run_id"]) / "drafts/plan/workspace.md")],
         "complete_command": f"uv run {okf} propose complete --json",
         "workdir": str(root),
     }

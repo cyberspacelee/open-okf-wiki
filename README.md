@@ -104,10 +104,12 @@ uv run .agents/skills/repo-wiki/scripts/okf.py run start --producer repo-wiki/co
 uv run .agents/skills/repo-wiki/scripts/okf.py run status --json
 ```
 
-The host agent remains a coordinator: `run status` gives a compact phase/task
-view, and `task start --json` gives one complete path-only worker dispatch.
-Workers read the Pin (and, for database pages, the packet's catalog paths)
-and write artifacts to the declared paths; they return only bounded handoffs.
+The host agent remains a coordinator: `run status` gives the compact Ready Set,
+and `task start --json` gives one complete path-only worker dispatch. One
+long-lifecycle planner owns the cross-Source Knowledge Plan and persists a
+Markdown checkpoint; bounded dossier workers gather evidence, then one global
+Composition Map assigns stable page IDs, relations and final paths. Writers
+read Pins and typed packet inputs and return only bounded handoffs.
 Start and complete every Target through the CLI. Each State Gate checks that
 the Pin still matches the recorded revision.
 
@@ -136,8 +138,10 @@ design behaves consistently on Windows, Linux and macOS without symlinks.
   captions are gated.
 - generated, verified, status and stale_after make lifecycle and trust
   machine-readable.
-- Unchanged artifacts and pages are reused only from Git commits, cited blob
-  IDs, exact page plans and freshness dates.
+- Page Targets, reviews and dependencies use stable page IDs; physical paths
+  are bound from the reviewed Composition Map only after content review.
+- Plan and composition checkpoints persist completed analysis, findings,
+  hypotheses, gaps and next actions across context compression or retry.
 - Root index.md contains only okf_version 0.2; nested indexes and log.md have
   no frontmatter.
 - OpenGauss catalog access is read-only and selected-table only; canonical

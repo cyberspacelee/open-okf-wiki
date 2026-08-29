@@ -1,13 +1,14 @@
 """Deterministic structural index for Git/files Pins. Zero LLM.
 
-Index invariants (v2):
+Index invariants (v3):
 - every directory record describes a disjoint region of files; a file is
   counted by exactly one record, so record counts are additive;
 - a record's fields describe the record's region directly (no recursive
   roll-up); `subtree_files` is the only derived subtree metric;
-- the byte budget coarsens the index by merging records into their nearest
-  kept ancestor (`collapsed_dirs` accounts for them) — no file ever loses
-  its record.
+- the canonical directory tree is projected into visible records; semantic
+  anchors stop structural compaction and the byte budget may coarsen that
+  projection further. `compressed_dirs` and `truncated_dirs` keep those two
+  causes distinct, and no file ever loses its record.
 """
 
 from __future__ import annotations
@@ -85,7 +86,7 @@ BINARY_EXT = {
     ".mp3",
     ".wasm",
 }
-VERSION = 2
+VERSION = 3
 MAX_INDEX_BYTES = 64 * 1024
 MAX_LS_BYTES = 16 * 1024
 MAX_ENTRY_POINTS = 16
@@ -140,7 +141,7 @@ def render_index(payload: dict) -> str:
 
     records = {item["path"]: item for item in payload["directories"]}
     semantic = {".", *payload.get("build_modules", []), *payload.get("source_sets", [])}
-    visible = _ancestor_closure({*records, *semantic})
+    visible = set(records)
     while True:
         rendered = _render_tree(payload, records, visible)
         if len(rendered.encode("utf-8")) <= MAX_INDEX_BYTES:
@@ -164,9 +165,14 @@ def render_index(payload: dict) -> str:
 def _render_tree(payload: dict, records: dict[str, dict], visible: set[str]) -> str:
     modules = set(payload.get("build_modules", []))
     source_sets = set(payload.get("source_sets", []))
-    globally_truncated = payload["truncated"] or any(
-        path not in visible for path in _ancestor_closure(set(records))
-    )
+    globally_truncated = payload["truncated"] or visible != set(records)
+    parents = _visible_parents(visible)
+    hidden_by_parent: Counter = Counter()
+    for candidate in set(records) - visible:
+        ancestor = _parent_dir(candidate)
+        while ancestor and ancestor not in visible:
+            ancestor = _parent_dir(ancestor)
+        hidden_by_parent[ancestor if ancestor in visible else "."] += 1
     lines = [
         f"# {payload['source']}",
         "",
@@ -184,7 +190,7 @@ def _render_tree(payload: dict, records: dict[str, dict], visible: set[str]) -> 
     ):
         stats = _subtree_stats(path, records)
         kind = _navigation_kind(path, modules, source_sets)
-        indent = "  " * (0 if path == "." else path.count("/") + 1)
+        indent = "  " * _visible_depth(path, parents)
         label = "." if path == "." else path + "/"
         details = [f"{stats['files']} files"]
         languages = _main_languages(stats["extensions"])
@@ -194,16 +200,12 @@ def _render_tree(payload: dict, records: dict[str, dict], visible: set[str]) -> 
             details.append(f"test {stats['test_files']}")
         if stats["generated_files"]:
             details.append(f"generated {stats['generated_files']}")
-        hidden = sum(
-            1
-            for candidate in records
-            if candidate != path
-            and _is_descendant(candidate, path)
-            and candidate not in visible
-        )
-        folded = stats["collapsed_dirs"] + hidden
-        if folded:
-            details.append(f"folded {folded}")
+        compressed = stats["compressed_dirs"]
+        truncated = stats.get("truncated_dirs", 0) + hidden_by_parent[path]
+        if compressed:
+            details.append(f"compressed {compressed}")
+        if truncated:
+            details.append(f"truncated {truncated}")
         lines.append(f"{indent}- `{label}` [{kind}] - " + " | ".join(details))
         entries = stats["entry_points"][:3]
         if entries:
@@ -223,14 +225,22 @@ def _render_tree(payload: dict, records: dict[str, dict], visible: set[str]) -> 
     return "\n".join(lines) + "\n"
 
 
-def _ancestor_closure(paths: set[str]) -> set[str]:
-    result = {"."}
-    for path in paths:
-        current = "" if path == "." else path.strip("/")
-        while current:
-            result.add(current)
-            current = _parent_dir(current)
-    return result
+def _visible_parents(visible: set[str]) -> dict[str, str | None]:
+    parents = {".": None}
+    for path in visible - {"."}:
+        ancestor = _parent_dir(path)
+        while ancestor and ancestor not in visible:
+            ancestor = _parent_dir(ancestor)
+        parents[path] = ancestor if ancestor in visible else "."
+    return parents
+
+
+def _visible_depth(path: str, parents: dict[str, str | None]) -> int:
+    depth = 0
+    while path != ".":
+        depth += 1
+        path = parents[path] or "."
+    return depth
 
 
 def _is_descendant(path: str, parent: str) -> bool:
@@ -243,14 +253,21 @@ def _subtree_stats(path: str, records: dict[str, dict]) -> dict:
         "files": 0,
         "test_files": 0,
         "generated_files": 0,
-        "collapsed_dirs": 0,
+        "compressed_dirs": 0,
+        "truncated_dirs": 0,
         "entry_points": [],
         "extensions": extensions,
     }
     for candidate, item in records.items():
         if candidate != path and not _is_descendant(candidate, path):
             continue
-        for key in ("files", "test_files", "generated_files", "collapsed_dirs"):
+        for key in (
+            "files",
+            "test_files",
+            "generated_files",
+            "compressed_dirs",
+            "truncated_dirs",
+        ):
             result[key] += item[key]
         extensions.update(item["extensions"])
         result["entry_points"].extend(item["entry_points"])
@@ -289,30 +306,37 @@ def build_index(
 ) -> dict:
     build_modules = _maven_modules(pin, files)
     source_sets = _source_sets(files)
-    structural = {
+    semantic = {
         *("" if item == "." else item for item in build_modules),
         *source_sets,
     }
     required = {""}
     direct_files, child_dirs = _directory_shape(files)
-    visible = (
+    projection = (
         required
-        | structural
+        | semantic
         | direct_files
         | {path for path, children in child_dirs.items() if len(children) > 1}
     )
-    stats = {path: _new_stats() for path in visible}
+    all_dirs = (
+        required
+        | direct_files
+        | set(child_dirs)
+        | {child for children in child_dirs.values() for child in children}
+    )
+    stats = {path: _new_stats() for path in all_dirs}
     for rel in files:
         size, raw = _file_data(pin, rel)
         _accumulate_file(stats[_parent_of(rel)], rel, size, raw)
     candidates = sorted(
-        (path for path in stats if path not in required),
-        key=lambda path: (path not in structural, *_keep_priority(path, stats[path])),
+        (path for path in projection if path not in required),
+        key=lambda path: (path not in semantic, *_keep_priority(path, stats[path])),
     )
     full = _assemble(
         source,
         files,
         stats,
+        projection,
         required,
         candidates,
         len(candidates),
@@ -322,7 +346,15 @@ def build_index(
     if _json_size(full) <= MAX_INDEX_BYTES:
         return full
     floor = _assemble(
-        source, files, stats, required, candidates, 0, build_modules, source_sets
+        source,
+        files,
+        stats,
+        projection,
+        required,
+        candidates,
+        0,
+        build_modules,
+        source_sets,
     )
     if _json_size(floor) > MAX_INDEX_BYTES:
         raise AssertionError("source index root exceeds the index byte budget")
@@ -330,14 +362,30 @@ def build_index(
     while hi - lo > 1:
         mid = (lo + hi) // 2
         probe = _assemble(
-            source, files, stats, required, candidates, mid, build_modules, source_sets
+            source,
+            files,
+            stats,
+            projection,
+            required,
+            candidates,
+            mid,
+            build_modules,
+            source_sets,
         )
         if _json_size(probe) <= MAX_INDEX_BYTES:
             lo = mid
         else:
             hi = mid
     return _assemble(
-        source, files, stats, required, candidates, lo, build_modules, source_sets
+        source,
+        files,
+        stats,
+        projection,
+        required,
+        candidates,
+        lo,
+        build_modules,
+        source_sets,
     )
 
 
@@ -345,6 +393,7 @@ def _assemble(
     source: str,
     files: list[str],
     stats: dict[str, dict],
+    projection: set[str],
     required: set[str],
     candidates: list[str],
     keep_count: int,
@@ -353,10 +402,19 @@ def _assemble(
 ) -> dict:
     kept = required | set(candidates[:keep_count])
     working = {path: _copy_stats(item) for path, item in stats.items()}
-    for path in list(working):
-        if path in kept:
-            continue
-        _merge_stats(working[_nearest_kept(path, kept)], working[path])
+    for path in sorted(
+        set(working) - projection, key=lambda item: item.count("/"), reverse=True
+    ):
+        _merge_stats(
+            working[_nearest_kept(path, projection)], working[path], "compressed_dirs"
+        )
+        del working[path]
+    for path in sorted(
+        set(working) - kept, key=lambda item: item.count("/"), reverse=True
+    ):
+        _merge_stats(
+            working[_nearest_kept(path, kept)], working[path], "truncated_dirs"
+        )
         del working[path]
     subtree = {path: item["files"] for path, item in working.items()}
     for path, item in working.items():
@@ -376,9 +434,7 @@ def _assemble(
         "file_count": len(files),
         "directories": records,
         "build_modules": [
-            item
-            for item in build_modules
-            if ("" if item == "." else item) in kept
+            item for item in build_modules if ("" if item == "." else item) in kept
         ],
         "source_sets": [item for item in source_sets if item in kept],
         "truncated": keep_count < len(candidates),
@@ -577,7 +633,8 @@ def _new_stats() -> dict:
         "generated_files": 0,
         "rep_nonempty": [],
         "rep_any": [],
-        "collapsed_dirs": 0,
+        "compressed_dirs": 0,
+        "truncated_dirs": 0,
     }
 
 
@@ -591,12 +648,14 @@ def _copy_stats(stats: dict) -> dict:
     }
 
 
-def _merge_stats(parent: dict, child: dict) -> None:
+def _merge_stats(parent: dict, child: dict, reason: str) -> None:
     for key in ("files", "bytes", "lines", "test_files", "generated_files"):
         parent[key] += child[key]
     parent["extensions"] += child["extensions"]
     parent["entry_points"].extend(child["entry_points"])
-    parent["collapsed_dirs"] += child["collapsed_dirs"] + 1
+    parent["compressed_dirs"] += child["compressed_dirs"]
+    parent["truncated_dirs"] += child["truncated_dirs"]
+    parent[reason] += 1
 
 
 def _file_data(pin: pathlib.Path, rel: str) -> tuple[int, bytes | None]:
@@ -676,5 +735,6 @@ def _finalize(path: str, stats: dict) -> dict:
         "representative_files": _representatives(stats),
         "extensions": dict(extensions[:MAX_EXTENSIONS]),
         "extensions_other": sum(count for _, count in extensions[MAX_EXTENSIONS:]),
-        "collapsed_dirs": stats["collapsed_dirs"],
+        "compressed_dirs": stats["compressed_dirs"],
+        "truncated_dirs": stats["truncated_dirs"],
     }

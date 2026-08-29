@@ -1,5 +1,4 @@
 import pathlib
-import re
 from datetime import date, datetime
 from typing import Annotated, Literal
 
@@ -23,15 +22,18 @@ PagePath = Annotated[
     str,
     StringConstraints(max_length=240, pattern=r"^[a-z0-9][a-z0-9/_.-]*\.md$"),
 ]
+StableId = Annotated[
+    str,
+    StringConstraints(max_length=64, pattern=r"^[a-z0-9][a-z0-9.-]*$"),
+]
+TargetRef = Annotated[
+    str,
+    StringConstraints(
+        pattern=r"^(?:plan:workspace|page:(?:compose|research/[a-z0-9][a-z0-9.-]*|write/[a-z0-9][a-z0-9.-]*))$"
+    ),
+]
 ScopePath = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1024)
-]
-SourceRole = Literal[
-    "business-domain-owner",
-    "public-contract",
-    "shared-infrastructure",
-    "extension-surface",
-    "evidence-only-dependency",
 ]
 PageType = Literal[
     "Overview",
@@ -105,6 +107,7 @@ def _check_diagram_contract(page_type: str, diagrams: list[DiagramSpec]) -> None
 class ConceptFrontmatter(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
 
+    id: StableId
     type: PageType
     title: NonEmpty | None = None
     description: NonEmpty | None = None
@@ -171,64 +174,74 @@ def _normalized_scope_paths(values: list[str]) -> list[str]:
     return values
 
 
-class SourceConcept(BaseModel):
+class KnowledgeUnit(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    name: ShortText
-    description: ClaimText
-    paths: list[ScopePath] = Field(min_length=1, max_length=16)
+    id: StableId
+    kind: Literal[
+        "capability",
+        "lifecycle",
+        "flow",
+        "data-model",
+        "integration",
+        "operations",
+    ]
+    owner: ShortText
+    question: ClaimText
+    scopes: list[PageScope] = Field(min_length=1, max_length=16)
     evidence_seeds: list[ScopePath] = Field(min_length=1, max_length=3)
 
-    @field_validator("paths", mode="after")
-    @classmethod
-    def normalized_relative_paths(cls, values: list[str]) -> list[str]:
-        return _normalized_scope_paths(values)
 
-
-class SourceConnection(BaseModel):
+class KnowledgePlan(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    name: ShortText
-    description: ClaimText
-    evidence_seeds: list[ScopePath] = Field(min_length=1, max_length=3)
-    counterpart_sources: list[ShortText] = Field(min_length=1, max_length=8)
-    counterpart_queries: list[ShortText] = Field(min_length=1, max_length=8)
-
-
-class SourceBrief(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    source: ShortText
-    roles: list[SourceRole] = Field(min_length=1, max_length=5)
-    concepts: list[SourceConcept] = Field(default_factory=list, max_length=32)
-    connections: list[SourceConnection] = Field(default_factory=list, max_length=32)
+    kind: Literal["knowledge-plan"]
+    units: list[KnowledgeUnit] = Field(min_length=1, max_length=64)
     gaps: list[ClaimText] = Field(default_factory=list, max_length=16)
 
     @model_validator(mode="after")
-    def unique_items(self):
-        if len(self.roles) != len(set(self.roles)):
-            raise ValueError("source roles must be unique")
-        for label, values in (
-            ("concept", [item.name for item in self.concepts]),
-            ("connection", [item.name for item in self.connections]),
-        ):
-            if len(values) != len(set(values)):
-                raise ValueError(f"{label} names must be unique")
+    def unique_units(self):
+        ids = [item.id for item in self.units]
+        if len(ids) != len(set(ids)):
+            raise ValueError("knowledge unit ids must be unique")
         return self
 
 
-class PagePlanEntry(BaseModel):
+class KnowledgeDossier(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    kind: Literal["knowledge-dossier"]
+    unit_id: StableId
+    disposition: Literal["ready", "split"]
+    children: list[KnowledgeUnit] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def split_matches_children(self):
+        if self.disposition == "ready" and self.children:
+            raise ValueError("ready dossier must not define children")
+        if self.disposition == "split" and len(self.children) < 2:
+            raise ValueError("split dossier requires at least two children")
+        ids = [item.id for item in self.children]
+        if self.unit_id in ids or len(ids) != len(set(ids)):
+            raise ValueError("dossier child ids must be unique and differ from parent")
+        return self
+
+
+class CompositionPage(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: StableId
     path: PagePath
     type: PageType
     owner: ShortText
     title: ShortText
     description: ClaimText
     tags: list[ShortText] = Field(default_factory=list, max_length=16)
+    units: list[StableId] = Field(min_length=1, max_length=32)
     scopes: list[PageScope] = Field(min_length=1, max_length=16)
     evidence_seeds: list[ScopePath] = Field(max_length=3)
-    depends_on: list[PagePath] = Field(default_factory=list, max_length=64)
+    parent: StableId | None = None
+    depends_on: list[StableId] = Field(default_factory=list, max_length=64)
     diagrams: list[DiagramSpec] = Field(max_length=4)
 
     @field_validator("path", mode="after")
@@ -236,55 +249,61 @@ class PagePlanEntry(BaseModel):
     def portable_relative_path(cls, value: str) -> str:
         return _portable_page_path(value)
 
-    @field_validator("depends_on", mode="after")
-    @classmethod
-    def portable_dependencies(cls, values: list[str]) -> list[str]:
-        return [_portable_page_path(value) for value in values]
-
     @model_validator(mode="after")
     def diagrams_match_page_type(self):
         _check_diagram_contract(self.type, self.diagrams)
         return self
 
 
-class PagePlan(BaseModel):
+class CompositionMap(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    pages: list[PagePlanEntry] = Field(min_length=1, max_length=64)
+    kind: Literal["composition-map"]
+    pages: list[CompositionPage] = Field(min_length=1, max_length=64)
     gaps: list[ClaimText] = Field(default_factory=list, max_length=16)
 
     @model_validator(mode="after")
     def valid_dependency_graph(self):
+        ids = [page.id for page in self.pages]
         paths = [page.path for page in self.pages]
+        if len(ids) != len(set(ids)):
+            raise ValueError("page ids must be unique")
         if len(paths) != len(set(paths)):
             raise ValueError("page paths must be unique")
-        known = set(paths)
-        graph = {page.path: page.depends_on for page in self.pages}
-        for page, dependencies in graph.items():
-            unknown = set(dependencies) - known
-            if unknown:
-                raise ValueError(
-                    f"page dependencies must name planned pages: {sorted(unknown)}"
-                )
-            if page in dependencies:
-                raise ValueError(f"page must not depend on itself: {page}")
+        known = set(ids)
+        graph = {page.id: page.depends_on for page in self.pages}
+        hierarchy = {
+            page.id: [page.parent] if page.parent else [] for page in self.pages
+        }
 
-        visiting: set[str] = set()
-        visited: set[str] = set()
+        def check_relations(label: str, relations: dict[str, list[str]]) -> None:
+            for page_id, related in relations.items():
+                unknown = set(related) - known
+                if unknown:
+                    raise ValueError(
+                        f"page relations must name composed page ids: {sorted(unknown)}"
+                    )
+                if page_id in related:
+                    raise ValueError(f"page must not relate to itself: {page_id}")
+            visiting: set[str] = set()
+            visited: set[str] = set()
 
-        def visit(page: str) -> None:
-            if page in visiting:
-                raise ValueError("page dependencies must not contain a cycle")
-            if page in visited:
-                return
-            visiting.add(page)
-            for dependency in graph[page]:
-                visit(dependency)
-            visiting.remove(page)
-            visited.add(page)
+            def visit(page_id: str) -> None:
+                if page_id in visiting:
+                    raise ValueError(f"page {label} must not contain a cycle")
+                if page_id in visited:
+                    return
+                visiting.add(page_id)
+                for dependency in relations[page_id]:
+                    visit(dependency)
+                visiting.remove(page_id)
+                visited.add(page_id)
 
-        for page in paths:
-            visit(page)
+            for page_id in ids:
+                visit(page_id)
+
+        check_relations("dependencies", graph)
+        check_relations("hierarchy", hierarchy)
         return self
 
 
@@ -307,27 +326,17 @@ class ReviewIssue(BaseModel):
     ]
     claim: ClaimText
     resolution: ClaimText
-    reopen_target: NonEmpty
+    reopen_target: TargetRef
+    operation: Literal["repair", "split", "merge", "move"] = "repair"
 
 
 class ReviewReport(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    subject: NonEmpty
+    subject: TargetRef
     subject_digest: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     verdict: Literal["approved", "changes_requested"]
     issues: list[ReviewIssue] = Field(default_factory=list, max_length=64)
-
-    @field_validator("subject", mode="after")
-    @classmethod
-    def valid_subject(cls, value: str) -> str:
-        if value == "plan:workspace":
-            return value
-        kind, separator, path = value.partition(":")
-        if kind != "page" or not separator:
-            raise ValueError("subject must be plan:workspace or page:<path>")
-        _portable_page_path(path)
-        return value
 
     @model_validator(mode="after")
     def verdict_matches_issues(self):
@@ -335,20 +344,6 @@ class ReviewReport(BaseModel):
             raise ValueError("approved review must not contain issues")
         if self.verdict == "changes_requested" and not self.issues:
             raise ValueError("changes_requested review must contain issues")
-        if self.subject == "plan:workspace":
-            invalid = any(
-                not re.fullmatch(
-                    r"plan:(workspace|[A-Za-z0-9][A-Za-z0-9-]*)", issue.reopen_target
-                )
-                for issue in self.issues
-            )
-        else:
-            invalid = any(
-                issue.reopen_target not in {"plan:workspace", self.subject}
-                for issue in self.issues
-            )
-        if invalid:
-            raise ValueError("review issue reopens an invalid target")
         return self
 
 
