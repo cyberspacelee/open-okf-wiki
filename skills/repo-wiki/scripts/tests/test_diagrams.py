@@ -21,7 +21,9 @@ def spec(kind: str) -> list[DiagramSpec]:
         ("er", "erDiagram\n    ORDER ||--|{ LINE : contains"),
     ],
 )
-def test_supported_mermaid_diagrams_parse_and_match_the_plan(kind, source):
+def test_supported_mermaid_diagrams_have_basic_structure_and_match_the_plan(
+    kind, source
+):
     body = f"""```mermaid
 %% okf-id: behavior
 {source}
@@ -54,7 +56,7 @@ Uncited summary.
     }
 
 
-def test_official_parser_rejects_invalid_mermaid_syntax():
+def test_basic_validator_rejects_a_dangling_connector():
     body = """```mermaid
 %% okf-id: behavior
 flowchart LR
@@ -65,7 +67,29 @@ flowchart LR
 
 The diagram summarizes the cited behavior.[^code]
 """
-    assert "mermaid-syntax-invalid" in {
+    assert "mermaid-structure-invalid" in {
+        code for code, _, _ in validate(extract(body), spec("flowchart"))
+    }
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "notDiagram\n    A --> B",
+        "flowchart LR",
+    ],
+)
+def test_basic_validator_rejects_an_unknown_declaration_or_empty_body(source):
+    body = f"""```mermaid
+%% okf-id: behavior
+{source}
+    accTitle: Behavior diagram
+    accDescr: The diagram answers the planned behavior question.
+```
+
+The diagram summarizes the cited behavior.[^code]
+"""
+    assert "mermaid-structure-invalid" in {
         code for code, _, _ in validate(extract(body), spec("flowchart"))
     }
 

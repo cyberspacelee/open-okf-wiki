@@ -44,8 +44,8 @@ every decision-changing node, edge, message, transition and cardinality agrees
 with reopened evidence; normal, failure, retry, compensation, terminal and
 optional paths are not materially omitted; direction, grouping and labels are
 readable in the packet language; and `accDescr` conveys the diagram's purpose.
-Parse success proves syntax only. Flag decorative diagrams and prose that
-repeats every edge.
+Renderability is a review concern because the State Gate performs only basic
+structure checks. Flag decorative diagrams and prose that repeats every edge.
 
 Ownership determines repair routing:
 

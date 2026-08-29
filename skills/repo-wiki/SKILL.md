@@ -7,9 +7,7 @@ description: Generate or incrementally refresh a thin, evidence-anchored reposit
 
 Produce an OKF v0.2 Wiki from frozen Git revisions and selected OpenGauss
 catalogs. `scripts/okf.py` owns Run state, validation and Publication; never
-edit `.okf-wiki` state by hand. Requires Git, Python 3.12+, `uv` and Node.js
-22.20+ on PATH. Run `npm ci --prefix <skill>` once after installation so the
-pinned Mermaid syntax gate is available.
+edit `.okf-wiki` state by hand. Requires Git, Python 3.12+ and `uv` on PATH.
 
 Run every command from the Workspace root. `<skill>` is this directory; the
 short form `okf` below means:
@@ -135,10 +133,11 @@ evidence for every load-bearing claim; child pages are synthesis inputs, not
 provenance.
 
 Each planned diagram is one Mermaid fence with matching id/kind, accessibility
-title and description, and an adjacent cited conclusion. The pinned parser
-checks syntax; page review checks that nodes, edges, messages, transitions and
-cardinalities agree with code and do not omit material failure or recovery
-paths. Markdown remains canonical; no SVG or graph sidecar is published.
+title and description, and an adjacent cited conclusion. The State Gate checks
+the supported declaration and basic structure; page review checks renderability
+and that nodes, edges, messages, transitions and cardinalities agree with code
+without omitting material failure or recovery paths. Markdown remains
+canonical; no SVG or graph sidecar is published.
 
 Page boundaries are fixed by the Page Plan. Record an honest partial gap when
 evidence is incomplete. A routing or ownership error belongs to plan repair,

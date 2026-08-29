@@ -17,16 +17,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22.20"
-          cache: npm
-          cache-dependency-path: skills/repo-wiki/package-lock.json
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.11.28"
-      - name: Install Mermaid validator
-        run: npm ci --prefix skills/repo-wiki
       - name: Unit tests
         run: uv run --with pytest --with pydantic --with PyYAML --with "psycopg[binary]" pytest -q skills/repo-wiki/scripts/tests
       - name: CLI end-to-end

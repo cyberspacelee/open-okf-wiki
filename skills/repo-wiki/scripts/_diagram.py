@@ -1,7 +1,4 @@
-import json
-import pathlib
 import re
-import subprocess
 
 from _markdown import CodeFence, Structure
 from _models import DiagramSpec
@@ -13,18 +10,52 @@ _DESCRIPTION = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 _FOOTNOTE = re.compile(r"\[\^([^\]]+)\]")
+_HEADERS = (
+    (re.compile(r"(?:flowchart|graph)(?:\s+(?:TB|TD|BT|RL|LR))?"), "flowchart"),
+    (re.compile(r"sequenceDiagram"), "sequence"),
+    (re.compile(r"stateDiagram(?:-v2)?"), "state"),
+    (re.compile(r"erDiagram"), "er"),
+)
+_DANGLING_CONNECTOR = re.compile(
+    r"(?:-->|---|-\.->|==>|->>|-->>|->|-\)|--\)|--x|--o)\s*$"
+)
 
 
-def _kind(diagram_type: str) -> str | None:
-    if diagram_type.startswith("flowchart"):
-        return "flowchart"
-    if diagram_type == "sequence":
-        return "sequence"
-    if diagram_type == "stateDiagram":
-        return "state"
-    if diagram_type == "er":
-        return "er"
-    return None
+def _basic_structure(source: str) -> tuple[str | None, str | None]:
+    lines = [
+        line
+        for raw in source.splitlines()
+        if (line := raw.strip()) and not line.startswith("%%")
+    ]
+    if not lines:
+        return None, "Mermaid fence has no diagram declaration or content"
+    header, separator, inline_body = lines[0].partition(";")
+    kind = next(
+        (kind for pattern, kind in _HEADERS if pattern.fullmatch(header.strip())),
+        None,
+    )
+    if kind is None:
+        return None, "Mermaid fence must start with a supported diagram declaration"
+
+    body = [inline_body.strip()] if separator and inline_body.strip() else []
+    in_description = False
+    for line in lines[1:]:
+        if in_description:
+            if "}" in line:
+                in_description = False
+            continue
+        if line.startswith("accDescr"):
+            in_description = "{" in line and "}" not in line
+            continue
+        if not line.startswith("accTitle"):
+            body.append(line)
+    if not body:
+        return None, "Mermaid fence has no diagram content"
+    for line in body:
+        code = line.split("%%", 1)[0].rstrip(" ;")
+        if _DANGLING_CONNECTOR.search(code):
+            return None, f"Mermaid connector has no target: {line}"
+    return kind, None
 
 
 def _caption_refs(structure: Structure, fence: CodeFence) -> set[str]:
@@ -41,30 +72,6 @@ def _caption_refs(structure: Structure, fence: CodeFence) -> set[str]:
             break
         paragraph.append(line)
     return set(_FOOTNOTE.findall("\n".join(paragraph)))
-
-
-def _parse(sources: list[str]) -> tuple[list[dict] | None, str | None]:
-    script = pathlib.Path(__file__).with_name("validate-mermaid.mjs")
-    try:
-        result = subprocess.run(
-            ["node", str(script)],
-            input=json.dumps(sources),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
-    except OSError as exc:
-        return None, f"Node.js is unavailable: {exc}"
-    if result.returncode:
-        return None, (result.stderr or result.stdout).strip()
-    try:
-        parsed = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        return None, f"Mermaid parser returned invalid JSON: {exc}"
-    if not isinstance(parsed, list) or len(parsed) != len(sources):
-        return None, "Mermaid parser returned an invalid result list"
-    return parsed, None
 
 
 def validate(
@@ -125,25 +132,14 @@ def validate(
                 )
             )
 
-    if fences:
-        parsed, error = _parse([fence.content for fence in fences])
+    for fence in fences:
+        kind, error = _basic_structure(fence.content)
         if error:
-            issues.append(("mermaid-runtime-unavailable", error, None))
-        else:
-            assert parsed is not None
-            for fence, result in zip(fences, parsed, strict=True):
-                if not result.get("ok"):
-                    issues.append(
-                        (
-                            "mermaid-syntax-invalid",
-                            result.get("error", "Mermaid parse failed"),
-                            fence.start_line,
-                        )
-                    )
-                    continue
-                ids = _ID.findall(fence.content)
-                if len(ids) == 1 and ids[0] in actual:
-                    actual[ids[0]] = _kind(result.get("diagramType", ""))
+            issues.append(("mermaid-structure-invalid", error, fence.start_line))
+            continue
+        ids = _ID.findall(fence.content)
+        if len(ids) == 1 and ids[0] in actual:
+            actual[ids[0]] = kind
     expected = {diagram.id: diagram.kind for diagram in planned}
     if actual != expected:
         issues.append(

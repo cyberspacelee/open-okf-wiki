@@ -14,8 +14,8 @@
    Domain 承担边界、规则、状态、时序和失败传播的全部散文。
 2. 在 Page Plan 中声明预期 diagram 的 `id`、`kind` 和它回答的问题；页面中的 Mermaid 必须与计划
    一一对应，并保持普通文本的结论与证据引用。
-3. kernel 校验类型、计划对应、Mermaid 语法、可访问描述和引用连接；reviewer 核验每个节点、边、
-   消息、转换和 cardinality 的语义，而不是让 kernel 猜图是否正确。
+3. kernel 校验类型、计划对应、基础 Mermaid 结构、可访问描述和引用连接；reviewer 核验可渲染性以及
+   每个节点、边、消息、转换和 cardinality 的语义，而不是让 kernel 实现 Mermaid grammar。
 4. eval 不以 Mermaid 数量为质量指标；使用固定维护问题，分别测量人和 agent 的答案正确率、找证据
    的时间或 token、遗漏和错误路径，并与纯 prose 基线做配对比较。
 
@@ -34,7 +34,7 @@
 | [OASIS DITA topic 规范](https://docs.oasis-open.org/dita/v1.1/CD02/archspec/topics.html) | Topic 应短到只回答一个主题或问题，又长到能独立理解；更大的内容通过嵌套或引用组合。 | 拆页依据是“独立问题和独立路由”，不是字数、目录或图数量。父页负责导航和综合，不复制子页。 |
 | [Lost in the Middle](https://aclanthology.org/2024.tacl-1.9/) | 长上下文模型对信息位置不稳健，相关内容位于长输入中部时性能常显著下降。 | 对 agent 也应保持单页单问题、短 routing description 和按需加载；不能用“大 context 能装下”支持长篇页面。 |
 | [Talk Like a Graph](https://proceedings.iclr.cc/paper_files/paper/2024/hash/bf72f65f30eedf5d48da6980ee02b589-Abstract-Conference.html) | LLM 的图推理性能受文本编码、任务和图结构影响；选择编码可带来 4.8% 到 61.8% 的差异。论文测试了多种 edge/node 文本编码，但没有证明 Mermaid 最优。 | Mermaid 源码可能给 agent 更显式的边结构，但收益必须按模型和问题实测；保留短文字结论，不把图当作唯一 agent 接口。 |
-| [Ferrari 等：LLM 生成 sequence diagram 的研究](https://arxiv.org/abs/2404.06371) | 生成图通常可理解且符合标准，但相对于输入需求仍经常不完整或不正确，尤其在歧义、矛盾和隐含领域知识存在时。 | 能 parse 不等于语义正确。kernel 负责语法，独立 reviewer 必须回到代码核验图中关系及遗漏。 |
+| [Ferrari 等：LLM 生成 sequence diagram 的研究](https://arxiv.org/abs/2404.06371) | 生成图通常可理解且符合标准，但相对于输入需求仍经常不完整或不正确，尤其在歧义、矛盾和隐含领域知识存在时。 | 能 parse 不等于语义正确。独立 reviewer 必须检查渲染结果，并回到代码核验图中关系及遗漏。 |
 | [Treude 等：Beyond Accuracy](https://doi.org/10.1145/3368089.3417045) | 软件文档仅有准确和完整仍不充分；其框架还评估 readability、understandability、structure、cohesion、conciseness、consistency 和 clarity 等维度。 | 当前 citation/coverage gate 不能代表文档质量；review 和 live eval 必须加入表达与任务效率维度。 |
 
 ## Mermaid 图种选择
@@ -144,18 +144,22 @@ kernel 只执行可确定判定：
 - page type 枚举和 type-specific diagram 规则；
 - frontmatter `diagrams` 与 Plan 完全相同；
 - `%% okf-id` 唯一，planned/actual id 与 kind 一一对应；
-- 使用与发布 renderer 同版本、固定版本的 Mermaid
-  [`parse`](https://mermaid.js.org/config/usage.html#syntax-validation-without-rendering) 做真实语法检查，
-  不用正则模拟 Mermaid grammar；
+- 用标准库识别四种受支持的 diagram declaration、非空图内容和明显悬空 connector；不尝试用正则
+  复刻 Mermaid grammar；
 - 每个 fence 有非空 `accTitle` 和 `accDescr`。Mermaid 会把它们渲染为 SVG 的 title/description；
   [官方 accessibility 文档](https://mermaid.js.org/config/accessibility.html)给出了对应 ARIA 输出；
 - 每张图相邻 caption 至少引用一个属于页面 scope 的 source id；现有 locator、ownership 和 revision
   验证继续承担证据真实性；
 - diagram source 计入页面预算并禁止残留 placeholder。
 
-语法检查应使用直接依赖或固定镜像，不在运行时 `npx` 下载 latest；Mermaid 官方同时提供
-[`mermaid-cli`](https://github.com/mermaid-js/mermaid-cli)，可以作为 render smoke test，但完整浏览器渲染
-不必放进每次 page gate。解析器和最终 renderer 版本不一致会产生“gate 通过、发布失败”的假保证。
+调研未发现适合该门禁的轻量 Python parser：
+[`mermaid-syntax-parser`](https://pypi.org/project/mermaid-syntax-parser/) 实际通过 `pythonmonkey` 嵌入
+JavaScript 引擎；[`mermaid-py`](https://pypi.org/project/mermaid-py/) 面向生成和渲染，不是 Python
+grammar parser；[`mermaidx`](https://github.com/mohammadraziei/mermaidx) 同样嵌入 QuickJS 和渲染栈。
+引入任一方案都没有消除 Mermaid 的 JavaScript/runtime 成本。完整语法与渲染又随 Mermaid 版本演进，
+把它塞进每次 page gate 会造成重依赖和“parser 通过即产物正确”的假保证。因此 deterministic gate 只做
+稳定、低误报的基础结构检查；独立 reviewer 在实际消费环境检查 renderability。需要批量发布渲染时，
+再在发布链路固定最终 renderer 版本，而不是扩大写作 gate。
 
 kernel 不判断图是否选择正确、节点是否遗漏或某条边是否真实，这些都需要语义理解。也不建立 connection
 graph、图数据库、独立图 artifact 或 Mermaid frontmatter 中的 locator 副本。
@@ -192,7 +196,7 @@ review phase。
 ### Deterministic suite
 
 为四种 diagram 各保留一个最小正例，并覆盖以下负例：未知 page type、缺 planned diagram、额外 diagram、
-id/kind 不匹配、Mermaid syntax error、缺 accessibility 字段、caption 无 citation、DataModel relationship
+id/kind 不匹配、未知 declaration、空图、明显悬空 connector、缺 accessibility 字段、caption 无 citation、DataModel relationship
 存在但无 ER。`run_cli_e2e.py` 的 Architecture fixture 必须真正含 flowchart；当前无图 Architecture 不能再
 作为成功基线。
 
@@ -223,7 +227,7 @@ cohesion、conciseness、consistency 和 clarity；accuracy/completeness 继续�
 1. 定稿 page type、diagram admission/selection、拆页、证据和 accessibility contract；
 2. 修改 Plan/Frontmatter models 与所有模板；新增 Flow/Lifecycle 模板；
 3. 修改 planner/page/review references 和 review category；
-4. 用固定 Mermaid parser 完成 kernel gate，并补齐 deterministic tests；
+4. 用 Python 标准库完成 Mermaid 基础结构 gate，并补齐 deterministic tests；
 5. 更新 CLI e2e fixtures 和 grade rubric；
 6. 跑真实仓库的 prose/diagram 配对 live eval，根据任务结果调整模板，而不是放宽真实性门禁。
 

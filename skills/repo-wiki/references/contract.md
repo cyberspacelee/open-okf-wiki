@@ -125,9 +125,10 @@ Each planned diagram appears exactly once in a `mermaid` fence:
 The `%% okf-id` and Mermaid kind must match the Plan. Every diagram has
 non-empty `accTitle` and `accDescr`, uses text labels rather than color alone,
 and is immediately followed by a short conclusion or caption with at least one
-ordinary page footnote. Keep citations outside the fence. The State Gate uses
-the pinned Mermaid parser for syntax; parse success never substitutes for
-semantic review.
+ordinary page footnote. Keep citations outside the fence. The State Gate checks
+the supported declaration, non-empty diagram content and obvious dangling
+connectors. These basic checks do not prove that Mermaid will render or that the
+diagram is semantically correct; page review owns both judgments.
 
 ## Page DAG
 
