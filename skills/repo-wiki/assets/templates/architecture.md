@@ -1,11 +1,5 @@
 ---
-type: Architecture
-title: "{title}"
-description: "{routing: which boundaries and propagation paths this page answers}"
 coverage: full
-resource: "{optional asset URI}"
-tags: [architecture]
-diagrams: []
 sources: []
 ---
 

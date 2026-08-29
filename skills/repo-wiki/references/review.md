@@ -1,48 +1,47 @@
-# Review Target
+# Wiki Bundle Review
 
-Review the exact packet subject in a session distinct from the producer. Bind
-the report to `subject_digest`; do not use writer conversation history. Read
-the contract, typed subject, prior review and relevant bounded evidence.
+Review the exact bundle returned by `review prepare` in a fresh context. Read
+the Candidate, Plan, Composition, writing contract and relevant evidence notes.
+Reopen frozen Source evidence for decision-changing claims. Do not use the
+producer's conversation history.
 
-For `plan:workspace`, test domain recall, knowledge boundaries, Source roles,
-cross-Source contracts, evidence seeds and honest gaps. The Plan must not
-contain page structure. Reopen `plan:workspace` for material omissions.
+When the packet includes `previous_review`, read its Artifact before
+overwriting it and verify every prior issue against the complete new bundle.
 
-For `page:compose`, verify every active knowledge unit is assigned exactly once,
-page boundaries pass the Grep Test, type and representation fit the reader
-question, and hierarchy plus dependencies are coherent. Request structural
-`split`, `merge` or `move` against `page:compose`. Reopen an exact research
-Target for a dossier evidence gap, or `plan:workspace` for missing knowledge.
+Judge the Wiki globally:
 
-For `page:write/<page-id>`, reopen evidence behind decision-changing claims.
-Judge unsupported claims, invented rationale, padded gaps, scope bleed,
-coverage, language, links, diagram semantics, readability and renderability.
-Use `repair` against the same write Target for content defects. Route page
-boundary, metadata, relation or path defects to `page:compose` with the matching
-structural operation.
+- domain recall, Source roles, lifecycles, failures and cross-Source contracts;
+- knowledge-unit coverage and honest gaps;
+- Grep Test, page boundaries, duplicate concepts and routing quality;
+- page type, representation, hierarchy implied by paths and cross-links;
+- citation support, invented rationale, scope bleed and terminology;
+- diagram semantics, accessibility and renderability.
 
-Write one strict JSON Attempt Artifact:
+Write strict JSON to the packet's fixed `artifact` path:
 
 ```json
 {
-  "subject": "page:compose",
   "subject_digest": "<packet subject_digest>",
   "verdict": "changes_requested",
   "issues": [{
     "category": "concept-boundary",
     "claim": "Two unrelated capabilities share one page.",
     "resolution": "Split them into independently routable pages.",
-    "reopen_target": "page:compose",
+    "area": "composition",
+    "page_ids": ["request-recovery"],
     "operation": "split"
   }]
 }
 ```
 
-Operations are `repair`, `split`, `merge` and `move`. Structural operations
-must reopen `page:compose`. Categories are `domain-coverage`,
-`concept-boundary`, `dependency`, `grep-test`, `unsupported-claim`,
-`invented-rationale`, `padded-gap`, `ownership`, `routing`, `coverage`,
-`language` and `representation`.
+Areas are `plan`, `composition` and `page`. Page issues name at least one
+`page_id`. Operations are `repair`, `split`, `merge` and `move`; structural
+operations always use the composition area. Categories are
+`domain-coverage`, `concept-boundary`, `grep-test`, `unsupported-claim`,
+`invented-rationale`, `padded-gap`, `routing`, `coverage`, `language` and
+`representation`.
 
-An approved report has no issues. On follow-up, verify prior issues first. Run
-`complete_command`. Handoff: artifact path, subject, verdict and issue count.
+An approved report has no issues. An empty Candidate is approvable only when
+the empty Plan explains why no knowledge passes the Grep Test. On every
+follow-up, review the complete new bundle. Return only the report path, verdict
+and issue count.

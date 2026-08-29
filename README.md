@@ -96,22 +96,20 @@ catalog (table and column comments included) without reconnecting. Workers
 use those commands or the dispatch packet's `catalogs` paths — not
 `state.json` or the full `catalog.json`.
 
-Start the Run with a unique producer session, then ask the coding agent to use
-the `repo-wiki` skill and resume from status:
+Start the Run, then ask the coding agent to use the `repo-wiki` skill and resume
+from status. Run IDs are internal and require no user-supplied session:
 
 ```text
-uv run .agents/skills/repo-wiki/scripts/okf.py run start --producer repo-wiki/codex --session wiki-20260827-01
+uv run .agents/skills/repo-wiki/scripts/okf.py run start
 uv run .agents/skills/repo-wiki/scripts/okf.py run status --json
 ```
 
-The host agent remains a coordinator: `run status` gives the compact Ready Set,
-and `task start --json` gives one complete path-only worker dispatch. One
-long-lifecycle planner owns the cross-Source Knowledge Plan and persists a
-Markdown checkpoint; bounded dossier workers gather evidence, then one global
-Composition Map assigns stable page IDs, relations and final paths. Writers
-read Pins and typed packet inputs and return only bounded handoffs.
-Start and complete every Target through the CLI. Each State Gate checks that
-the Pin still matches the recorded revision.
+The host agent runs one explicit loop until Publication or a real external
+block. `run status` derives the next phase from fixed Plan, progress,
+Composition, draft and review Artifacts. One long-lived planner owns the
+cross-Source model; focused workers write bounded evidence notes, independent
+page writers use stable page IDs, and one fresh reviewer checks the complete
+Candidate. Validation and review defects return to the loop.
 
 After a distinct reviewer approves the candidate:
 
@@ -138,10 +136,14 @@ design behaves consistently on Windows, Linux and macOS without symlinks.
   captions are gated.
 - generated, verified, status and stale_after make lifecycle and trust
   machine-readable.
-- Page Targets, reviews and dependencies use stable page IDs; physical paths
-  are bound from the reviewed Composition Map only after content review.
-- Plan and composition checkpoints persist completed analysis, findings,
-  hypotheses, gaps and next actions across context compression or retry.
+- Drafts and logical links use stable page IDs; physical paths are bound from
+  the Composition Map only when the complete Candidate is prepared.
+- One living Plan and progress file persist analysis and next actions across
+  context compression. There are no Attempt or checkpoint histories.
+- One independent Wiki review binds Plan, Composition, drafts and Candidate to
+  an exact digest; every change requires a new complete-bundle review whose
+  packet points to the fixed prior review Artifact.
+- An explained empty Plan publishes no placeholder concept pages.
 - Root index.md contains only okf_version 0.2; nested indexes and log.md have
   no frontmatter.
 - OpenGauss catalog access is read-only and selected-table only; canonical
@@ -168,7 +170,8 @@ the current generation, not a legacy mutable wiki directory.
     skills/repo-wiki/scripts/okf.py
     workspace.json
     <source-name>/
-    .okf-wiki/runs/<run-id>/
+    .okf-wiki/runs/<internal-run-id>/index/
+    .okf-wiki/runs/<internal-run-id>/work/
     .okf-wiki/pins/<run-id>/<name>/
     .okf-wiki/catalogs/<content-hash>/
     .okf-wiki/publication/generations/<digest>/

@@ -1,11 +1,5 @@
 ---
-type: Overview
-title: "{title}"
-description: "{routing: what this wiki covers and where a task starts}"
 coverage: full
-resource: "{optional workspace URI}"
-tags: [overview]
-diagrams: []
 sources: []
 ---
 

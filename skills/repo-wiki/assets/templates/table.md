@@ -1,11 +1,5 @@
 ---
-type: Table
-title: "{schema.table}"
-description: "{routing: what this table stores and when to inspect it}"
 coverage: full
-resource: "{canonical table URI}"
-tags: [data-model, table]
-diagrams: []
 sources: []
 ---
 
@@ -19,9 +13,8 @@ sources: []
 
 ## Keys and relationships
 
-Record keys from the captured Catalog. A Table page does not contain diagrams
-or try to discover parent pages; a later DataModel parent links its Table
-children.
+Record keys from the captured Catalog. A Table page does not contain diagrams;
+use logical Page ID links for any composed DataModel page.
 
 ## Usage
 

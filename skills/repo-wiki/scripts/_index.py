@@ -118,7 +118,7 @@ LANGUAGE_NAMES = {
 
 
 def index_path(base: pathlib.Path, source: str) -> pathlib.Path:
-    return base / "drafts" / "index" / f"{source.lower()}.md"
+    return base / "index" / f"{source.lower()}.md"
 
 
 def write_source_index(root: pathlib.Path, run_id: str, source, revision: dict) -> dict:

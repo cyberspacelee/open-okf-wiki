@@ -1,6 +1,6 @@
 # Knowledge planning, composition and late path binding
 
-Status: accepted
+Status: superseded by ADR 0019
 
 Supersedes the lifecycle contracts in ADR 0015, ADR 0016 and ADR 0017. It does
 not change OKF version 0.2 and has no compatibility or migration path.

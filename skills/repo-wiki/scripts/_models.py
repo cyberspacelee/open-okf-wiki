@@ -26,12 +26,6 @@ StableId = Annotated[
     str,
     StringConstraints(max_length=64, pattern=r"^[a-z0-9][a-z0-9.-]*$"),
 ]
-TargetRef = Annotated[
-    str,
-    StringConstraints(
-        pattern=r"^(?:plan:workspace|page:(?:compose|research/[a-z0-9][a-z0-9.-]*|write/[a-z0-9][a-z0-9.-]*))$"
-    ),
-]
 ScopePath = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1024)
 ]
@@ -186,7 +180,6 @@ class KnowledgeUnit(BaseModel):
         "integration",
         "operations",
     ]
-    owner: ShortText
     question: ClaimText
     scopes: list[PageScope] = Field(min_length=1, max_length=16)
     evidence_seeds: list[ScopePath] = Field(min_length=1, max_length=3)
@@ -196,7 +189,7 @@ class KnowledgePlan(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     kind: Literal["knowledge-plan"]
-    units: list[KnowledgeUnit] = Field(min_length=1, max_length=64)
+    units: list[KnowledgeUnit] = Field(max_length=64)
     gaps: list[ClaimText] = Field(default_factory=list, max_length=16)
 
     @model_validator(mode="after")
@@ -204,26 +197,8 @@ class KnowledgePlan(BaseModel):
         ids = [item.id for item in self.units]
         if len(ids) != len(set(ids)):
             raise ValueError("knowledge unit ids must be unique")
-        return self
-
-
-class KnowledgeDossier(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    kind: Literal["knowledge-dossier"]
-    unit_id: StableId
-    disposition: Literal["ready", "split"]
-    children: list[KnowledgeUnit] = Field(default_factory=list, max_length=8)
-
-    @model_validator(mode="after")
-    def split_matches_children(self):
-        if self.disposition == "ready" and self.children:
-            raise ValueError("ready dossier must not define children")
-        if self.disposition == "split" and len(self.children) < 2:
-            raise ValueError("split dossier requires at least two children")
-        ids = [item.id for item in self.children]
-        if self.unit_id in ids or len(ids) != len(set(ids)):
-            raise ValueError("dossier child ids must be unique and differ from parent")
+        if not self.units and not self.gaps:
+            raise ValueError("an empty knowledge plan must explain why in gaps")
         return self
 
 
@@ -233,15 +208,10 @@ class CompositionPage(BaseModel):
     id: StableId
     path: PagePath
     type: PageType
-    owner: ShortText
     title: ShortText
     description: ClaimText
     tags: list[ShortText] = Field(default_factory=list, max_length=16)
     units: list[StableId] = Field(min_length=1, max_length=32)
-    scopes: list[PageScope] = Field(min_length=1, max_length=16)
-    evidence_seeds: list[ScopePath] = Field(max_length=3)
-    parent: StableId | None = None
-    depends_on: list[StableId] = Field(default_factory=list, max_length=64)
     diagrams: list[DiagramSpec] = Field(max_length=4)
 
     @field_validator("path", mode="after")
@@ -259,51 +229,17 @@ class CompositionMap(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     kind: Literal["composition-map"]
-    pages: list[CompositionPage] = Field(min_length=1, max_length=64)
+    pages: list[CompositionPage] = Field(max_length=64)
     gaps: list[ClaimText] = Field(default_factory=list, max_length=16)
 
     @model_validator(mode="after")
-    def valid_dependency_graph(self):
+    def unique_bindings(self):
         ids = [page.id for page in self.pages]
         paths = [page.path for page in self.pages]
         if len(ids) != len(set(ids)):
             raise ValueError("page ids must be unique")
         if len(paths) != len(set(paths)):
             raise ValueError("page paths must be unique")
-        known = set(ids)
-        graph = {page.id: page.depends_on for page in self.pages}
-        hierarchy = {
-            page.id: [page.parent] if page.parent else [] for page in self.pages
-        }
-
-        def check_relations(label: str, relations: dict[str, list[str]]) -> None:
-            for page_id, related in relations.items():
-                unknown = set(related) - known
-                if unknown:
-                    raise ValueError(
-                        f"page relations must name composed page ids: {sorted(unknown)}"
-                    )
-                if page_id in related:
-                    raise ValueError(f"page must not relate to itself: {page_id}")
-            visiting: set[str] = set()
-            visited: set[str] = set()
-
-            def visit(page_id: str) -> None:
-                if page_id in visiting:
-                    raise ValueError(f"page {label} must not contain a cycle")
-                if page_id in visited:
-                    return
-                visiting.add(page_id)
-                for dependency in relations[page_id]:
-                    visit(dependency)
-                visiting.remove(page_id)
-                visited.add(page_id)
-
-            for page_id in ids:
-                visit(page_id)
-
-        check_relations("dependencies", graph)
-        check_relations("hierarchy", hierarchy)
         return self
 
 
@@ -313,12 +249,10 @@ class ReviewIssue(BaseModel):
     category: Literal[
         "domain-coverage",
         "concept-boundary",
-        "dependency",
         "grep-test",
         "unsupported-claim",
         "invented-rationale",
         "padded-gap",
-        "ownership",
         "routing",
         "coverage",
         "language",
@@ -326,14 +260,22 @@ class ReviewIssue(BaseModel):
     ]
     claim: ClaimText
     resolution: ClaimText
-    reopen_target: TargetRef
+    area: Literal["plan", "composition", "page"]
+    page_ids: list[StableId] = Field(default_factory=list, max_length=16)
     operation: Literal["repair", "split", "merge", "move"] = "repair"
+
+    @model_validator(mode="after")
+    def structural_changes_belong_to_composition(self):
+        if self.operation != "repair" and self.area != "composition":
+            raise ValueError("split, merge and move issues belong to composition")
+        if self.area == "page" and not self.page_ids:
+            raise ValueError("page issues require at least one page id")
+        return self
 
 
 class ReviewReport(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    subject: TargetRef
     subject_digest: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     verdict: Literal["approved", "changes_requested"]
     issues: list[ReviewIssue] = Field(default_factory=list, max_length=64)

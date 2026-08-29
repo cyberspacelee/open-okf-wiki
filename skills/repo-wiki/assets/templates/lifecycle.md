@@ -1,11 +1,5 @@
 ---
-type: Lifecycle
-title: "{title}"
-description: "{routing: which object's state transitions this page answers}"
 coverage: full
-resource: "{optional asset URI}"
-tags: [lifecycle]
-diagrams: []
 sources: []
 ---
 

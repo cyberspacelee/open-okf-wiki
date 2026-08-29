@@ -1,21 +1,22 @@
-# Knowledge Plan Target
+# Knowledge Plan
 
-Own the complete cross-Source investigation for the life of this Target. Do
-not split planning into competing small-budget planners. Focused evidence
-workers may search a call path or database fact, but return only findings,
-locators, gaps and unanswered questions to this planner.
+Own the complete cross-Source investigation. One planner maintains the shared
+mental model; focused evidence workers answer bounded questions and return note
+paths, locators, gaps and unanswered questions.
 
-Read every Source and Catalog Index. Navigate from build modules and source
-sets into relevant package clusters. Account for Source roles, domain nouns,
-state transitions, commands, persistence, events, failure paths, extension
-points and cross-Source contracts. Distinguish public API, internal API and
-plugin SPI. Package and class counts are not concepts.
+Read every Source Index and selected Catalog Index. Navigate from build modules
+and source sets into relevant package clusters. Account for Source roles,
+domain nouns, state transitions, commands, persistence, events, failure paths,
+extension points and cross-Source contracts. Distinguish public API, internal
+API and plugin SPI. Package and class counts are not concepts.
 
-Continuously update the packet checkpoint and submit it with
-`checkpoint_command`. After compaction or retry, read `previous_checkpoint`
-first and continue its `Next actions`; do not repeat completed exploration.
+Continuously overwrite `work/plan.md`. For long work, keep
+`work/progress.md` sufficient to resume without conversation history: completed
+investigations, current findings, rejected hypotheses, gaps and next actions.
+Evidence notes belong under `work/evidence/`; copy conclusions into the Plan
+instead of making the notes mandatory dependencies.
 
-Write a Markdown Attempt Artifact. Frontmatter shape:
+The Plan is Markdown with this frontmatter:
 
 ```yaml
 ---
@@ -23,7 +24,6 @@ kind: knowledge-plan
 units:
   - id: request-lifecycle
     kind: lifecycle
-    owner: API
     question: How does a request enter failure and recover?
     scopes:
       - source: API
@@ -35,18 +35,15 @@ gaps: []
 ```
 
 Kinds are `capability`, `lifecycle`, `flow`, `data-model`, `integration` and
-`operations`. IDs are stable lowercase logical identities. Each unit has one
-to three evidence seeds actually opened inside its scopes. The body explains
-the overall model, relations, evidence-backed conclusions, rejected
-hypotheses, unresolved gaps and suggested next investigations.
+`operations`. IDs are stable lowercase semantic keys. Each unit has one to
+three seeds actually opened inside its scopes. The body explains the global
+model, lifecycle and cross-Source relationships, evidence-backed conclusions,
+rejected hypotheses and unresolved gaps.
 
-`owner` is either one registered Source name or `workspace`. A Source-owned
-unit may contain scopes only from that Source. Use `workspace` when the unit
-genuinely spans Sources; its scopes must still name registered Sources.
+Plan defines what knowledge requires coverage. Page IDs, types, titles, paths,
+diagrams and hierarchy belong to Composition. Keep at most 64 coherent units;
+edit the Plan directly when a unit is too broad.
 
-Do not choose Wiki page IDs, types, titles, paths, hierarchy, dependencies or
-diagrams. The Plan says what knowledge requires deeper coverage, not how the
-Wiki will store it. Keep at most 64 coherent units and record honest gaps.
-
-Run `checkpoint_command`, then `complete_command`. Handoff: artifact path, gate
-verdict, unit count and gap count.
+If nothing passes the Grep Test, use `units: []` and record at least one gap
+explaining why no durable knowledge warrants a page. This is a complete Plan,
+not a blocker and not a reason to invent an Overview.

@@ -1,158 +1,119 @@
 ---
 name: repo-wiki
-description: Generate or refresh a thin, evidence-anchored repository Wiki and human-reviewed onboarding proposals. Use for codebase Wiki, architecture maps, onboarding documentation, AGENTS.md or CONTEXT.md proposals, and resuming an existing Wiki run.
+description: Generate or refresh a thin, evidence-anchored repository Wiki and human-reviewed onboarding proposals. Use for codebase Wikis, architecture maps, onboarding documentation, AGENTS.md or CONTEXT.md proposals, and resuming an existing Wiki run.
 ---
 
 # Repo Wiki
 
-Produce an OKF v0.2 Wiki from frozen Source revisions and selected database
-catalogs. `scripts/okf.py` owns Run state, validation and Publication; never
-edit `.okf-wiki` state by hand. Requires Git, Python 3.12+ and `uv`.
+Produce an OKF v0.2 Wiki from frozen Source revisions. Python owns Capture,
+Index, validation, late binding and Publication. The host agent owns planning,
+subagents and the loop. Requires Git, Python 3.12+ and `uv`.
 
 Run commands from the Workspace root. `<skill>` is this directory; `okf` means:
 
     uv run <skill>/scripts/okf.py
 
-## Resume first
+## Resume
+
+Run `okf run status --json`. If no Run exists, initialize, register every
+Source, then start without supplying an ID:
+
+    okf workspace init --lang en --freshness-days 90
+    okf source add link ../service --name service
+    okf run start
+
+Disk Artifacts are authoritative after restart or context compression:
+
+    work/plan.md
+    work/progress.md
+    work/evidence/
+    work/composition.md
+    work/drafts/<page-id>.md
+    work/review.json
+
+These are logical names inside the current Run. Always use the absolute paths
+returned in `status.artifacts`; never construct or pass the internal Run ID.
+
+## Coordinator loop
+
+Repeat until `status` is `published` or `blocked`:
 
 1. Run `okf run status --json`.
-2. If a Run exists, execute its `next_actions`. Disk state and persisted
-   checkpoints win over conversation memory.
-3. Otherwise initialize the Workspace, register every Source, and start:
+2. Execute its `next_actions` and repair every reported error.
+3. Dispatch independent evidence, page and review work when available; merge
+   path-only handoffs into the fixed Artifacts.
+4. Run status again. Missing work, rejected review and validation errors are
+   loop inputs, never stopping conditions.
 
-       okf workspace init --lang en --freshness-days 90
-       okf source add link ../service --name service
-       okf run start --producer repo-wiki/<model> --session <unique-id>
+Use `okf run block --reason <external-dependency>` only for credentials,
+ambiguous Source selection or another real external dependency. Resume with
+`okf run resume`.
 
-Drive the Run through Publication. Stop only for a real human dependency such
-as credentials or ambiguous Source selection.
+## Plan
 
-## Lifecycle
+Read [references/plan.md](references/plan.md) and
+[references/contract.md](references/contract.md). One long-lived planner owns
+the cross-Source model and continuously overwrites `work/plan.md`. For a long
+run it also keeps `work/progress.md` current before context compression and
+after merging worker results.
 
-Capture, Index, binding and Publication are deterministic. Agent work has only
-the Target kinds `plan`, `page` and `review`:
+Dispatch focused evidence subagents for independent Source investigations,
+call paths, database facts or unresolved hypotheses. They write bounded notes
+under `work/evidence/` and return paths plus gaps. They do not write separate
+Plans or choose Wiki pages. A Source count alone is not a reason to create one
+worker per Source.
 
-    plan:workspace
-      -> review:plan
-      -> page:research/<unit-id>*
-      -> page:compose
-      -> review:composition
-      -> page:write/<page-id>*
-      -> review:<page-id>*
-      -> deterministic bind and approve
+Navigate frozen evidence with:
 
-There are no per-Source Plan shards. Assign `plan:workspace` to one
-long-lifecycle planner that owns the cross-Source mental model. It may use
-focused evidence workers for bounded searches, call paths or database facts,
-but those workers return evidence and gaps only; they do not create competing
-plans or page paths.
+    okf evidence outline . --source service --json
+    okf evidence search "literal" --source service --path src --json
+    okf evidence read service/src/App.java#L20-L80 --json
 
-`run status --json` exposes the Ready Set. Independent research or write
-Targets may run concurrently. For each ready Target:
+Plan is complete when status advances to `write` with no Plan issues.
+If no knowledge passes the Grep Test, write an empty `units` list and explain
+the exclusion in `gaps`; this is a valid reviewed and published empty Wiki.
 
-    okf task start <target-id> --json
+## Write
 
-Read the returned `reference`, `contract` and typed `inputs`; a write or write
-review also reads its exact `template`. Use only packet scopes and the bounded
-`outline`, `search` and `read` commands. Write to the attempt-specific
-`artifact`, then run `complete_command`.
+Read [references/composition.md](references/composition.md). The planner or one
+composer turns the completed knowledge units into `work/composition.md`.
+Composition is the first Artifact that defines page IDs, titles and physical
+paths. It assigns every knowledge unit exactly once and carries no scheduler or
+hierarchy graph; the final path is the published hierarchy.
 
-For long work, write the packet's `checkpoint` Markdown with the exact headings
-`Completed`, `Findings`, `Hypotheses`, `Gaps` and `Next actions`, then run
-`checkpoint_command`. Plan and composition cannot complete without a current
-checkpoint. On failure the checkpoint remains on disk and the retry packet
-includes it as `previous_checkpoint`; resume from it instead of rescanning.
+Then read [references/page.md](references/page.md) and dispatch one writer per
+independent page when useful. Each writer receives the Plan, Composition,
+relevant evidence-note paths, the matching template under `assets/templates/`
+and its fixed output `work/drafts/<page-id>.md`. Writers reopen frozen Source
+evidence for load-bearing claims. Status derives missing and invalid drafts
+directly from Composition.
 
-Recover a lost packet only with:
+Use `[label][page-id]` without a definition for logical page links. The kernel
+binds known IDs to final paths; unknown IDs fail review preparation.
 
-    okf task packet <target-id> --attempt <token> --json
+## Review and publish
 
-On rejection, repair the same Attempt Artifact. On an unrecoverable worker
-failure run `okf task fail <target-id> --reason <short-reason>`. Handoffs contain
-only paths, gate verdicts, counts and blockers, never artifact bodies.
+Run `okf review prepare --json`. It validates all work, binds the exact
+Candidate and returns one fixed review packet. Dispatch that packet to a fresh,
+independent reviewer; the producing context must not review its own work. The
+reviewer reads [references/review.md](references/review.md) and writes
+`work/review.json`.
 
-## Index and navigation
+When the packet includes `previous_review`, the reviewer reads that fixed
+Artifact before overwriting it with the follow-up verdict.
 
-Index builds a complete canonical directory tree in the deterministic kernel
-and emits a compact visible projection. A maximal directory chain is one line
-when intermediate nodes have no direct files and one child. Full deepest paths
-remain visible. Build modules, source sets, branch nodes and direct-file nodes
-stop compaction. `compressed` counts structural folding; `truncated` means the
-byte budget coarsened the projection. Use `outline` to expand either case.
+Run `okf review complete --json`. `changes_requested` returns to the coordinator
+loop: repair the named Plan, Composition or page files, prepare a new Candidate
+and review the complete bundle again. Structural `split`, `merge` and `move`
+changes belong in Composition. There is no review-round limit.
 
-The Index is navigation, not semantic ranking. Maven modules, source roots and
-package clusters are not automatic Wiki pages.
-
-## Knowledge planning
-
-The planner reads every Source Index and Catalog index, navigates all relevant
-Sources and writes a Markdown Knowledge Plan. Its small YAML frontmatter lists
-stable knowledge units with kind, owner, question, scopes and one to three
-opened evidence seeds. The body records cross-Source understanding, lifecycle
-relationships, decisions, gaps and rejected hypotheses.
-
-The Plan answers what knowledge must be covered. It must not choose Wiki page
-paths, titles, hierarchy, diagrams or page dependencies. `review:plan`
-independently checks domain recall, boundaries, evidence and gaps before
-research fan-out.
-
-Each `page:research/<unit-id>` deepens one unit into a Knowledge Dossier. A
-dossier is `ready`, or `split` with two to eight child units inside its parent
-scope. Split is for an incoherent research boundary, not length or package
-count. The State Gate creates child research Targets dynamically and waits for
-all active leaves.
-
-## Composition and writing
-
-`page:compose` reads the complete dossier set and is the first Target allowed
-to define pages. Its Markdown Composition Map assigns every active unit to
-exactly one stable `page_id`, selects page type and representation, defines
-hierarchy and dependencies by ID, and proposes final paths. IDs, paths and the
-two relation graphs are unique and independently acyclic. `parent` defines
-information architecture only. `depends_on` defines scheduling and names the
-reviewed pages a synthesis writer consumes.
-
-`review:composition` checks coverage and may request `split`, `merge` or `move`.
-Only after approval do writers run. A writer works at
-`drafts/pages/<page-id>.md`; its Target identity never contains the final path.
-Reviews for every page in `depends_on` unlock the synthesis writer.
-
-Use standard Markdown reference links for logical page links:
-
-    See [request recovery][request-recovery].
-
-Do not add a reference definition. The deterministic binder resolves known
-page IDs to root-relative final paths after all page reviews. An unknown ID
-fails binding. A path-only move therefore preserves the page draft and its
-content review.
-
-Every page reopens Source evidence for load-bearing claims. Dossiers and child
-pages are synthesis inputs, not provenance. Implement planned Mermaid diagrams
-with matching ID/kind, accessibility title and description, and an adjacent
-cited conclusion. Use honest partial coverage with a Gaps section when needed.
-
-## Review and Publication
-
-When a review first becomes ready, bind a distinct session:
-
-    okf review start --actor repo-wiki/<reviewer> --session <new-session> --json
-
-Review reports remain small strict JSON because they control state transitions.
-They bind the exact subject digest. Content repair reopens the write Target;
-structural `split`, `merge` or `move` reopens `page:compose`; missing knowledge
-may reopen an exact research Target or `plan:workspace`. Two consecutive change
-rounds pause the Run for an explicit resume decision.
-
-When all Targets complete, the kernel binds IDs to paths, validates the exact
-Candidate and marks the Run approved. Then run:
+After approval, status returns `publication publish`. Run it, then verify:
 
     okf publication publish
+    okf validate --published
 
-Publication writes reserved `index.md` and `log.md`, installs an immutable
-content-addressed generation and atomically switches the current pointer.
-Human verification is separate from Machine-confirmed review.
-
-Optional source-facing proposals run only after Publication:
+Publication installs an immutable content-addressed generation and atomically
+switches the current pointer. Optional source-facing proposals run afterward:
 
     okf propose start --json
     okf propose complete --json

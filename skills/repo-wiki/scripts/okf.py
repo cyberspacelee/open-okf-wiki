@@ -94,11 +94,6 @@ def cmd_source(args) -> int:
         )
         return 0
     root = workspace_root()
-    if args.action == "refresh":
-        import _state
-
-        emit(_state.refresh_source(root, args.name), args.json)
-        return 0
     if args.kind == "link":
         source = _workspace.add_git_link(root, args.target, args.name)
     elif args.kind == "clone":
@@ -122,11 +117,11 @@ def cmd_run(args) -> int:
 
     root = workspace_root()
     if args.action == "start":
-        result = _state.start_run(root, args.producer, args.session)
+        result = _state.start_run(root)
     elif args.action == "status":
         result = _state.status(root)
-    elif args.action == "pause":
-        result = _state.pause(root)
+    elif args.action == "block":
+        result = _state.block(root, args.reason)
     elif args.action == "resume":
         result = _state.resume(root)
     else:
@@ -135,40 +130,26 @@ def cmd_run(args) -> int:
     return 0
 
 
-def cmd_task(args) -> int:
+def cmd_evidence(args) -> int:
     import _state
 
     root = workspace_root()
-    if args.action == "start":
-        result = _state.task_start(root, args.target)
-    elif args.action == "packet":
-        result = _state.task_packet(root, args.target, args.attempt)
-    elif args.action == "checkpoint":
-        result = _state.task_checkpoint(root, args.target, args.attempt)
-    elif args.action == "outline":
-        result = _state.task_outline(
+    if args.action == "outline":
+        result = _state.evidence_outline(
             root,
-            args.target,
             source=args.source,
             path=args.path,
             after=args.after,
         )
     elif args.action == "search":
-        result = _state.task_search(
+        result = _state.evidence_search(
             root,
-            args.target,
             source=args.source,
             query=args.pattern,
             path=args.path,
         )
-    elif args.action == "read":
-        result = _state.task_read(root, args.target, args.locator)
-    elif args.action == "complete":
-        result = _state.task_complete(root, args.target, args.attempt)
-        if not result.get("ok"):
-            return emit_issues(result["issues"], args.json)
     else:
-        result = _state.task_fail(root, args.target, args.reason or "")
+        result = _state.evidence_read(root, args.locator)
     emit(result, args.json)
     return 0
 
@@ -176,7 +157,13 @@ def cmd_task(args) -> int:
 def cmd_review(args) -> int:
     import _state
 
-    result = _state.review_start(workspace_root(), args.actor, args.session)
+    result = (
+        _state.review_prepare(workspace_root())
+        if args.action == "prepare"
+        else _state.review_complete(workspace_root())
+    )
+    if not result.get("ok"):
+        return emit_issues(result["issues"], args.json)
     emit(result, args.json)
     return 0
 
@@ -347,112 +334,58 @@ def build_parser() -> argparse.ArgumentParser:
     files.add_argument("target", help="path to the directory")
     files.add_argument("--name", required=True, help="unique source name")
     leaf(source_actions.add_parser("list", help="list registered sources"))
-    refresh = leaf(
-        source_actions.add_parser(
-            "refresh", help="repin one source and rebuild downstream tasks"
-        )
-    )
-    refresh.add_argument("--name", required=True, help="source name")
-
-    run = commands.add_parser("run", help="start, resume or abandon a generation run")
+    run = commands.add_parser("run", help="start, inspect or stop a generation run")
     run_actions = run.add_subparsers(dest="action", required=True)
-    start = leaf(
+    leaf(
         run_actions.add_parser(
-            "start", help="freeze source revisions and create run tasks"
+            "start", help="freeze source revisions and create fixed work artifacts"
         )
-    )
-    start.add_argument(
-        "--producer", required=True, help="producer identity as <name>/<version>"
-    )
-    start.add_argument(
-        "--session", required=True, help="unique id for this producer session"
     )
     leaf(
         run_actions.add_parser(
-            "status", help="show ready targets, active attempts and next actions"
+            "status", help="derive the current phase and exact next actions"
         )
     )
-    leaf(run_actions.add_parser("pause", help="pause the current run"))
-    leaf(run_actions.add_parser("resume", help="resume a paused run"))
+    block = leaf(run_actions.add_parser("block", help="record a real external blocker"))
+    block.add_argument("--reason", required=True, help="short external blocker")
+    leaf(run_actions.add_parser("resume", help="resume a blocked run"))
     leaf(run_actions.add_parser("abandon", help="abandon the current run"))
 
-    task = commands.add_parser(
-        "task", help="claim, navigate and gate plan, page and review targets"
+    evidence = commands.add_parser(
+        "evidence", help="navigate frozen Source evidence with bounded output"
     )
-    task_actions = task.add_subparsers(dest="action", required=True)
-    start_task = leaf(
-        task_actions.add_parser(
-            "start", help="mark a task in progress and print its dispatch packet"
-        )
-    )
-    start_task.add_argument("target", help="ready target id, e.g. page:overview.md")
-    packet = leaf(
-        task_actions.add_parser(
-            "packet", help="replay the persisted packet for an active attempt"
-        )
-    )
-    packet.add_argument("target", help="in-progress target id")
-    packet.add_argument("--attempt", required=True, help="active attempt token")
-    checkpoint = leaf(
-        task_actions.add_parser(
-            "checkpoint", help="validate and persist an attempt progress checkpoint"
-        )
-    )
-    checkpoint.add_argument("target", help="in-progress target id")
-    checkpoint.add_argument("--attempt", required=True, help="active attempt token")
+    evidence_actions = evidence.add_subparsers(dest="action", required=True)
     outline = leaf(
-        task_actions.add_parser(
-            "outline", help="list one bounded directory inside the target scope"
+        evidence_actions.add_parser(
+            "outline", help="list one bounded directory in a frozen Source"
         )
     )
-    outline.add_argument("target", help="in-progress target id")
     outline.add_argument("path", nargs="?", default=".", help="relative directory")
     outline.add_argument("--source", required=True, help="source name")
     outline.add_argument("--after", help="continue after an item from the prior page")
     search = leaf(
-        task_actions.add_parser(
-            "search", help="search text inside the target scope with bounded output"
+        evidence_actions.add_parser(
+            "search", help="search text in a frozen Source with bounded output"
         )
     )
-    search.add_argument("target", help="in-progress target id")
     search.add_argument("pattern", help="literal text, at most 256 characters")
     search.add_argument("--source", required=True, help="source name")
     search.add_argument("--path", default=".", help="relative scope path")
     read = leaf(
-        task_actions.add_parser(
-            "read", help="read one bounded locator inside the target scope"
+        evidence_actions.add_parser(
+            "read", help="read one bounded locator from a frozen Source"
         )
     )
-    read.add_argument("target", help="in-progress target id")
     read.add_argument("locator", help="canonical source/path#Lx-Ly locator")
-    complete_task = leaf(
-        task_actions.add_parser(
-            "complete", help="validate the task artifact and advance on success"
-        )
-    )
-    complete_task.add_argument("target", help="in-progress target id")
-    complete_task.add_argument(
-        "--attempt", required=True, help="attempt token returned by task start"
-    )
-    fail = leaf(task_actions.add_parser("fail", help="record a failed task for retry"))
-    fail.add_argument("target", help="in-progress target id")
-    fail.add_argument("--reason", help="short failure description")
 
     review = commands.add_parser(
-        "review", help="bind an independent session for ready plan or page reviews"
+        "review", help="prepare or complete one independent Wiki bundle review"
     )
     review_actions = review.add_subparsers(dest="action", required=True)
-    review_start = leaf(
-        review_actions.add_parser(
-            "start", help="bind a review session and expose ready review targets"
-        )
+    leaf(
+        review_actions.add_parser("prepare", help="bind drafts into the review bundle")
     )
-    review_start.add_argument(
-        "--actor", required=True, help="reviewer identity as <name>/<version>"
-    )
-    review_start.add_argument(
-        "--session", required=True, help="session id distinct from the producer"
-    )
+    leaf(review_actions.add_parser("complete", help="validate the fixed review report"))
 
     publication = commands.add_parser(
         "publication", help="publish, export, verify or roll back generations"
@@ -565,7 +498,7 @@ def main() -> int:
         "workspace": cmd_workspace,
         "source": cmd_source,
         "run": cmd_run,
-        "task": cmd_task,
+        "evidence": cmd_evidence,
         "review": cmd_review,
         "publication": cmd_publication,
         "validate": cmd_validate,

@@ -10,91 +10,67 @@ signatures, directory trees, configuration lists and restated comments.
 Use prose for definitions and rationale, tables for repeated comparisons, and
 diagrams when topology, ordering, state reachability or cardinality would
 otherwise be reconstructed across sentences. Split only for an independently
-routable, independently evidenced question. Length, package boundaries and
-diagram count are not split criteria.
+routable, independently evidenced question.
 
 ## Scope and locators
 
 A scope pairs a registered Source with normalized relative POSIX paths. `.`
-selects the eligible Source root. Workers navigate and cite only within the
-assigned scopes. Cross-Source claims evidence each participant.
-
+selects the eligible Source root. Cross-Source claims evidence each participant.
 Locators are plain paths with an optional line range:
 
     service/src/main/java/example/Request.java#L42-L68
 
-The first segment is the registered Source. No URI scheme or revision appears
-in locator text; Run state binds it to the frozen Pin or captured Catalog.
-Plans, dossiers and pages are routing inputs, never provenance.
+The first segment is the Source. No URI scheme or revision appears in locator
+text; Run state binds it to the frozen Pin or Catalog. Plans and evidence notes
+are routing inputs, never provenance.
 
 ## Artifact boundaries
 
-Knowledge Plan, Dossier and Composition Map are Markdown with a small,
-schema-validated YAML frontmatter manifest. Their bodies hold analysis. Review
-reports are strict JSON because the kernel consumes their verdict and reopen
-operations. Final pages are Markdown. Do not embed source files or large prose
-inside frontmatter.
+Plan and Composition are Markdown with small schema-validated YAML frontmatter.
+Their bodies hold analysis. Pages are Markdown. Review is strict JSON because it
+controls approval. Long-running planning progress is one living Markdown file
+that is overwritten in place.
 
-The Knowledge Plan owns stable knowledge units and gaps, not pages. Dossiers
-own evidence findings and bounded research splits. The Composition Map owns
-stable page IDs, unit assignment, type, metadata, diagrams, ID relations and
-proposed final paths. Writers own page body, citations, coverage and diagram
-content. Review owns trust stamps.
-
-Knowledge units and pages use either a registered Source name or `workspace`
-as owner. Source-owned artifacts may scope only that Source. `parent` records
-information architecture; `depends_on` alone controls page readiness. Both
-graphs use stable page IDs and are independently acyclic.
+Plan owns stable knowledge units, evidence scopes, seeds and gaps. Composition
+assigns those units to stable page IDs, page metadata, diagrams and final paths.
+Writers own page body, citations and coverage. Final bundle review owns the
+machine trust stamp. If no knowledge passes admission, the Plan records why in
+`gaps`, Composition and Candidate are empty, and review may approve a
+Publication with no concept pages.
 
 ## Page types and diagrams
 
-Types are closed: `Overview`, `Architecture`, `Domain`, `Flow`, `Lifecycle`,
+Types are `Overview`, `Architecture`, `Domain`, `Flow`, `Lifecycle`,
 `DataModel` and `Table`.
 
-- `Overview` routes tasks and has no diagram.
-- `Architecture` explains static boundaries and requires a `flowchart`.
-- `Domain` explains capability ownership and invariants; diagrams are optional.
-- `Flow` requires a `flowchart` or `sequence`.
-- `Lifecycle` requires a `state` diagram.
-- `DataModel` requires an `er` diagram.
-- `Table` explains one captured table and has no diagram.
+- Overview routes tasks and has no diagram.
+- Architecture explains static boundaries and requires a flowchart.
+- Domain explains capability ownership and invariants; diagrams are optional.
+- Flow requires a flowchart or sequence.
+- Lifecycle requires a state diagram.
+- DataModel requires an ER diagram.
+- Table explains one captured table and has no diagram.
 
-Each Diagram Spec has a page-local ASCII `id`, a supported `kind` and a short
-question. A page plans at most four. Each appears exactly once:
-
-    ```mermaid
-    %% okf-id: request-retry
-    sequenceDiagram
-        accTitle: Request retry interaction
-        accDescr: Dispatch, failure and recovery ordering.
-    ```
-
-Keep citations outside the fence. Follow it with a cited conclusion. Review
-owns semantic accuracy and renderability.
+Each Diagram Spec has a page-local ASCII ID, supported kind and short question.
+A page plans at most four. Each appears exactly once with matching `%% okf-id`,
+`accTitle` and `accDescr`. Keep citations outside the fence and follow it with
+a cited conclusion.
 
 ## Citations and links
 
 Every load-bearing claim uses a footnote ID that appears exactly once in
-frontmatter `sources`, in body references and in a footnote definition. Partial
-coverage requires a non-empty `Gaps` section naming missing evidence and
-searched scope. Causal rationale must be cited.
+frontmatter `sources`, body references and a footnote definition. Partial
+coverage requires a non-empty Gaps section naming missing evidence and searched
+scope. Causal rationale must be cited.
 
 Before binding, logical page links use `[label][page-id]` without definitions.
 After binding, links are ordinary bundle-root-relative or page-relative links.
-Unknown logical IDs and broken bound links fail the gate.
+Unknown IDs and broken links fail validation.
 
-## Attempts and checkpoints
+## Deterministic boundary
 
-Workers write only the packet's Attempt Artifact. A successful State Gate
-promotes it; rejected work cannot unlock downstream Targets. The packet and
-checkpoint persist under the attempt directory. A valid checkpoint is Markdown
-with `## Completed`, `## Findings`, `## Hypotheses`, `## Gaps` and
-`## Next actions`, is at most 64 KiB, and contains paths and conclusions rather
-than copied evidence.
-
-Typed inputs include `source_index`, `catalog_index`, `subject`,
-`evidence_dossier`, `dependency_page`, `previous_output`, `previous_review`
-and `previous_checkpoint`. Never inspect `state.json` or unrelated attempts.
-
-The packet language controls prose, titles, descriptions, gaps and review text.
-Machine fields, IDs, paths, tags and Locators remain ASCII.
+The kernel proves revisions, captured paths, locator syntax and ranges, Plan and
+Composition schemas, exact unit coverage, page metadata, citation joins, diagram
+structure, logical-link binding, review digest, Candidate validity and atomic
+Publication. The host owns subagent isolation, parallelism and the persistent
+coordinator loop.

@@ -237,14 +237,16 @@ def _write_generated(bundle: pathlib.Path, files: dict[str, str]) -> None:
 def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> dict:
     import _validate
     import _workspace
+    from _models import CompositionMap
 
     workspace = _workspace.load(root)
     revisions = {item["name"]: item for item in state["revisions"]}
+    work = root / ".okf-wiki" / "runs" / state["run_id"] / "work"
+    parsed_composition = parse_file(work / "composition.md")
+    composition = CompositionMap.model_validate(parsed_composition.meta, strict=True)
     result = {}
-    for task in state["targets"].values():
-        if task["kind"] != "page" or task["spec"].get("mode") != "write":
-            continue
-        page = candidate / task["spec"]["path"]
+    for composed in composition.pages:
+        page = candidate / composed.path
         parsed = parse_file(page)
         source_blobs = {}
         for source in parsed.meta.get("sources", []):
@@ -262,13 +264,13 @@ def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> 
                     blob = hashlib.sha256(content).hexdigest() if content else None
                 if blob:
                     source_blobs[f"{source_name}/{rel}"] = blob
-        result[task["spec"]["path"]] = {
-            "plan": task["spec"],
-            "input_digest": task["last_attempt"]["input_digest"],
-            "output_digest": task.get("output_digest"),
-            "review_digest": state["targets"]
-            .get(f"review:{task['spec']['id']}", {})
-            .get("output_digest"),
+        draft = work / "drafts" / f"{composed.id}.md"
+        result[composed.path] = {
+            "page_id": composed.id,
+            "units": composed.units,
+            "draft_digest": hashlib.sha256(draft.read_bytes()).hexdigest(),
+            "output_digest": hashlib.sha256(page.read_bytes()).hexdigest(),
+            "review_digest": state["approved_review_digest"],
             "source_blobs": source_blobs,
         }
     return result
@@ -417,7 +419,6 @@ def publish(root: pathlib.Path) -> dict:
                 "okf_version": "0.2",
                 "run_id": state["run_id"],
                 "published_at": datetime.now(timezone.utc).isoformat(),
-                "producer_run_id": state["run_id"],
                 "revisions": state["revisions"],
                 "catalogs": state["catalogs"],
                 "pages": _page_manifest(root, candidate, state),
@@ -431,7 +432,7 @@ def publish(root: pathlib.Path) -> dict:
                 "path": str(generation),
                 "pages": len(_content_pages(generation)),
             }
-            _state.mark_published(root, result)
+            _state.mark_published(root)
             return result
         finally:
             if partial and partial.exists():

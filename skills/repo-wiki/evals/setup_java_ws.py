@@ -93,25 +93,12 @@ def main() -> int:
         str(OKF),
         "run",
         "start",
-        "--producer",
-        "repo-wiki/live-eval",
-        "--session",
-        "live-writer",
         "--json",
     )
     status = json.loads(started.stdout)
-    ready = {
-        item["id"] if isinstance(item, dict) else item
-        for item in status.get("ready_targets", [])
-    }
-    expected = {f"plan:{name}" for name in sources}
-    if ready != expected:
-        raise RuntimeError(
-            f"live fixture must start with one scout per Source: {status}"
-        )
-    indexes = sorted(
-        pathlib.Path(status["run_dir"]).joinpath("drafts/index").glob("*.md")
-    )
+    if status.get("phase") != "plan":
+        raise RuntimeError(f"live fixture must start with one global Plan: {status}")
+    indexes = sorted(pathlib.Path(status["run_dir"]).joinpath("index").glob("*.md"))
     if len(indexes) != len(sources):
         raise RuntimeError(
             "live fixture did not create one Source outline per Revision"

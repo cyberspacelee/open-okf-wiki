@@ -1,11 +1,5 @@
 ---
-type: DataModel
-title: "{title}"
-description: "{routing: which entity relationships and ownership this page answers}"
 coverage: full
-resource: "{canonical schema URI}"
-tags: [data-model]
-diagrams: []
 sources: []
 ---
 
@@ -22,8 +16,8 @@ boundaries meet persistence.
 
 ## Selected tables
 
-Link only Table pages received as `dependency_page` inputs. Keep columns out
-of this page; do not invent a page for an unplanned table.
+Use logical Page ID links for composed Table pages. Keep columns out of this
+page; do not invent a page for an unplanned table.
 
 ## Code-to-data mapping
 

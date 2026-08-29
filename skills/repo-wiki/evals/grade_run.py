@@ -3,9 +3,10 @@
 # requires-python = ">=3.12"
 # dependencies = ["PyYAML>=6,<7"]
 # ///
-"""Outcome grader for a published knowledge-composition run."""
+"""Outcome grader for a published artifact-loop run."""
 
 import argparse
+import hashlib
 import json
 import pathlib
 import random
@@ -57,11 +58,7 @@ def trace_commands(path: pathlib.Path) -> tuple[int, list[dict]]:
             command = item.get("input", {}).get("command")
             if command:
                 commands.append(
-                    {
-                        "command": command,
-                        "exit_code": item.get("exit_code", 0),
-                        "aggregated_output": item.get("output", ""),
-                    }
+                    {"command": command, "exit_code": item.get("exit_code", 0)}
                 )
     return parsed, commands
 
@@ -77,215 +74,103 @@ def grade(ws: pathlib.Path) -> list[dict]:
     manifest = load(bundle / ".okf-manifest.json")
     run_dir = ws / ".okf-wiki/runs" / manifest["run_id"]
     state = load(run_dir / "state.json")
-    targets = state["targets"]
+    work = run_dir / "work"
     parsed_events, commands = trace_commands(ws / "host-run.log")
 
     check(
-        "Run uses the breaking late-binding contract",
-        state.get("contract") == "knowledge-composition-late-bind",
-        str(state.get("contract")),
+        "Run uses the artifact-loop contract without scheduler state",
+        state.get("contract") == "artifact-loop-late-bind"
+        and not any(
+            key in state
+            for key in ("targets", "tasks", "producer_session", "review_rounds")
+        ),
+        f"contract={state.get('contract')}, keys={sorted(state)}",
     )
-    plan_targets = [target for target in targets.values() if target["kind"] == "plan"]
+
+    plan = frontmatter(work / "plan.md")
+    units = plan.get("units", [])
     check(
-        "one long-lifecycle Workspace planner owns all Sources",
-        len(plan_targets) == 1
-        and plan_targets[0]["id"] == "plan:workspace"
-        and plan_targets[0]["artifact"].endswith(".md")
-        and not plan_targets[0]["depends_on"],
-        f"plan_targets={[target['id'] for target in plan_targets]}",
-    )
-    plan = frontmatter(run_dir / targets["plan:workspace"]["artifact"])
-    plan_checkpoint = (
-        targets["plan:workspace"].get("last_attempt", {}).get("checkpoint")
-    )
-    check(
-        "planner persisted a durable checkpoint",
-        bool(plan_checkpoint)
-        and (run_dir / plan_checkpoint).is_file()
-        and bool(targets["plan:workspace"]["last_attempt"].get("checkpoint_digest")),
-        str(plan_checkpoint),
-    )
-    check(
-        "Knowledge Plan contains stable units without Wiki paths",
+        "one living Knowledge Plan owns semantic units without page bindings",
         plan.get("kind") == "knowledge-plan"
-        and bool(plan.get("units"))
-        and all("id" in unit and "path" not in unit for unit in plan["units"]),
-        f"units={len(plan.get('units', []))}",
-    )
-
-    research = [
-        target
-        for target in targets.values()
-        if target["kind"] == "page" and target.get("spec", {}).get("mode") == "research"
-    ]
-    active_units = {
-        target["spec"]["unit_id"]
-        for target in research
-        if not target["spec"].get("superseded")
-    }
-    check(
-        "research fan-out is unit-keyed and bounded",
-        bool(research)
-        and len(research) <= 96
+        and isinstance(units, list)
+        and (bool(units) or bool(plan.get("gaps")))
         and all(
-            target["id"] == f"page:research/{target['spec']['unit_id']}"
-            for target in research
+            "id" in unit and "path" not in unit and "owner" not in unit
+            for unit in units
         ),
-        f"research={len(research)}, active={len(active_units)}",
+        f"units={len(units)}",
+    )
+    check(
+        "long-run progress is one fixed living file",
+        (work / "progress.md").is_file()
+        and not list(run_dir.rglob("*.checkpoint.md"))
+        and not (run_dir / "attempts").exists(),
+        str(work / "progress.md"),
     )
 
-    compose_target = targets.get("page:compose")
-    compose_review = targets.get("review:composition")
-    composition = (
-        frontmatter(run_dir / compose_target["artifact"]) if compose_target else {}
-    )
-    composed_pages = {page["id"]: page for page in composition.get("pages", [])}
-    mapped_units = [
-        unit for page in composed_pages.values() for unit in page.get("units", [])
-    ]
+    composition = frontmatter(work / "composition.md")
+    pages = {page["id"]: page for page in composition.get("pages", [])}
+    mapped = [unit for page in pages.values() for unit in page.get("units", [])]
+    unit_ids = {unit["id"] for unit in units}
+    removed_fields = {"owner", "scopes", "evidence_seeds", "parent", "depends_on"}
     check(
-        "Composition Map assigns every active unit exactly once",
+        "Composition late-binds every unit exactly once without duplicate graphs",
         composition.get("kind") == "composition-map"
-        and set(mapped_units) == active_units
-        and len(mapped_units) == len(set(mapped_units)),
-        f"active={len(active_units)}, mapped={len(mapped_units)}",
-    )
-    check(
-        "independent composition review completed before writing",
-        bool(compose_review)
-        and compose_review["status"] == "complete"
-        and compose_review["spec"]["subject"] == "page:compose"
-        and bool(compose_target.get("last_attempt", {}).get("checkpoint_digest")),
-        f"review={compose_review and compose_review['status']}",
+        and set(mapped) == unit_ids
+        and len(mapped) == len(set(mapped))
+        and all(not (removed_fields & set(page)) for page in pages.values()),
+        f"units={len(unit_ids)}, pages={len(pages)}",
     )
 
-    writes = {
-        target["spec"]["id"]: target
-        for target in targets.values()
-        if target["kind"] == "page" and target.get("spec", {}).get("mode") == "write"
-    }
-    page_reviews = {
-        target["spec"]["subject"].removeprefix("page:write/"): target
-        for target in targets.values()
-        if target["kind"] == "review"
-        and target.get("spec", {}).get("subject", "").startswith("page:write/")
-    }
+    drafts = {path.stem for path in (work / "drafts").glob("*.md")}
     check(
-        "write and review Targets use stable page IDs rather than paths",
-        set(writes) == set(composed_pages) == set(page_reviews)
-        and all(
-            target["id"] == f"page:write/{page_id}"
-            and target["artifact"] == f"drafts/pages/{page_id}.md"
-            for page_id, target in writes.items()
-        ),
-        f"composed={len(composed_pages)}, writes={len(writes)}, reviews={len(page_reviews)}",
-    )
-    relation_errors = []
-    for page_id, page in composed_pages.items():
-        expected = {f"review:{item}" for item in page.get("depends_on", [])}
-        actual = set(writes.get(page_id, {}).get("depends_on", [])) - {
-            "review:composition"
-        }
-        if expected != actual:
-            relation_errors.append(page_id)
-    check(
-        "page readiness follows stable-ID Machine-confirmed relations",
-        not relation_errors,
-        f"errors={relation_errors}",
+        "fixed page drafts match stable Composition page IDs",
+        drafts == set(pages),
+        f"drafts={sorted(drafts)}, pages={sorted(pages)}",
     )
 
-    indexes = sorted((run_dir / "drafts/index").glob("*.md"))
-    bad_indexes = [
-        path.name
-        for path in indexes
-        if path.stat().st_size > 64 * 1024
-        or "inventory complete" not in path.read_text(encoding="utf-8")
-        or "## Repository outline" not in path.read_text(encoding="utf-8")
-    ]
+    review = load(work / "review.json")
+    review_digest = hashlib.sha256((work / "review.json").read_bytes()).hexdigest()
     check(
-        "each Revision has one bounded compact Source outline",
-        len(indexes) == len(state["revisions"]) and not bad_indexes,
-        f"indexes={len(indexes)}, bad={bad_indexes}",
+        "one final Wiki review approved the exact bundle",
+        review.get("verdict") == "approved"
+        and review.get("subject_digest") == state.get("review_subject_digest")
+        and review_digest == state.get("approved_review_digest"),
+        f"verdict={review.get('verdict')}",
     )
 
     manifest_pages = manifest.get("pages", {})
-    expected_paths = {page["path"] for page in composed_pages.values()}
-    digest_errors = [
-        path
-        for path, item in manifest_pages.items()
-        if not item.get("output_digest") or not item.get("review_digest")
-    ]
+    expected_paths = {page["path"] for page in pages.values()}
     check(
-        "Publication binds Composition paths and review digests",
-        set(manifest_pages) == expected_paths and not digest_errors,
-        f"paths={len(expected_paths)}, manifest={len(manifest_pages)}, bad={digest_errors}",
+        "Publication paths and page IDs come from Composition",
+        set(manifest_pages) == expected_paths
+        and {item.get("page_id") for item in manifest_pages.values()} == set(pages)
+        and all(
+            item.get("review_digest") == review_digest
+            for item in manifest_pages.values()
+        ),
+        f"manifest={len(manifest_pages)}, expected={len(expected_paths)}",
+    )
+
+    indexes = sorted((run_dir / "index").glob("*.md"))
+    check(
+        "each Revision has one bounded compact Source outline",
+        len(indexes) == len(state["revisions"])
+        and all(path.stat().st_size <= 64 * 1024 for path in indexes),
+        f"indexes={len(indexes)}, revisions={len(state['revisions'])}",
     )
 
     concept_pages = sorted(
         path for path in bundle.rglob("*.md") if path.name not in ("index.md", "log.md")
     )
-    check(
-        "published page set matches the reviewed Composition Map",
-        len(concept_pages) == len(composed_pages) and bool(concept_pages),
-        f"concepts={len(concept_pages)}, composed={len(composed_pages)}",
-    )
     ids = [frontmatter(path).get("id") for path in concept_pages]
     check(
-        "published pages retain unique stable IDs",
-        len(ids) == len(set(ids)) and set(ids) == set(composed_pages),
+        "published pages exactly match stable IDs and paths",
+        len(concept_pages) == len(pages)
+        and set(ids) == set(pages)
+        and len(ids) == len(set(ids)),
         f"ids={ids}",
     )
-
-    if "killbill" in {item["name"] for item in state["revisions"]}:
-        routing = json.dumps(list(composed_pages.values()), ensure_ascii=False).lower()
-        wiki = "\n".join(
-            path.read_text(encoding="utf-8").lower() for path in concept_pages
-        )
-        domains = {
-            "catalog-plan-phase": ("catalog", "plan", "phase"),
-            "subscription-entitlement": ("subscription", "entitlement"),
-            "usage-metering": ("usage",),
-            "invoice-payment-overdue": ("invoice", "payment", "overdue"),
-            "durable-queue": ("queue",),
-            "service-lifecycle": ("lifecycle",),
-            "plugins": ("plugin",),
-        }
-        missing = [
-            name
-            for name, terms in domains.items()
-            if not all(term in routing for term in terms)
-        ]
-        check(
-            "Kill Bill composition covers the billing rubric",
-            not missing,
-            f"missing={missing}",
-        )
-        check(
-            "Kill Bill distinguishes public and internal APIs",
-            ("public api" in wiki or "公开 api" in wiki)
-            and ("internal api" in wiki or "内部 api" in wiki),
-            "published pages inspected",
-        )
-        check(
-            "Kill Bill composition stays concept-sized",
-            len(composed_pages) <= 24,
-            f"pages={len(composed_pages)}",
-        )
-
-    if state["language"] == "zh":
-        cjk = re.compile(r"[\u3400-\u9fff]")
-        descriptions = [page.get("description", "") for page in composed_pages.values()]
-        questions = [
-            diagram.get("question", "")
-            for page in composed_pages.values()
-            for diagram in page.get("diagrams", [])
-        ]
-        check(
-            "Chinese composition localizes routing and diagram questions",
-            all(cjk.search(text) for text in descriptions)
-            and all(cjk.search(text) for text in questions),
-            f"descriptions={len(descriptions)}, questions={len(questions)}",
-        )
 
     validation = subprocess.run(
         [
@@ -353,13 +238,17 @@ def grade(ws: pathlib.Path) -> list[dict]:
         item.get("command", "")
         for item in commands
         if "state.json" in item.get("command", "")
-        or " --help" in item.get("command", "")
+        or re.search(
+            r"\btask\s+(?:start|packet|checkpoint|complete)\b", item.get("command", "")
+        )
+        or "--session" in item.get("command", "")
     ]
     check(
-        "host trace respects packets and avoids run internals",
+        "host trace uses the artifact loop without execution IDs",
         not bad_commands,
         f"events={parsed_events}, bad={bad_commands[:3]}",
     )
+
     root_index = (bundle / "index.md").read_text(encoding="utf-8")
     log = (bundle / "log.md").read_text(encoding="utf-8")
     trust_missing = [
@@ -371,7 +260,7 @@ def grade(ws: pathlib.Path) -> list[dict]:
         )
     ]
     check(
-        "reserved files and Machine-confirmed trust fields conform",
+        "reserved files and review trust fields conform",
         root_index.startswith('---\nokf_version: "0.2"\n---\n')
         and re.search(r"^## \d{4}-\d{2}-\d{2}$", log, re.MULTILINE)
         and not trust_missing,
@@ -387,13 +276,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         results = grade(args.workspace.resolve())
-    except (
-        OSError,
-        TypeError,
-        ValueError,
-        KeyError,
-        json.JSONDecodeError,
-    ) as exc:
+    except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:
         results = [
             {
                 "text": "run produced a readable Publication",

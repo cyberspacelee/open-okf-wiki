@@ -1,11 +1,5 @@
 ---
-type: Domain
-title: "{title}"
-description: "{routing: which capability this owns and when to open it}"
 coverage: full
-resource: "{optional asset URI}"
-tags: [domain]
-diagrams: []
 sources: []
 ---
 

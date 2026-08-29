@@ -1,11 +1,5 @@
 ---
-type: Flow
-title: "{title}"
-description: "{routing: which end-to-end interaction or branch this page answers}"
 coverage: full
-resource: "{optional asset URI}"
-tags: [flow]
-diagrams: []
 sources: []
 ---
 

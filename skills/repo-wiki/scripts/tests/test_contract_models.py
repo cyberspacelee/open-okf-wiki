@@ -1,8 +1,10 @@
+import pathlib
+
 import pytest
+from _frontmatter import parse_file
 from _models import (
     CompositionMap,
     CompositionPage,
-    KnowledgeDossier,
     KnowledgePlan,
     PageScope,
     ReviewReport,
@@ -18,7 +20,6 @@ def unit(unit_id="answer-lifecycle", **overrides) -> dict:
     return {
         "id": unit_id,
         "kind": "lifecycle",
-        "owner": "src",
         "question": "How does the answer move through its lifecycle?",
         "scopes": [scope()],
         "evidence_seeds": ["src/app.py#L1-L2"],
@@ -26,32 +27,16 @@ def unit(unit_id="answer-lifecycle", **overrides) -> dict:
     }
 
 
-def page(page_id: str, path: str, **overrides) -> dict:
-    page_type = "Overview" if path == "overview.md" else "Architecture"
+def page(page_id="answer", path="answer.md", **overrides) -> dict:
     return {
         "id": page_id,
         "path": path,
-        "type": page_type,
-        "owner": "workspace",
-        "title": page_id.title(),
-        "description": "Read this before changing answer behavior.",
+        "type": "Domain",
+        "title": "Answer",
+        "description": "Open before changing answer behavior.",
         "tags": ["answer"],
         "units": ["answer-lifecycle"],
-        "scopes": [scope()],
-        "evidence_seeds": ["src/app.py#L1-L2"],
-        "parent": None,
-        "depends_on": [],
-        "diagrams": (
-            []
-            if page_type == "Overview"
-            else [
-                {
-                    "id": "components",
-                    "kind": "flowchart",
-                    "question": "Which components depend on each other?",
-                }
-            ]
-        ),
+        "diagrams": [],
         **overrides,
     }
 
@@ -69,186 +54,98 @@ def test_page_scope_rejects_non_normalized_paths(path):
         PageScope.model_validate(scope([path]))
 
 
-def test_knowledge_plan_is_strict_bounded_and_uses_stable_ids():
+def test_plan_owns_semantic_units_without_page_or_owner_fields():
     plan = KnowledgePlan.model_validate(
         {"kind": "knowledge-plan", "units": [unit()], "gaps": []}
     )
     assert plan.units[0].id == "answer-lifecycle"
-    assert not hasattr(plan.units[0], "path")
-
     with pytest.raises(ValidationError):
         KnowledgePlan.model_validate(
-            {"kind": "knowledge-plan", "units": [unit(), unit()], "gaps": []}
-        )
-    with pytest.raises(ValidationError):
-        KnowledgePlan.model_validate(
-            {"kind": "knowledge-plan", "units": [unit()], "paths": []}
-        )
-    with pytest.raises(ValidationError):
-        KnowledgePlan.model_validate(
-            {"kind": "knowledge-plan", "units": [unit("Upper_ID")], "gaps": []}
+            {"kind": "knowledge-plan", "units": [unit(owner="src")], "gaps": []}
         )
 
 
-def test_dossier_ready_or_bounded_split_contract():
-    ready = KnowledgeDossier.model_validate(
+def test_empty_plan_requires_an_explanation_and_empty_composition_is_valid():
+    with pytest.raises(ValidationError, match="must explain why"):
+        KnowledgePlan.model_validate(
+            {"kind": "knowledge-plan", "units": [], "gaps": []}
+        )
+    plan = KnowledgePlan.model_validate(
         {
-            "kind": "knowledge-dossier",
-            "unit_id": "answer-lifecycle",
-            "disposition": "ready",
-            "children": [],
+            "kind": "knowledge-plan",
+            "units": [],
+            "gaps": ["All behavior is immediately reconstructable from three files."],
         }
     )
-    assert ready.children == []
-
-    split = KnowledgeDossier.model_validate(
-        {
-            "kind": "knowledge-dossier",
-            "unit_id": "answer-lifecycle",
-            "disposition": "split",
-            "children": [unit("answer-read"), unit("answer-write")],
-        }
-    )
-    assert len(split.children) == 2
-
-    with pytest.raises(ValidationError, match="at least two"):
-        KnowledgeDossier.model_validate(
-            {
-                "kind": "knowledge-dossier",
-                "unit_id": "answer-lifecycle",
-                "disposition": "split",
-                "children": [unit("answer-read")],
-            }
-        )
-    with pytest.raises(ValidationError, match="must not define children"):
-        KnowledgeDossier.model_validate(
-            {
-                "kind": "knowledge-dossier",
-                "unit_id": "answer-lifecycle",
-                "disposition": "ready",
-                "children": [unit("answer-read")],
-            }
-        )
-
-
-def test_composition_uses_id_relations_and_keeps_path_as_a_binding():
     composition = CompositionMap.model_validate(
-        {
-            "kind": "composition-map",
-            "pages": [
-                page("answer-details", "guides/answer.md"),
-                page(
-                    "overview",
-                    "overview.md",
-                    units=["workspace-overview"],
-                    depends_on=["answer-details"],
-                ),
-            ],
-            "gaps": [],
-        }
+        {"kind": "composition-map", "pages": [], "gaps": []}
+    )
+    assert plan.units == []
+    assert composition.pages == []
+
+
+def test_page_templates_only_seed_writer_owned_frontmatter():
+    templates = pathlib.Path(__file__).parents[2] / "assets/templates"
+    for path in templates.glob("*.md"):
+        assert parse_file(path).meta == {"coverage": "full", "sources": []}
+
+
+def test_composition_accepts_one_page_and_only_late_binding_fields():
+    composition = CompositionMap.model_validate(
+        {"kind": "composition-map", "pages": [page()], "gaps": []}
     )
     moved = CompositionPage.model_validate(
-        {**composition.pages[0].model_dump(mode="json"), "path": "reference/answer.md"}
+        {**composition.pages[0].model_dump(mode="json"), "path": "guide/answer.md"}
     )
-    assert moved.id == composition.pages[0].id
-    assert moved.path != composition.pages[0].path
+    assert moved.id == "answer"
+    assert moved.path == "guide/answer.md"
+    for removed in ("owner", "scopes", "evidence_seeds", "parent", "depends_on"):
+        with pytest.raises(ValidationError):
+            CompositionPage.model_validate(page(**{removed: []}))
 
 
-def test_composition_rejects_duplicate_paths_unknown_relations_and_cycles():
+def test_composition_rejects_duplicate_ids_paths_and_invalid_representation():
+    with pytest.raises(ValidationError, match="ids must be unique"):
+        CompositionMap.model_validate(
+            {"kind": "composition-map", "pages": [page(), page(path="other.md")]}
+        )
     with pytest.raises(ValidationError, match="paths must be unique"):
         CompositionMap.model_validate(
-            {
-                "kind": "composition-map",
-                "pages": [page("one", "overview.md"), page("two", "overview.md")],
-            }
+            {"kind": "composition-map", "pages": [page(), page("other")]}
         )
-    with pytest.raises(ValidationError, match="composed page ids"):
-        CompositionMap.model_validate(
-            {
-                "kind": "composition-map",
-                "pages": [page("one", "overview.md", depends_on=["missing"])],
-            }
-        )
-    with pytest.raises(ValidationError, match="cycle"):
-        CompositionMap.model_validate(
-            {
-                "kind": "composition-map",
-                "pages": [
-                    page("one", "one.md", depends_on=["two"]),
-                    page("two", "two.md", depends_on=["one"]),
-                ],
-            }
-        )
-
-
-def test_composition_validates_hierarchy_and_scheduling_as_separate_graphs():
-    composition = CompositionMap.model_validate(
-        {
-            "kind": "composition-map",
-            "pages": [
-                page("details", "details.md", parent="architecture"),
-                page(
-                    "architecture",
-                    "architecture.md",
-                    units=["system-architecture"],
-                    depends_on=["details"],
-                ),
-            ],
-        }
-    )
-    assert composition.pages[0].parent == "architecture"
-    assert composition.pages[1].depends_on == ["details"]
-
-
-def test_composition_enforces_page_representation_contract():
     with pytest.raises(ValidationError, match="require a flowchart"):
-        CompositionPage.model_validate(
-            page("architecture", "architecture.md", diagrams=[])
-        )
-    with pytest.raises(ValidationError):
-        CompositionPage.model_validate(page("overview", "../overview.md"))
+        CompositionPage.model_validate(page(type="Architecture"))
 
 
-def test_review_report_supports_structural_operations_on_stable_targets():
+def test_bundle_review_routes_content_and_structural_repairs():
     report = ReviewReport.model_validate(
         {
-            "subject": "page:compose",
             "subject_digest": "a" * 64,
             "verdict": "changes_requested",
             "issues": [
                 {
                     "category": "concept-boundary",
                     "claim": "Two unrelated capabilities share one page.",
-                    "resolution": "Split them in the Composition Map.",
-                    "reopen_target": "page:compose",
+                    "resolution": "Split the page.",
+                    "area": "composition",
+                    "page_ids": ["answer"],
                     "operation": "split",
                 }
             ],
         }
     )
     assert report.issues[0].operation == "split"
-
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="page issues require"):
         ReviewReport.model_validate(
             {
-                "subject": "page:overview.md",
                 "subject_digest": "a" * 64,
-                "verdict": "approved",
-                "issues": [],
-            }
-        )
-    with pytest.raises(ValidationError):
-        ReviewReport.model_validate(
-            {
-                "subject": "page:write/overview",
-                "subject_digest": "a" * 64,
-                "verdict": "approved",
+                "verdict": "changes_requested",
                 "issues": [
                     {
                         "category": "coverage",
                         "claim": "Missing behavior.",
                         "resolution": "Add it.",
-                        "reopen_target": "page:write/overview",
+                        "area": "page",
                     }
                 ],
             }
