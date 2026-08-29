@@ -72,8 +72,13 @@ _Avoid_: Package task, file inventory
 
 **Page Plan**:
 The bounded Workspace decision that assigns concept paths, owners, routing
-metadata, Page Scopes, work modes and child dependencies.
+metadata, Page Scopes, evidence seeds and child dependencies.
 _Avoid_: Suggested outline, plan shard
+
+**Plan Review**:
+Independent verification of domain recall, concept boundaries and routing,
+bound to one exact Page Plan before page work is released.
+_Avoid_: Schema validation, page review, planning retry
 
 **Page DAG**:
 The dependency graph of planned pages in which Machine-confirmed children

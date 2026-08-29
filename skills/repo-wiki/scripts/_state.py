@@ -15,10 +15,16 @@ VERSION = 2
 CONTRACT = "target-dag"
 KINDS = {"plan", "page", "review"}
 LOCK_TIMEOUT_SEC = 60
-MAX_SEARCH_RESULTS = 50
-MAX_SEARCH_BYTES = 16 * 1024
+MAX_SEARCH_RESULTS = 20
+MAX_SEARCH_BYTES = 8 * 1024
 MAX_READ_LINES = 200
 MAX_READ_BYTES = 64 * 1024
+MAX_REVIEW_CHANGES = 2
+NAVIGATION_LIMITS = {
+    "plan": (32, 128 * 1024, 12, 64 * 1024, 96, 512 * 1024),
+    "page": (24, 96 * 1024, 8, 32 * 1024, 48, 192 * 1024),
+    "review": (16, 64 * 1024, 4, 32 * 1024, 32, 128 * 1024),
+}
 
 
 class StateError(Exception):
@@ -238,6 +244,7 @@ def start_run(root: pathlib.Path, producer: str, session: str) -> dict:
         "catalogs": catalogs,
         "targets": {},
         "review_attempts": [],
+        "review_rounds": {},
         "publication": None,
     }
     base = run_dir(root, run_id)
@@ -332,6 +339,7 @@ def status(root: pathlib.Path) -> dict:
             for target in state["targets"].values()
         ],
         "next_actions": next_actions,
+        "pause_reason": state.get("pause_reason"),
         "run_dir": str(run_dir(root, state["run_id"])),
     }
 
@@ -430,59 +438,82 @@ def _attempt_path(target: dict, token: str) -> str:
     return f"attempts/{key}/{token}{suffix}"
 
 
-def _pin_sources(root: pathlib.Path, state: dict, target: dict) -> dict[str, str]:
-    import _workspace
-
-    selected = {scope["source"] for scope in target["spec"].get("scopes", [])}
-    workspace = _workspace.load(root)
-    result = {}
-    for name in selected:
-        source = workspace.sources.get(name)
-        if source is None or source.kind not in ("git", "files"):
-            continue
-        pin = _workspace.pin_dir(root, state["run_id"], name)
-        if pin.is_dir():
-            result[name] = str(pin)
-    return result
+def _packet_path(target: dict, token: str) -> str:
+    key = hashlib.sha256(target["id"].encode()).hexdigest()[:16]
+    return f"attempts/{key}/{token}.packet.json"
 
 
-def _catalog_paths(root: pathlib.Path, state: dict, target: dict) -> list[str]:
+def _catalog_inputs(root: pathlib.Path, state: dict, target: dict) -> list[dict]:
     import _db
 
     selected = {scope["source"] for scope in target["spec"].get("scopes", [])}
     return [
-        str(_db.catalog_index_path(root, catalog["content_hash"]))
+        {
+            "role": "catalog_index",
+            "source": catalog["name"],
+            "path": str(_db.catalog_index_path(root, catalog["content_hash"])),
+        }
         for catalog in state["catalogs"]
         if catalog["name"] in selected
     ]
 
 
-def _dependency_inputs(root: pathlib.Path, state: dict, target: dict) -> list[str]:
+def _dispatch_inputs(root: pathlib.Path, state: dict, target: dict) -> list[dict]:
     base = run_dir(root, state["run_id"])
     result = []
     for target_id in target["depends_on"]:
         dependency = state["targets"][target_id]
-        if dependency["kind"] == "review":
-            page = dependency["spec"]["page"]
-            result.append(str(base / "candidate" / page))
-        elif dependency["kind"] == "page":
-            result.append(str(base / dependency["artifact"]))
+        subject = dependency.get("spec", {}).get("subject")
+        if dependency["kind"] == "review" and subject != "plan:workspace":
+            page = subject.removeprefix("page:")
+            result.append(
+                {
+                    "role": "dependency_page",
+                    "target": subject,
+                    "path": str(base / "candidate" / page),
+                }
+            )
+        elif dependency["kind"] in ("plan", "page"):
+            result.append(
+                {
+                    "role": "subject",
+                    "target": dependency["id"],
+                    "path": str(base / dependency["artifact"]),
+                }
+            )
     canonical = base / target["artifact"]
     if canonical.is_file():
-        result.append(str(canonical))
-    return sorted(set(result))
+        result.append(
+            {
+                "role": (
+                    "previous_review"
+                    if target["kind"] == "review"
+                    else "previous_output"
+                ),
+                "target": target["id"],
+                "path": str(canonical),
+            }
+        )
+    if target["kind"] in ("plan", "review"):
+        selected = {scope["source"] for scope in target["spec"].get("scopes", [])}
+        result.extend(
+            {
+                "role": "source_index",
+                "source": revision["name"],
+                "path": str(base / "drafts/index" / f"{revision['name'].lower()}.md"),
+            }
+            for revision in state["revisions"]
+            if revision["name"] in selected
+        )
+    result.extend(_catalog_inputs(root, state, target))
+    return result
 
 
 def _dispatch(root: pathlib.Path, state: dict, target: dict) -> dict:
     base = run_dir(root, state["run_id"])
     attempt = target["active_attempt"]
     okf = pathlib.Path(__file__).resolve().parent / "okf.py"
-    inputs = _dependency_inputs(root, state, target)
-    if target["kind"] == "plan":
-        inputs.extend(
-            str(path) for path in sorted((base / "drafts/index").glob("*.md"))
-        )
-    catalogs = _catalog_paths(root, state, target)
+    inputs = _dispatch_inputs(root, state, target)
     packet = {
         "run_id": state["run_id"],
         "target": {
@@ -495,8 +526,8 @@ def _dispatch(root: pathlib.Path, state: dict, target: dict) -> dict:
         "language": state["language"],
         "reference": str(_reference(target)),
         "artifact": str(base / attempt["artifact"]),
-        "sources": _pin_sources(root, state, target),
-        "inputs": sorted(set(inputs)),
+        "packet_path": str(base / attempt["packet"]),
+        "inputs": inputs,
         "workdir": str(root),
         "complete_command": (
             f"uv run {okf} task complete {target['id']} "
@@ -506,21 +537,27 @@ def _dispatch(root: pathlib.Path, state: dict, target: dict) -> dict:
             f"uv run {okf} task outline {target['id']} --source <source> [path]"
         ),
         "search_command": (
-            f"uv run {okf} task search {target['id']} --source <source> <pattern>"
+            f"uv run {okf} task search {target['id']} --source <source> "
+            "[--path <scope>] <single-literal-query>"
         ),
-        "read_command": (
-            f"uv run {okf} task read {target['id']} --source <source> <path>"
+        "read_command": (f"uv run {okf} task read {target['id']} <source/path#Lx-Ly>"),
+        "navigation_budget": dict(
+            zip(("calls", "bytes"), _navigation_limits(target), strict=True)
         ),
+        "navigation": {"calls_used": 0, "bytes_used": 0},
     }
-    if catalogs:
-        packet["catalogs"] = catalogs
     if target["kind"] == "review":
-        page = target["spec"]["page"]
-        path = base / "candidate" / page
+        subject = target["spec"]["subject"]
+        subject_target = state["targets"][subject]
         packet.update(
             {
-                "page": page,
-                "page_digest": _file_digest(path),
+                "subject": subject,
+                "subject_digest": subject_target["output_digest"],
+                "review_mode": (
+                    "follow_up"
+                    if any(item["role"] == "previous_review" for item in inputs)
+                    else "initial"
+                ),
                 "actor": state["review"]["actor"],
                 "session": state["review"]["session"],
             }
@@ -547,11 +584,36 @@ def task_start(root: pathlib.Path, target_id: str) -> dict:
     target["active_attempt"] = {
         "token": token,
         "artifact": _attempt_path(target, token),
+        "packet": _packet_path(target, token),
         "input_digest": input_digest,
         "started_at": _now(),
+        "navigation": {"calls": 0, "bytes": 0},
     }
     _write(root, state)
-    return _dispatch(root, state, target)
+    packet = _dispatch(root, state, target)
+    atomic_json(
+        run_dir(root, state["run_id"]) / target["active_attempt"]["packet"], packet
+    )
+    return packet
+
+
+@_locked
+def task_packet(root: pathlib.Path, target_id: str, attempt: str) -> dict:
+    state = _require_run(root, {"active", "paused"})
+    target = state["targets"].get(target_id)
+    active = target.get("active_attempt") if target else None
+    if not active or active["token"] != attempt:
+        raise StateError("stale or inactive target attempt")
+    path = run_dir(root, state["run_id"]) / active["packet"]
+    try:
+        packet = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise StateError(f"invalid dispatch packet: {exc}") from exc
+    packet["navigation"] = {
+        "calls_used": active["navigation"]["calls"],
+        "bytes_used": active["navigation"]["bytes"],
+    }
+    return packet
 
 
 def _attempt_target(target: dict) -> dict:
@@ -580,13 +642,25 @@ def _promote(root: pathlib.Path, state: dict, target: dict) -> pathlib.Path:
     return destination
 
 
-def _plan_targets(plan: PagePlan) -> dict[str, dict]:
-    targets = {}
+def _plan_targets(plan: PagePlan, plan_scopes: list[dict]) -> dict[str, dict]:
+    targets = {
+        "review:plan": _target(
+            "review",
+            "plan",
+            "drafts/review/plan.json",
+            dependencies=["plan:workspace"],
+            subject="plan:workspace",
+            scopes=plan_scopes,
+        )
+    }
     for page in plan.pages:
         spec = page.model_dump(mode="json")
         page_id = f"page:{page.path}"
         review_id = f"review:{page.path}"
-        page_dependencies = [f"review:{path}" for path in page.depends_on]
+        page_dependencies = [
+            "review:plan",
+            *[f"review:{path}" for path in page.depends_on],
+        ]
         targets[page_id] = _target(
             "page",
             page.path,
@@ -598,8 +672,8 @@ def _plan_targets(plan: PagePlan) -> dict[str, dict]:
             "review",
             page.path,
             f"drafts/review/{page.path.removesuffix('.md')}.json",
-            dependencies=[page_id],
-            page=page.path,
+            dependencies=[page_id, "review:plan"],
+            subject=page_id,
             owner=page.owner,
             scopes=[scope.model_dump(mode="json") for scope in page.scopes],
         )
@@ -629,19 +703,40 @@ def _dependent_closure(targets: dict[str, dict], seeds: set[str]) -> set[str]:
 def _discard_attempt(root: pathlib.Path, state: dict, target: dict) -> None:
     active = target.get("active_attempt")
     if active:
-        (run_dir(root, state["run_id"]) / active["artifact"]).unlink(missing_ok=True)
+        base = run_dir(root, state["run_id"])
+        (base / active["artifact"]).unlink(missing_ok=True)
+        if active.get("packet"):
+            (base / active["packet"]).unlink(missing_ok=True)
 
 
 def _materialize_plan(root: pathlib.Path, state: dict, plan: PagePlan) -> None:
+    import _validate
+
     old = state["targets"]
-    planned = _plan_targets(plan)
+    planned = _plan_targets(plan, old["plan:workspace"]["spec"]["scopes"])
     desired = {"plan:workspace": old["plan:workspace"], **planned}
     changed = set(old).symmetric_difference(desired)
-    changed.update(
-        target_id
-        for target_id in set(old).intersection(desired) - {"plan:workspace"}
-        if _target_definition(old[target_id]) != _target_definition(desired[target_id])
-    )
+    metadata_pages = set()
+    for target_id in set(old).intersection(desired) - {"plan:workspace"}:
+        previous = old[target_id]
+        target = desired[target_id]
+        if _target_definition(previous) == _target_definition(target):
+            continue
+        if target["kind"] == "page" and previous["status"] == "complete":
+            spec_changes = {
+                key
+                for key in set(previous["spec"]) | set(target["spec"])
+                if previous["spec"].get(key) != target["spec"].get(key)
+            }
+            if (
+                spec_changes
+                and spec_changes <= {"title", "description", "tags"}
+                and previous["depends_on"] == target["depends_on"]
+            ):
+                metadata_pages.add(target_id)
+                changed.add(f"review:{target['name']}")
+                continue
+        changed.add(target_id)
     changed = _dependent_closure({**old, **desired}, changed)
     base = run_dir(root, state["run_id"])
     for target_id in set(old) - set(desired):
@@ -650,6 +745,22 @@ def _materialize_plan(root: pathlib.Path, state: dict, plan: PagePlan) -> None:
     reconciled = {"plan:workspace": old["plan:workspace"]}
     for target_id, target in planned.items():
         previous = old.get(target_id)
+        if (
+            previous is not None
+            and target_id in metadata_pages
+            and target_id not in changed
+        ):
+            for key in ("artifact", "depends_on", "spec"):
+                previous[key] = target[key]
+            path = base / previous["artifact"]
+            rendered = _validate.render_generated_page(root, state, previous, path)
+            if rendered is None:
+                raise StateError(f"cannot apply Plan metadata to {target['name']}")
+            path.write_text(rendered, encoding="utf-8", newline="\n")
+            previous["output_digest"] = _file_digest(path)
+            previous["metadata_refreshed"] = True
+            reconciled[target_id] = previous
+            continue
         if previous is not None and target_id not in changed:
             reconciled[target_id] = previous
             continue
@@ -673,6 +784,7 @@ def _reset_target(target: dict) -> None:
     target.pop("completed_at", None)
     target.pop("output_digest", None)
     target.pop("page_output_digest", None)
+    target.pop("metadata_refreshed", None)
 
 
 def _invalidate_targets(root: pathlib.Path, state: dict, seeds: set[str]) -> None:
@@ -689,6 +801,10 @@ def _reopen_plan(
     plan = state["targets"]["plan:workspace"]
     _discard_attempt(root, state, plan)
     _reset_target(plan)
+    plan_review = state["targets"].get("review:plan")
+    if plan_review is not None:
+        _discard_attempt(root, state, plan_review)
+        _reset_target(plan_review)
     _invalidate_targets(root, state, affected or set())
 
 
@@ -720,12 +836,12 @@ def _stamp_reviewed_page(
 def _finish_review(
     root: pathlib.Path, state: dict, target: dict, report: ReviewReport
 ) -> dict:
-    page_target = state["targets"][target["depends_on"][0]]
-    page_path = run_dir(root, state["run_id"]) / page_target["artifact"]
-    if report.page != target["spec"]["page"] or report.page_digest != _file_digest(
-        page_path
+    subject = target["spec"]["subject"]
+    subject_target = state["targets"][subject]
+    if report.subject != subject or report.subject_digest != subject_target.get(
+        "output_digest"
     ):
-        raise StateError("review report does not match the current page digest")
+        raise StateError("review report does not match the current subject digest")
     state["review_attempts"].append(
         {
             "actor": state["review"]["actor"],
@@ -735,14 +851,40 @@ def _finish_review(
         }
     )
     if report.verdict == "changes_requested":
-        if any(issue.reopen == "plan" for issue in report.issues):
-            _reopen_plan(root, state, {page_target["id"]})
+        rounds = state["review_rounds"].get(subject, 0) + 1
+        state["review_rounds"][subject] = rounds
+        if any(issue.reopen_target == "plan:workspace" for issue in report.issues):
+            affected = {target["id"]} if subject.startswith("page:") else set()
+            _reopen_plan(root, state, affected)
         else:
-            _invalidate_targets(root, state, {page_target["id"]})
-        return {"verdict": report.verdict, "ok": True}
-    target["page_output_digest"] = _stamp_reviewed_page(
-        root, state, target, state["review"]["actor"]
-    )
+            _invalidate_targets(root, state, {subject})
+        if rounds >= MAX_REVIEW_CHANGES:
+            state["status"] = "paused"
+            state["pause_reason"] = {
+                "code": "review-convergence-limit",
+                "subject": subject,
+                "rounds": rounds,
+            }
+        return {
+            "verdict": report.verdict,
+            "ok": True,
+            "review_round": rounds,
+            "paused": state["status"] == "paused",
+        }
+    state["review_rounds"].pop(subject, None)
+    if subject == "plan:workspace":
+        for page_target in state["targets"].values():
+            if page_target["kind"] != "page" or not page_target.pop(
+                "metadata_refreshed", False
+            ):
+                continue
+            page_target["last_attempt"]["input_digest"] = _input_digest(
+                root, state, page_target
+            )
+    if subject.startswith("page:"):
+        target["page_output_digest"] = _stamp_reviewed_page(
+            root, state, target, state["review"]["actor"]
+        )
     return {"verdict": report.verdict, "ok": True}
 
 
@@ -798,6 +940,8 @@ def task_complete(root: pathlib.Path, target_id: str, attempt: str) -> dict:
             attempt_path.read_text(encoding="utf-8"), strict=True
         )
     canonical = _promote(root, state, target)
+    if active.get("packet"):
+        (run_dir(root, state["run_id"]) / active["packet"]).unlink(missing_ok=True)
     target["status"] = "complete"
     target["completed_at"] = _now()
     target["output_digest"] = _file_digest(canonical)
@@ -926,6 +1070,45 @@ def _inside_roots(path: str, roots: list[str]) -> bool:
     )
 
 
+def _navigation_limits(target: dict) -> tuple[int, int]:
+    base_calls, base_bytes, source_calls, source_bytes, max_calls, max_bytes = (
+        NAVIGATION_LIMITS[target["kind"]]
+    )
+    source_count = len({scope["source"] for scope in target["spec"].get("scopes", [])})
+    return (
+        min(max_calls, base_calls + source_calls * source_count),
+        min(max_bytes, base_bytes + source_bytes * source_count),
+    )
+
+
+def _finish_navigation(
+    root: pathlib.Path, state: dict, target: dict, result: dict
+) -> dict:
+    calls_limit, bytes_limit = _navigation_limits(target)
+    usage = target["active_attempt"]["navigation"]
+    response_bytes = len(
+        json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+    if (
+        usage["calls"] + 1 > calls_limit
+        or usage["bytes"] + response_bytes > bytes_limit
+    ):
+        raise StateError(
+            "navigation budget exhausted; finish from gathered evidence or fail the target"
+        )
+    usage["calls"] += 1
+    usage["bytes"] += response_bytes
+    result["navigation"] = {
+        "calls_used": usage["calls"],
+        "calls_limit": calls_limit,
+        "bytes_used": usage["bytes"],
+        "bytes_limit": bytes_limit,
+    }
+    _write(root, state)
+    return result
+
+
+@_locked
 def task_outline(
     root: pathlib.Path,
     target_id: str,
@@ -935,16 +1118,18 @@ def task_outline(
 ) -> dict:
     import _index
 
-    _, _, _, files, roots = _navigation_context(root, target_id, source)
+    state, target, _, files, roots = _navigation_context(root, target_id, source)
     path = _normalized_path(path)
     if not _inside_roots(path, roots):
         raise StateError(f"path is outside target scope: {path}")
     try:
-        return _index.list_directory(source, path, files, after=after)
+        result = _index.list_directory(source, path, files, after=after)
     except ValueError as exc:
         raise StateError(str(exc)) from exc
+    return _finish_navigation(root, state, target, result)
 
 
+@_locked
 def task_search(
     root: pathlib.Path,
     target_id: str,
@@ -954,7 +1139,7 @@ def task_search(
 ) -> dict:
     import _workspace
 
-    _, _, pin, files, roots = _navigation_context(root, target_id, source)
+    state, target, pin, files, roots = _navigation_context(root, target_id, source)
     path = _normalized_path(path)
     if not query or len(query) > 256:
         raise StateError("query must contain 1..256 characters")
@@ -982,31 +1167,41 @@ def task_search(
                         len(results) >= MAX_SEARCH_RESULTS
                         or used + size > MAX_SEARCH_BYTES
                     ):
-                        return {"results": results, "truncated": True}
-                    results.append({"path": rel, "line": line_no, "text": text})
+                        return _finish_navigation(
+                            root,
+                            state,
+                            target,
+                            {"results": results, "truncated": True},
+                        )
+                    results.append(
+                        {"locator": f"{source}/{rel}#L{line_no}", "text": text}
+                    )
                     used += size
         except (OSError, UnicodeDecodeError):
             continue
-    return {"results": results, "truncated": False}
+    return _finish_navigation(
+        root, state, target, {"results": results, "truncated": False}
+    )
 
 
+@_locked
 def task_read(
     root: pathlib.Path,
     target_id: str,
-    source: str,
-    path: str,
-    start: int = 1,
-    end: int | None = None,
+    locator: str,
 ) -> dict:
     import _workspace
+    from _validate import parse_resource
 
-    _, _, pin, files, roots = _navigation_context(root, target_id, source)
-    path = _normalized_path(path)
+    parsed = parse_resource(locator)
+    if parsed is None:
+        raise StateError("read requires a canonical source/path#Lx-Ly locator")
+    source, path, start, end = parsed
+    state, target, pin, files, roots = _navigation_context(root, target_id, source)
     if path not in files or not _inside_roots(path, roots):
         raise StateError(f"file is outside target scope: {path}")
-    if not isinstance(start, int) or start < 1:
-        raise StateError("start must be a positive line number")
-    if end is not None and (not isinstance(end, int) or end < start):
+    start = start or 1
+    if end is not None and end < start:
         raise StateError("end must not precede start")
     end = min(start + MAX_READ_LINES - 1, end if end is not None else start + 39)
     disk = _workspace.resolve_pin_file(pin, path)
@@ -1026,14 +1221,21 @@ def task_read(
     if len(raw) > MAX_READ_BYTES:
         text = raw[:MAX_READ_BYTES].decode("utf-8", errors="ignore")
         truncated = True
-    return {
+    actual_end = min(end, len(lines))
+    result = {
+        "locator": (
+            f"{source}/{path}#L{start}-L{actual_end}"
+            if actual_end >= start
+            else f"{source}/{path}"
+        ),
         "source": source,
         "path": path,
         "start": start,
-        "end": min(end, len(lines)),
+        "end": actual_end,
         "text": text + ("\n" if text else ""),
         "truncated": truncated,
     }
+    return _finish_navigation(root, state, target, result)
 
 
 @_locked
@@ -1050,6 +1252,9 @@ def resume(root: pathlib.Path) -> dict:
     if state is None or state["status"] != "paused":
         raise StateError("run is not paused")
     assert_revisions_current(root, state)
+    reason = state.pop("pause_reason", None)
+    if isinstance(reason, dict) and reason.get("code") == "review-convergence-limit":
+        state["review_rounds"].pop(reason.get("subject"), None)
     state["status"] = "active"
     _write(root, state)
     return status(root)

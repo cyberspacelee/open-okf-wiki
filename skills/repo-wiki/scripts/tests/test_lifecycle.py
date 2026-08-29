@@ -61,6 +61,9 @@ def plan_page(
         "description": "Open before changing this behavior.",
         "tags": ["routing"],
         "scopes": [{"source": source, "paths": [source_path]}],
+        "evidence_seeds": (
+            [] if owner == "workspace" else [f"{source}/{source_path}#L1-L1"]
+        ),
         "depends_on": depends_on or [],
     }
 
@@ -134,16 +137,52 @@ def submit_plan(root: pathlib.Path, payload: dict) -> tuple[dict, dict]:
     return submit(root, "plan:workspace", json.dumps(payload))
 
 
-def approve_review(root: pathlib.Path, page: str) -> tuple[dict, dict]:
-    packet = _state.task_start(root, f"review:{page}")
+def approve_review_target(root: pathlib.Path, target_id: str) -> tuple[dict, dict]:
+    state = _state.read(root)
+    if "review" not in state:
+        _state.review_start(root, "repo-wiki/reviewer", "review-session")
+    packet = _state.task_start(root, target_id)
     report = {
-        "page": page,
-        "page_digest": packet["page_digest"],
+        "subject": packet["subject"],
+        "subject_digest": packet["subject_digest"],
         "verdict": "approved",
         "issues": [],
     }
     write(pathlib.Path(packet["artifact"]), json.dumps(report))
-    result = _state.task_complete(root, f"review:{page}", packet["attempt"])
+    result = _state.task_complete(root, target_id, packet["attempt"])
+    return packet, result
+
+
+def approve_plan_review(root: pathlib.Path) -> tuple[dict, dict]:
+    return approve_review_target(root, "review:plan")
+
+
+def approve_review(root: pathlib.Path, page: str) -> tuple[dict, dict]:
+    return approve_review_target(root, f"review:{page}")
+
+
+def request_changes(
+    root: pathlib.Path, target_id: str, reopen_target: str
+) -> tuple[dict, dict]:
+    state = _state.read(root)
+    if "review" not in state:
+        _state.review_start(root, "repo-wiki/reviewer", "review-session")
+    packet = _state.task_start(root, target_id)
+    report = {
+        "subject": packet["subject"],
+        "subject_digest": packet["subject_digest"],
+        "verdict": "changes_requested",
+        "issues": [
+            {
+                "category": "domain-coverage",
+                "claim": "A required domain is missing.",
+                "resolution": "Add the missing domain and evidence scope.",
+                "reopen_target": reopen_target,
+            }
+        ],
+    }
+    write(pathlib.Path(packet["artifact"]), json.dumps(report))
+    result = _state.task_complete(root, target_id, packet["attempt"])
     return packet, result
 
 
@@ -172,7 +211,10 @@ def test_attempt_is_isolated_until_gate_promotes_it(tmp_path):
 
     packet = _state.task_start(root, "plan:workspace")
     attempt = pathlib.Path(packet["artifact"])
+    packet_path = pathlib.Path(packet["packet_path"])
     assert attempt.is_relative_to(run / "attempts")
+    assert packet_path.is_file()
+    assert _state.task_packet(root, "plan:workspace", packet["attempt"]) == packet
     assert not canonical.exists()
     write(attempt, json.dumps(payload))
     assert not canonical.exists()
@@ -182,10 +224,8 @@ def test_attempt_is_isolated_until_gate_promotes_it(tmp_path):
     assert result["ok"]
     assert json.loads(canonical.read_text()) == payload
     assert not attempt.exists()
-    assert set(result["state"]["ready_targets"]) == {
-        "page:architecture.md",
-        "page:overview.md",
-    }
+    assert not packet_path.exists()
+    assert result["state"]["ready_targets"] == ["review:plan"]
 
 
 def test_old_attempt_token_is_stale_after_retry(tmp_path):
@@ -201,6 +241,29 @@ def test_old_attempt_token_is_stale_after_retry(tmp_path):
 
     assert first["attempt"] != second["attempt"]
     assert not pathlib.Path(first["artifact"]).exists()
+    assert not pathlib.Path(first["packet_path"]).exists()
+
+
+def test_plan_review_blocks_pages_and_follow_up_receives_prior_report(tmp_path):
+    root, _ = workspace(tmp_path)
+    start(root)
+    assert submit_plan(root, root_plan())[1]["ok"]
+
+    first, changed = request_changes(root, "review:plan", "plan:workspace")
+
+    assert first["subject"] == "plan:workspace"
+    assert changed["state"]["ready_targets"] == ["plan:workspace"]
+    assert submit_plan(root, root_plan())[1]["ok"]
+    follow_up = _state.task_start(root, "review:plan")
+    assert follow_up["review_mode"] == "follow_up"
+    assert {item["role"] for item in follow_up["inputs"]} >= {
+        "subject",
+        "previous_review",
+        "source_index",
+    }
+    assert not any(
+        target.startswith("page:") for target in _state.status(root)["ready_targets"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -231,12 +294,35 @@ def test_plan_gate_rejects_invalid_roots_scopes_and_dag(tmp_path, case, expected
     assert expected <= {item["code"] for item in result["issues"]}
 
 
+@pytest.mark.parametrize(
+    ("seed", "expected"),
+    [
+        (None, "plan-evidence-seed-missing"),
+        ("src/lib.py#L1-L1", "plan-evidence-outside-scope"),
+        ("src/missing.py#L1-L1", "plan-evidence-unresolved"),
+    ],
+)
+def test_plan_gate_requires_resolvable_in_scope_evidence_seeds(
+    tmp_path, seed, expected
+):
+    root, _ = workspace(tmp_path)
+    start(root)
+    payload = branch_plan()
+    leaf = next(page for page in payload["pages"] if page["path"] == "data/src/leaf.md")
+    leaf["evidence_seeds"] = [] if seed is None else [seed]
+
+    _, result = submit_plan(root, payload)
+
+    assert not result["ok"]
+    assert expected in {item["code"] for item in result["issues"]}
+
+
 def test_structured_gate_rejects_non_utf8_and_oversized_artifacts(tmp_path):
     root, _ = workspace(tmp_path)
     start(root)
     packet = _state.task_start(root, "plan:workspace")
     artifact = pathlib.Path(packet["artifact"])
-    artifact.parent.mkdir(parents=True)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
 
     artifact.write_bytes(b"\xff")
     result = _state.task_complete(root, "plan:workspace", packet["attempt"])
@@ -256,9 +342,13 @@ def test_review_is_page_bound_and_unlocks_parent_without_branch_barrier(tmp_path
     root, _ = workspace(tmp_path)
     start(root)
     assert submit_plan(root, branch_plan())[1]["ok"]
+    assert approve_plan_review(root)[1]["ok"]
     leaf = "data/src/leaf.md"
     assert submit(root, f"page:{leaf}", page_text())[1]["ok"]
-    assert "page_digest" not in _state.read(root)["targets"][f"review:{leaf}"]["spec"]
+    assert (
+        _state.read(root)["targets"][f"review:{leaf}"]["spec"]["subject"]
+        == f"page:{leaf}"
+    )
 
     with pytest.raises(_state.StateError, match="distinct"):
         _state.review_start(root, "repo-wiki/reviewer", "producer-session")
@@ -267,8 +357,8 @@ def test_review_is_page_bound_and_unlocks_parent_without_branch_barrier(tmp_path
 
     packet = _state.task_start(root, f"review:{leaf}")
     wrong = {
-        "page": leaf,
-        "page_digest": "0" * 64,
+        "subject": f"page:{leaf}",
+        "subject_digest": "0" * 64,
         "verdict": "approved",
         "issues": [],
     }
@@ -277,7 +367,7 @@ def test_review_is_page_bound_and_unlocks_parent_without_branch_barrier(tmp_path
     assert not rejected["ok"]
     assert {item["code"] for item in rejected["issues"]} == {"review-digest-invalid"}
 
-    wrong["page_digest"] = packet["page_digest"]
+    wrong["subject_digest"] = packet["subject_digest"]
     write(pathlib.Path(packet["artifact"]), json.dumps(wrong))
     approved = _state.task_complete(root, f"review:{leaf}", packet["attempt"])
 
@@ -290,21 +380,21 @@ def test_review_page_reopen_keeps_all_ancestors_blocked(tmp_path):
     root, _ = workspace(tmp_path)
     start(root)
     assert submit_plan(root, chain_plan())[1]["ok"]
+    assert approve_plan_review(root)[1]["ok"]
     leaf = "data/src/leaf.md"
     assert submit(root, f"page:{leaf}", page_text())[1]["ok"]
     _state.review_start(root, "repo-wiki/reviewer", "review-session")
     packet = _state.task_start(root, f"review:{leaf}")
     report = {
-        "page": leaf,
-        "page_digest": packet["page_digest"],
+        "subject": f"page:{leaf}",
+        "subject_digest": packet["subject_digest"],
         "verdict": "changes_requested",
         "issues": [
             {
                 "category": "unsupported-claim",
-                "target": leaf,
                 "claim": "The selected behavior is implemented here.",
                 "resolution": "Rewrite the claim with evidence.",
-                "reopen": "page",
+                "reopen_target": f"page:{leaf}",
             }
         ],
     }
@@ -318,6 +408,70 @@ def test_review_page_reopen_keeps_all_ancestors_blocked(tmp_path):
     assert statuses[f"page:{leaf}"] == "pending"
     assert statuses["page:architecture.md"] == "pending"
     assert statuses["page:overview.md"] == "pending"
+
+
+def test_two_review_repair_rounds_pause_for_human_decision(tmp_path):
+    root, _ = workspace(tmp_path)
+    start(root)
+    assert submit_plan(root, root_plan())[1]["ok"]
+    assert approve_plan_review(root)[1]["ok"]
+    page = "architecture.md"
+    assert submit(root, f"page:{page}", page_text())[1]["ok"]
+
+    first, changed = request_changes(root, f"review:{page}", f"page:{page}")
+    assert first["review_mode"] == "initial"
+    assert changed["review_round"] == 1 and not changed["paused"]
+    assert submit(root, f"page:{page}", page_text())[1]["ok"]
+    second, changed = request_changes(root, f"review:{page}", f"page:{page}")
+
+    assert second["review_mode"] == "follow_up"
+    assert changed["review_round"] == 2 and changed["paused"]
+    assert changed["state"]["pause_reason"] == {
+        "code": "review-convergence-limit",
+        "subject": f"page:{page}",
+        "rounds": 2,
+    }
+    resumed = _state.resume(root)
+    assert resumed["status"] == "active"
+    assert _state.read(root)["review_rounds"].get(f"page:{page}") is None
+
+
+def test_plan_metadata_repair_preserves_page_body_and_reopens_only_review(tmp_path):
+    root, _ = workspace(tmp_path)
+    run = start(root)
+    payload = root_plan()
+    assert submit_plan(root, payload)[1]["ok"]
+    assert approve_plan_review(root)[1]["ok"]
+    page = "architecture.md"
+    assert submit(root, f"page:{page}", page_text())[1]["ok"]
+    before = _state.read(root)["targets"][f"page:{page}"]
+    before_digest = before["output_digest"]
+    before_input = before["last_attempt"]["input_digest"]
+
+    _, changed = request_changes(root, f"review:{page}", "plan:workspace")
+    assert changed["state"]["ready_targets"] == ["plan:workspace"]
+    assert _state.read(root)["targets"][f"page:{page}"]["status"] == "complete"
+    payload["pages"][0].update(
+        {
+            "title": "Revised architecture",
+            "description": "Open before changing revised boundaries.",
+            "tags": ["architecture", "revised"],
+        }
+    )
+    assert submit_plan(root, payload)[1]["ok"]
+    candidate = run / "candidate" / page
+    text = candidate.read_text(encoding="utf-8")
+    metadata_page = _state.read(root)["targets"][f"page:{page}"]
+
+    assert "title: Revised architecture" in text
+    assert "The selected behavior is implemented" in text
+    assert metadata_page["status"] == "complete"
+    assert metadata_page["attempts"] == 1
+    assert metadata_page["output_digest"] != before_digest
+    assert approve_plan_review(root)[1]["ok"]
+    repaired = _state.read(root)["targets"][f"page:{page}"]
+    assert repaired["last_attempt"]["input_digest"] != before_input
+    assert f"review:{page}" in _state.status(root)["ready_targets"]
 
 
 def test_refresh_rejects_submission_from_the_old_revision(tmp_path):
@@ -398,6 +552,7 @@ def test_refresh_and_replan_preserve_unaffected_source_branch(tmp_path):
         ),
     )
     assert submit_plan(root, payload)[1]["ok"]
+    assert approve_plan_review(root)[1]["ok"]
     assert submit(root, f"page:{src_leaf}", page_text())[1]["ok"]
     assert submit(root, f"page:{other_leaf}", page_text("other/app.py#L1-L2"))[1]["ok"]
     _state.review_start(root, "repo-wiki/reviewer", "review-session")
@@ -409,12 +564,13 @@ def test_refresh_and_replan_preserve_unaffected_source_branch(tmp_path):
     subprocess.run(["git", "-C", str(source), "commit", "-qm", "refresh"], check=True)
     refreshed = _state.refresh_source(root, "src")
 
-    assert refreshed["ready_targets"] == ["plan:workspace", f"page:{src_leaf}"]
+    assert refreshed["ready_targets"] == ["plan:workspace"]
     statuses = target_statuses(root)
     assert statuses[f"page:{other_leaf}"] == "complete"
     assert statuses[f"review:{other_leaf}"] == "complete"
 
     assert submit_plan(root, payload)[1]["ok"]
+    assert approve_plan_review(root)[1]["ok"]
     statuses = target_statuses(root)
     assert statuses[f"page:{other_leaf}"] == "complete"
     assert statuses[f"review:{other_leaf}"] == "complete"
@@ -424,6 +580,7 @@ def test_candidate_tamper_is_detected_before_more_work(tmp_path):
     root, _ = workspace(tmp_path)
     run = start(root)
     assert submit_plan(root, root_plan())[1]["ok"]
+    assert approve_plan_review(root)[1]["ok"]
     assert submit(root, "page:architecture.md", page_text())[1]["ok"]
     page = run / "candidate/architecture.md"
     write(page, page.read_text() + "\ntampered\n")
@@ -442,15 +599,39 @@ def test_navigation_is_bounded_to_regular_files_inside_the_pin(tmp_path):
     start(root)
     _state.task_start(root, "plan:workspace")
 
-    assert _state.task_search(root, "plan:workspace", "src", "return")["results"]
+    search = _state.task_search(root, "plan:workspace", "src", "return")
+    assert search["results"][0]["locator"] == "src/app.py#L2"
     assert (
         "1|def answer"
-        in _state.task_read(root, "plan:workspace", "src", "app.py")["text"]
+        in _state.task_read(root, "plan:workspace", "src/app.py#L1-L2")["text"]
     )
     with pytest.raises(_state.StateError, match="end must not precede start"):
-        _state.task_read(root, "plan:workspace", "src", "app.py", end=0)
+        _state.task_read(root, "plan:workspace", "src/app.py#L2-L1")
     with pytest.raises(_state.StateError, match="regular file inside the Pin"):
-        _state.task_read(root, "plan:workspace", "src", "escape")
+        _state.task_read(root, "plan:workspace", "src/escape")
+
+
+def test_navigation_budget_is_cumulative_per_attempt(tmp_path, monkeypatch):
+    root, _ = workspace(tmp_path)
+    start(root)
+    monkeypatch.setitem(
+        _state.NAVIGATION_LIMITS, "plan", (1, 100_000, 0, 0, 1, 100_000)
+    )
+    packet = _state.task_start(root, "plan:workspace")
+
+    first = _state.task_search(root, "plan:workspace", "src", "return")
+    assert first["navigation"]["calls_used"] == 1
+    with pytest.raises(_state.StateError, match="budget exhausted"):
+        _state.task_outline(root, "plan:workspace", "src")
+    active = _state.read(root)["targets"]["plan:workspace"]["active_attempt"]
+    assert active["navigation"]["calls"] == 1
+    assert active["navigation"]["bytes"] > 0
+    assert (
+        _state.task_packet(root, "plan:workspace", packet["attempt"])[
+            "navigation_budget"
+        ]["calls"]
+        == 1
+    )
 
 
 def test_pause_and_resume_preserve_ready_set(tmp_path):
@@ -474,6 +655,7 @@ def test_publication_requires_every_page_to_be_machine_confirmed(tmp_path):
     with pytest.raises(_publish.PublishError, match="approved"):
         _publish.publish(root)
     assert submit_plan(root, root_plan())[1]["ok"]
+    assert approve_plan_review(root)[1]["ok"]
     for page in ("architecture.md", "overview.md"):
         assert submit(root, f"page:{page}", page_text())[1]["ok"]
     _state.review_start(root, "repo-wiki/reviewer", "review-session")

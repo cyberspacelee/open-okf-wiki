@@ -251,30 +251,19 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[Issue]:
     if kind == "review":
         value, issues = _model_issues(path, ReviewReport)
         if value:
-            if value.page != task["name"]:
+            subject = task["spec"]["subject"]
+            if value.subject != subject:
                 issues.append(
-                    issue("error", "review-target-invalid", str(path), value.page)
+                    issue("error", "review-target-invalid", str(path), value.subject)
                 )
-            expected = state["targets"][task["depends_on"][0]].get("output_digest")
-            if value.page_digest != expected:
+            expected = state["targets"][subject].get("output_digest")
+            if value.subject_digest != expected:
                 issues.append(
                     issue(
                         "error",
                         "review-digest-invalid",
                         str(path),
-                        "review does not bind the dispatched page digest",
-                    )
-                )
-            if any(
-                item.reopen == "plan" and item.target != "plan:workspace"
-                for item in value.issues
-            ):
-                issues.append(
-                    issue(
-                        "error",
-                        "review-target-invalid",
-                        str(path),
-                        "plan issues must target plan:workspace",
+                        "review does not bind the dispatched subject digest",
                     )
                 )
         return issues
@@ -382,6 +371,52 @@ def _validate_page_plan(
                     f"{page.path} includes a scope outside owner {page.owner}",
                 )
             )
+        owner = workspace.sources.get(page.owner)
+        if (
+            page.owner != "workspace"
+            and owner is not None
+            and owner.kind not in ("opengauss", "postgres")
+            and not page.evidence_seeds
+        ):
+            issues.append(
+                issue(
+                    "error",
+                    "plan-evidence-seed-missing",
+                    str(path),
+                    f"{page.path} requires source evidence",
+                )
+            )
+        roots: dict[str, list[str]] = {}
+        for scope in page.scopes:
+            roots.setdefault(scope.source, []).extend(scope.paths)
+        for resource in page.evidence_seeds:
+            if _catalog_resource(state, resource):
+                continue
+            resolved = _resolve_resource(root, state, resource)
+            if resolved is None:
+                issues.append(
+                    issue(
+                        "error",
+                        "plan-evidence-unresolved",
+                        str(path),
+                        resource,
+                    )
+                )
+                continue
+            parsed = parse_resource(resource)
+            assert parsed is not None
+            source_name, rel, _, _ = parsed
+            if source_name not in roots or not _path_in_scope(rel, roots[source_name]):
+                issues.append(
+                    issue(
+                        "error",
+                        "plan-evidence-outside-scope",
+                        str(path),
+                        resource,
+                    )
+                )
+                continue
+            issues.extend(_check_range(*resolved, resource))
     return issues
 
 

@@ -289,14 +289,15 @@ def build_index(
 ) -> dict:
     build_modules = _maven_modules(pin, files)
     source_sets = _source_sets(files)
-    required = {
-        "",
+    structural = {
         *("" if item == "." else item for item in build_modules),
         *source_sets,
     }
+    required = {""}
     direct_files, child_dirs = _directory_shape(files)
     visible = (
         required
+        | structural
         | direct_files
         | {path for path, children in child_dirs.items() if len(children) > 1}
     )
@@ -306,7 +307,7 @@ def build_index(
         _accumulate_file(stats[_parent_of(rel)], rel, size, raw)
     candidates = sorted(
         (path for path in stats if path not in required),
-        key=lambda path: _keep_priority(path, stats[path]),
+        key=lambda path: (path not in structural, *_keep_priority(path, stats[path])),
     )
     full = _assemble(
         source,
@@ -324,7 +325,7 @@ def build_index(
         source, files, stats, required, candidates, 0, build_modules, source_sets
     )
     if _json_size(floor) > MAX_INDEX_BYTES:
-        raise ValueError("required structural anchors exceed the index byte budget")
+        raise AssertionError("source index root exceeds the index byte budget")
     lo, hi = 0, len(candidates)
     while hi - lo > 1:
         mid = (lo + hi) // 2
@@ -374,8 +375,12 @@ def _assemble(
         "source": source,
         "file_count": len(files),
         "directories": records,
-        "build_modules": build_modules,
-        "source_sets": source_sets,
+        "build_modules": [
+            item
+            for item in build_modules
+            if ("" if item == "." else item) in kept
+        ],
+        "source_sets": [item for item in source_sets if item in kept],
         "truncated": keep_count < len(candidates),
     }
     total = sum(item["files"] for item in records)

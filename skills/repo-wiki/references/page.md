@@ -1,19 +1,21 @@
 # Page
 
 Research and author exactly the page named by this Target. Read contract.md,
-the packet's page metadata and `scopes`, exact dependency inputs and matching
-template in assets/templates/. Write Markdown to the packet's `artifact`
-Attempt Artifact; never return page content in the Handoff.
+the packet's page metadata, `scopes` and `evidence_seeds`, exact dependency
+inputs and matching template in assets/templates/. Write Markdown to the
+packet's `artifact` Attempt Artifact; never return page content in the Handoff.
 
 Use `outline` to orient inside the Page Scope declared by `scopes`, `search`
-to locate behavior and `read` to open bounded evidence windows. Read only
-enough files to explain knowledge that passes the Grep Test. Package layout,
-symbol inventories and restated configuration do not become prose.
+to locate behavior and pass its returned Locators directly to `read`. Expand
+their line ranges to reopen planning seeds and bounded evidence windows. Seeds
+route research but are not automatically claims or citations.
+Read only enough files to explain knowledge that passes the Grep Test. Package
+layout, symbol inventories and restated configuration do not become prose.
 
-For a parent page, the packet's `inputs` are Machine-confirmed child pages.
-Use them to synthesize routing and topology, then reopen their Locators from
-the Pin before repeating a load-bearing claim. Candidate pages and planning
-artifacts are never provenance.
+For a parent page, use only `dependency_page` inputs to synthesize routing and
+topology, then reopen their Locators before repeating a load-bearing claim.
+`previous_output` is the prior attempt for repair, not evidence. Candidate pages
+and planning artifacts are never provenance.
 
 Start frontmatter like:
 
@@ -44,9 +46,9 @@ Use `coverage: partial` and a non-empty Gaps section when the assigned scopes
 cannot support complete claims. Name the missing evidence and searched scopes.
 Do not expand the Page Plan, invent rationale or hide missing evidence.
 
-Database pages read only the packet's Catalog shards and cite the canonical
-resources for their scoped tables. A schema table includes a Comment column
-and claims nothing about unselected tables.
+Database pages read only `catalog_index` inputs and cite the canonical resources
+for their scoped tables. A schema table includes a Comment column and claims
+nothing about unselected tables.
 
 Run `complete_command` from `workdir`. The State Gate validates and promotes a
 successful Attempt Artifact into the Candidate, then creates its review

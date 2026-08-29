@@ -71,6 +71,9 @@ def complete(cwd: pathlib.Path, target: str, content: str) -> dict:
     packet = run(cwd, "task", "start", target)
     if not all(key in packet for key in ("attempt", "artifact", "complete_command")):
         raise RuntimeError(f"incomplete dispatch packet for {target}: {sorted(packet)}")
+    replayed = run(cwd, "task", "packet", target, "--attempt", packet["attempt"])
+    if replayed != packet:
+        raise RuntimeError(f"persisted packet changed for {target}")
     write(pathlib.Path(packet["artifact"]), content)
     result = run(
         cwd,
@@ -104,17 +107,17 @@ def page(title: str, refs: list[tuple[str, str]], links: str) -> str:
     )
 
 
-def approve(cwd: pathlib.Path, target: str, page_path: str) -> None:
+def approve(cwd: pathlib.Path, target: str) -> None:
     packet = run(cwd, "task", "start", target)
-    digest = packet.get("page_digest")
+    digest = packet.get("subject_digest")
     if not isinstance(digest, str) or len(digest) != 64:
-        raise RuntimeError(f"review packet has no page digest: {packet}")
+        raise RuntimeError(f"review packet has no subject digest: {packet}")
     write(
         pathlib.Path(packet["artifact"]),
         json.dumps(
             {
-                "page": page_path,
-                "page_digest": digest,
+                "subject": packet["subject"],
+                "subject_digest": digest,
                 "verdict": "approved",
                 "issues": [],
             }
@@ -154,6 +157,20 @@ def evaluate(base: pathlib.Path) -> dict:
         raise RuntimeError(f"run must start with only the planner ready: {started}")
 
     stale = run(ws, "task", "start", "plan:workspace")
+    search = run(
+        ws,
+        "task",
+        "search",
+        "plan:workspace",
+        "public class",
+        "--source",
+        "API",
+    )
+    locator = search.get("results", [{}])[0].get("locator")
+    if not locator or run(ws, "task", "read", "plan:workspace", locator)[
+        "locator"
+    ] != locator.replace("#L2", "#L2-L2"):
+        raise RuntimeError(f"search/read locator handoff failed: {search}")
     write(
         api / "src/main/java/example/App.java",
         'package example;\npublic class App { static String name = "api-v2"; }\n',
@@ -184,6 +201,7 @@ def evaluate(base: pathlib.Path) -> dict:
                 "description": "Open before API changes.",
                 "tags": ["architecture"],
                 "scopes": [{"source": "API", "paths": ["."]}],
+                "evidence_seeds": ["API/src/main/java/example/App.java#L1-L2"],
                 "depends_on": [],
             },
             {
@@ -194,6 +212,7 @@ def evaluate(base: pathlib.Path) -> dict:
                 "description": "Open before web changes.",
                 "tags": ["architecture"],
                 "scopes": [{"source": "WebUI", "paths": ["."]}],
+                "evidence_seeds": ["WebUI/src/main/java/example/App.java#L1-L2"],
                 "depends_on": [],
             },
             {
@@ -207,6 +226,7 @@ def evaluate(base: pathlib.Path) -> dict:
                     {"source": "API", "paths": ["."]},
                     {"source": "WebUI", "paths": ["."]},
                 ],
+                "evidence_seeds": [],
                 "depends_on": [
                     "data/api/architecture.md",
                     "data/webui/architecture.md",
@@ -223,12 +243,25 @@ def evaluate(base: pathlib.Path) -> dict:
                     {"source": "API", "paths": ["."]},
                     {"source": "WebUI", "paths": ["."]},
                 ],
+                "evidence_seeds": [],
                 "depends_on": ["architecture.md"],
             },
         ],
         "gaps": [],
     }
     complete(ws, "plan:workspace", json.dumps(plan))
+    review = run(
+        ws,
+        "review",
+        "start",
+        "--actor",
+        "repo-wiki/e2e-reviewer",
+        "--session",
+        "reviewer-2",
+    )
+    if ready_ids(review) != {"review:plan"}:
+        raise RuntimeError(f"plan review did not bind: {review}")
+    approve(ws, "review:plan")
     leaves = {
         "page:data/api/architecture.md",
         "page:data/webui/architecture.md",
@@ -252,27 +285,14 @@ def evaluate(base: pathlib.Path) -> dict:
     if "page:architecture.md" in ready_ids(run(ws, "run", "status")):
         raise RuntimeError("parent page became ready before child review")
 
-    review = run(
-        ws,
-        "review",
-        "start",
-        "--actor",
-        "repo-wiki/e2e-reviewer",
-        "--session",
-        "reviewer-2",
-    )
     expected_reviews = {
         "review:data/api/architecture.md",
         "review:data/webui/architecture.md",
     }
     if ready_ids(run(ws, "run", "status")) != expected_reviews:
         raise RuntimeError(f"review session did not bind: {review}")
-    approve(ws, "review:data/api/architecture.md", "data/api/architecture.md")
-    approve(
-        ws,
-        "review:data/webui/architecture.md",
-        "data/webui/architecture.md",
-    )
+    approve(ws, "review:data/api/architecture.md")
+    approve(ws, "review:data/webui/architecture.md")
     if ready_ids(run(ws, "run", "status")) != {"page:architecture.md"}:
         raise RuntimeError("Machine-confirmed children did not unlock architecture.md")
 
@@ -289,7 +309,7 @@ def evaluate(base: pathlib.Path) -> dict:
     )
     if "page:overview.md" in ready_ids(run(ws, "run", "status")):
         raise RuntimeError("overview.md became ready before architecture review")
-    approve(ws, "review:architecture.md", "architecture.md")
+    approve(ws, "review:architecture.md")
     if ready_ids(run(ws, "run", "status")) != {"page:overview.md"}:
         raise RuntimeError("architecture review did not unlock overview.md")
 
@@ -302,7 +322,7 @@ def evaluate(base: pathlib.Path) -> dict:
             "[Architecture](/architecture.md)",
         ),
     )
-    approve(ws, "review:overview.md", "overview.md")
+    approve(ws, "review:overview.md")
 
     published = run(ws, "publication", "publish")
     run(ws, "publication", "export", "--to", "wiki")

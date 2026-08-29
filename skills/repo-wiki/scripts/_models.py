@@ -123,6 +123,7 @@ class PagePlanEntry(BaseModel):
     description: ClaimText
     tags: list[ShortText] = Field(default_factory=list, max_length=16)
     scopes: list[PageScope] = Field(min_length=1, max_length=16)
+    evidence_seeds: list[ScopePath] = Field(max_length=3)
     depends_on: list[PagePath] = Field(default_factory=list, max_length=64)
 
     @field_validator("path", mode="after")
@@ -181,6 +182,9 @@ class ReviewIssue(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     category: Literal[
+        "domain-coverage",
+        "concept-boundary",
+        "dependency",
         "grep-test",
         "unsupported-claim",
         "invented-rationale",
@@ -190,24 +194,29 @@ class ReviewIssue(BaseModel):
         "coverage",
         "language",
     ]
-    target: ClaimText
     claim: ClaimText
     resolution: ClaimText
-    reopen: Literal["page", "plan"] = "page"
+    reopen_target: NonEmpty
 
 
 class ReviewReport(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    page: PagePath
-    page_digest: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    subject: NonEmpty
+    subject_digest: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     verdict: Literal["approved", "changes_requested"]
     issues: list[ReviewIssue] = Field(default_factory=list, max_length=64)
 
-    @field_validator("page", mode="after")
+    @field_validator("subject", mode="after")
     @classmethod
-    def portable_page(cls, value: str) -> str:
-        return _portable_page_path(value)
+    def valid_subject(cls, value: str) -> str:
+        if value == "plan:workspace":
+            return value
+        kind, separator, path = value.partition(":")
+        if kind != "page" or not separator:
+            raise ValueError("subject must be plan:workspace or page:<path>")
+        _portable_page_path(path)
+        return value
 
     @model_validator(mode="after")
     def verdict_matches_issues(self):
@@ -215,11 +224,11 @@ class ReviewReport(BaseModel):
             raise ValueError("approved review must not contain issues")
         if self.verdict == "changes_requested" and not self.issues:
             raise ValueError("changes_requested review must contain issues")
-        if any(
-            issue.reopen == "page" and issue.target != self.page
-            for issue in self.issues
-        ):
-            raise ValueError("page review issues must target the reviewed page")
+        allowed = {"plan:workspace"}
+        if self.subject.startswith("page:"):
+            allowed.add(self.subject)
+        if any(issue.reopen_target not in allowed for issue in self.issues):
+            raise ValueError("review issue reopens an invalid target")
         return self
 
 

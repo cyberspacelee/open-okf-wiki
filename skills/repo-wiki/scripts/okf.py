@@ -141,6 +141,8 @@ def cmd_task(args) -> int:
     root = workspace_root()
     if args.action == "start":
         result = _state.task_start(root, args.target)
+    elif args.action == "packet":
+        result = _state.task_packet(root, args.target, args.attempt)
     elif args.action == "outline":
         result = _state.task_outline(
             root,
@@ -158,14 +160,7 @@ def cmd_task(args) -> int:
             path=args.path,
         )
     elif args.action == "read":
-        result = _state.task_read(
-            root,
-            args.target,
-            source=args.source,
-            path=args.path,
-            start=args.start,
-            end=args.end,
-        )
+        result = _state.task_read(root, args.target, args.locator)
     elif args.action == "complete":
         result = _state.task_complete(root, args.target, args.attempt)
         if not result.get("ok"):
@@ -389,6 +384,13 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     start_task.add_argument("target", help="ready target id, e.g. page:overview.md")
+    packet = leaf(
+        task_actions.add_parser(
+            "packet", help="replay the persisted packet for an active attempt"
+        )
+    )
+    packet.add_argument("target", help="in-progress target id")
+    packet.add_argument("--attempt", required=True, help="active attempt token")
     outline = leaf(
         task_actions.add_parser(
             "outline", help="list one bounded directory inside the target scope"
@@ -413,10 +415,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     read.add_argument("target", help="in-progress target id")
-    read.add_argument("path", help="source-relative file path")
-    read.add_argument("--source", required=True, help="source name")
-    read.add_argument("--start", type=int, default=1, help="first line")
-    read.add_argument("--end", type=int, help="last line (bounded by the kernel)")
+    read.add_argument("locator", help="canonical source/path#Lx-Ly locator")
     complete_task = leaf(
         task_actions.add_parser(
             "complete", help="validate the task artifact and advance on success"
@@ -431,7 +430,7 @@ def build_parser() -> argparse.ArgumentParser:
     fail.add_argument("--reason", help="short failure description")
 
     review = commands.add_parser(
-        "review", help="bind an independent session for ready page reviews"
+        "review", help="bind an independent session for ready plan or page reviews"
     )
     review_actions = review.add_subparsers(dest="action", required=True)
     review_start = leaf(

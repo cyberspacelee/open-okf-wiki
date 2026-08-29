@@ -4,7 +4,30 @@ Read contract.md, then build one bounded Workspace Page Plan. Use the packet's
 `outline`, `search` and `read` commands to navigate each Pin. Start at build
 modules and source sets, descend into package clusters only when the parent
 view cannot support a page decision. Structure is routing evidence, not
-semantic importance.
+semantic importance. `search` accepts one literal query and returns a Locator;
+expand its line range and pass it directly to `read`. Prefer `--path` before
+broad searches. Do not open the first 40 lines of many files when only their
+declarations are relevant.
+
+Before choosing pages, complete this domain pass:
+
+1. Account for every Source's role: business domain owner, public contract,
+   shared infrastructure, extension surface or evidence-only dependency.
+2. Find the domain nouns and their state transitions, then the commands,
+   persistence, events, failure paths and extension points that change them.
+   Framework annotations, package names and class counts are not domain
+   concepts.
+3. Trace each cross-Source contract from its public entry point to at least one
+   implementation or consumer. Distinguish public API, internal API and plugin
+   SPI where they coexist.
+4. Admit a concept only when its behavior is expensive to reconstruct and its
+   Page Scope can support an honest page. Merge package clusters that explain
+   one lifecycle; split a cluster only when it contains independent lifecycles.
+
+The pass is complete when every Source role is accounted for, every planned
+business concept names a lifecycle or invariant rather than a module, and
+unresolved domain evidence is recorded in Plan `gaps`. It does not require
+classifying every file or package.
 
 Plan at most 64 concept pages, choosing the smallest set that passes the Grep
 Test. Each entry in a page's `scopes` names one Source and the paths its worker
@@ -26,6 +49,9 @@ Write one JSON Attempt Artifact at the packet's `artifact` path:
           "source": "API",
           "paths": ["api-core/src/main/java/com/example/request"]
         }],
+        "evidence_seeds": [
+          "API/api-core/src/main/java/com/example/request/Request.java#L20-L48"
+        ],
         "depends_on": []
       }, {
         "path": "architecture.md",
@@ -38,6 +64,7 @@ Write one JSON Attempt Artifact at the packet's `artifact` path:
           {"source": "API", "paths": ["api-core"]},
           {"source": "web", "paths": ["src/client"]}
         ],
+        "evidence_seeds": [],
         "depends_on": ["data/api/request-lifecycle.md"]
       }, {
         "path": "overview.md",
@@ -50,6 +77,7 @@ Write one JSON Attempt Artifact at the packet's `artifact` path:
           {"source": "API", "paths": ["."]},
           {"source": "web", "paths": ["."]}
         ],
+        "evidence_seeds": [],
         "depends_on": ["architecture.md"]
       }],
       "gaps": []
@@ -65,6 +93,10 @@ normalized Source-relative POSIX paths; `.` selects the eligible Source root.
 For a Catalog Source, paths are selected table page slugs from the packet's
 catalog index. Every scope must resolve inside a registered Source.
 
+Every source-owned Git/files page has one to three `evidence_seeds` inside its
+scopes. Read each seed before planning the page; a class name returned by
+`search` alone is not enough. Use an empty list for workspace synthesis pages.
+
 Workspace root pages use `owner: "workspace"`. Every source-owned page uses
 its declared Source name as owner and lives under
 `data/<source-slug>/`; all its scopes name that owner. Every Page Plan includes
@@ -75,10 +107,13 @@ table merely because the table was selected.
 
 Write titles and descriptions in the packet's `language`; paths, tags and
 machine-facing fields stay ASCII. Read only the packet's bounded Catalog
-indexes, never `state.json` or a full `catalog.json`.
+indexes and typed inputs, never `state.json`, Candidate directories or a full
+`catalog.json`.
 
 Run `complete_command` from `workdir`. The State Gate validates paths, scopes,
 required pages, dependency references and cycles before promoting the plan and
-creating page Targets. Repair the Attempt Artifact until the gate passes.
+creating `review:plan`. Page Targets remain blocked until that independent
+review approves the exact Plan digest. Repair the Attempt Artifact until the
+gate passes.
 
 Handoff: Attempt Artifact path, gate verdict, page count, leaf count.

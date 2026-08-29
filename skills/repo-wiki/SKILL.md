@@ -14,7 +14,8 @@ short form `okf` below means:
 
     uv run <skill>/scripts/okf.py
 
-Use `okf --help` and `okf <command> --help` for the current command contract.
+Dispatch packets are the worker command contract; do not probe CLI help during a
+Target.
 
 ## Start here
 
@@ -31,9 +32,6 @@ On entry, resume or uncertainty:
 Drive the Run to Publication. A rejected completion is a worker repair, not a
 reason to bypass the gate. Stop only for a genuine human dependency such as
 missing credentials or ambiguous Source selection.
-
-Legacy phase-based Runs are not migrated. Start a new Run against the
-registered Sources; the OKF version stays unchanged.
 
 ## Sources
 
@@ -61,7 +59,7 @@ pages. Unrelated branches of the Page DAG remain complete.
 Capture and Index are deterministic setup; Publication is deterministic
 finalization. Agent work has only three Target kinds:
 
-    plan:workspace -> page:<path> -> review:<path>
+    plan:workspace -> review:plan -> page:<path> -> review:<path>
 
 There is no global phase cursor. `run status --json` returns the ready set:
 every pending or failed Target whose dependencies are satisfied. Independent
@@ -71,11 +69,15 @@ branches may run concurrently. For each ready Target:
     # dispatch one short-lived worker with the returned packet
 
 The packet's `artifact` path is inside an attempt-specific temporary directory;
-it also carries exact dependency inputs and bounded navigation commands. The
-worker:
+`packet_path` persists the exact dispatch, and `inputs` label every path by
+role. Recover a lost dispatch only with:
+
+    okf task packet <target-id> --attempt <token> --json
+
+The worker:
 
 1. Reads the packet's `reference` and `references/contract.md`.
-2. Uses only the named inputs, Page Scope, Pins/Catalogs and bounded
+2. Uses only the named inputs, Page Scope, Catalog indexes and bounded
    `outline`, `search` and `read` commands.
 3. Writes the Attempt Artifact at the packet's `artifact` path.
 4. Runs `complete_command` from `workdir`.
@@ -96,10 +98,15 @@ artifact bodies.
 `Source -> build module -> source set -> package cluster`, then writes the
 smallest Page Plan that passes the Grep Test. Package clusters are navigation
 scopes, not automatic Targets; the plan need not classify every file or
-package.
+package. Every source-owned Git/files concept carries one to three opened
+evidence seeds inside its Page Scope so later workers can reopen the code that
+justified the boundary.
 
 The State Gate validates the complete Page DAG before creating page Targets.
-Leaf pages research and write directly from their `scopes`. A parent page
+An independent `review:plan` first audits domain recall, concept boundaries,
+cross-Source connections, routing ownership and output language. No page is
+ready before that review is approved. Leaf pages research and write directly
+from their `scopes`. A parent page
 becomes ready only after every child is Machine-confirmed, and receives those
 approved child pages as inputs. Each page Target still reopens Pin or Catalog
 evidence for every load-bearing claim; child pages are synthesis inputs, not
@@ -118,9 +125,10 @@ session. If workers are unavailable, use `okf run pause`; resume with
 `okf run resume`.
 
 Long-form Markdown stays on disk. Structured plan and review decisions are
-bounded JSON Attempt Artifacts. Dispatch packets contain paths and counts,
-never copied file bodies or whole-repository JSON. Weigh every packet field
-against coordinator context.
+bounded JSON Attempt Artifacts. Dispatch packets contain typed paths, commands
+and budgets, never copied file bodies or whole-repository JSON. Workers never
+inspect `state.json`, other attempts or Candidate directories to reconstruct
+context.
 
 ## Review and Publication
 
@@ -128,11 +136,13 @@ Bind an independent review session when review Targets first become ready:
 
     okf review start --actor repo-wiki/<reviewer> --session <new-session> --json
 
-Review is per page, not per owner batch. Each review Target binds the exact
-page digest, reopens its Locator evidence from Pins/Catalogs and writes one
-verdict. Approval stamps that page Machine-confirmed and may unlock its parent.
-A page repair invalidates its review and dependent parents; plan repair applies
-the new Page Plan and preserves unaffected branches.
+Review is per subject: first the Page Plan, then one page at a time rather than
+an owner batch. Each review Target binds the exact subject digest and writes one
+verdict. Page approval stamps that page Machine-confirmed and may unlock its
+parent. A page repair invalidates its review and dependent parents; plan repair
+reruns Plan review before more page work. Follow-up review receives the prior
+report and verifies those issues first. Two consecutive change rounds pause the
+Run for an explicit human `run resume` decision.
 
 When every required root page is Machine-confirmed, status exposes:
 

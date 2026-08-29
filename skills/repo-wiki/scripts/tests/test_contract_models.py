@@ -16,6 +16,7 @@ def page(path: str, *, depends_on=None, **overrides) -> dict:
         "description": "Open before changing this area.",
         "tags": [],
         "scopes": [scope()],
+        "evidence_seeds": ["SourceA/src/core/File.java#L1-L2"],
         "depends_on": depends_on or [],
         **overrides,
     }
@@ -105,6 +106,18 @@ def test_page_plan_text_and_tag_fields_are_bounded():
         PagePlanEntry.model_validate(page("a.md", description="x" * 801))
     with pytest.raises(ValidationError):
         PagePlanEntry.model_validate(page("a.md", tags=["tag"] * 17))
+    with pytest.raises(ValidationError):
+        PagePlanEntry.model_validate(
+            page("a.md", evidence_seeds=[f"SourceA/src/F{i}.java" for i in range(4)])
+        )
+    with pytest.raises(ValidationError):
+        PagePlanEntry.model_validate(
+            {
+                key: value
+                for key, value in page("a.md").items()
+                if key != "evidence_seeds"
+            }
+        )
 
 
 def test_page_plan_rejects_unknown_and_self_dependencies():
@@ -127,25 +140,29 @@ def test_page_plan_rejects_dependency_cycles():
         )
 
 
-def test_review_report_is_page_bound_and_digest_bound():
+def test_review_report_is_subject_and_digest_bound():
     digest = "a" * 64
     report = ReviewReport.model_validate(
-        {"page": "a.md", "page_digest": digest, "verdict": "approved", "issues": []}
+        {
+            "subject": "page:a.md",
+            "subject_digest": digest,
+            "verdict": "approved",
+            "issues": [],
+        }
     )
-    assert report.page_digest == digest
+    assert report.subject_digest == digest
 
     issue = {
         "category": "unsupported-claim",
-        "target": "a.md",
         "claim": "Unsupported statement.",
         "resolution": "Add evidence or remove it.",
-        "reopen": "page",
+        "reopen_target": "page:a.md",
     }
     with pytest.raises(ValidationError):
         ReviewReport.model_validate(
             {
-                "page": "a.md",
-                "page_digest": digest,
+                "subject": "page:a.md",
+                "subject_digest": digest,
                 "verdict": "approved",
                 "issues": [issue],
             }
@@ -153,19 +170,19 @@ def test_review_report_is_page_bound_and_digest_bound():
     with pytest.raises(ValidationError):
         ReviewReport.model_validate(
             {
-                "page": "a.md",
-                "page_digest": digest,
+                "subject": "page:a.md",
+                "subject_digest": digest,
                 "verdict": "changes_requested",
                 "issues": [],
             }
         )
-    with pytest.raises(ValidationError, match="reviewed page"):
+    with pytest.raises(ValidationError, match="invalid target"):
         ReviewReport.model_validate(
             {
-                "page": "a.md",
-                "page_digest": digest,
+                "subject": "page:a.md",
+                "subject_digest": digest,
                 "verdict": "changes_requested",
-                "issues": [{**issue, "target": "b.md"}],
+                "issues": [{**issue, "reopen_target": "page:b.md"}],
             }
         )
 
@@ -173,18 +190,36 @@ def test_review_report_is_page_bound_and_digest_bound():
 def test_review_plan_reopen_may_target_the_plan_owner():
     report = ReviewReport.model_validate(
         {
-            "page": "a.md",
-            "page_digest": "b" * 64,
+            "subject": "page:a.md",
+            "subject_digest": "b" * 64,
             "verdict": "changes_requested",
             "issues": [
                 {
                     "category": "routing",
-                    "target": "SourceA",
                     "claim": "The page belongs elsewhere.",
                     "resolution": "Replan the Source.",
-                    "reopen": "plan",
+                    "reopen_target": "plan:workspace",
                 }
             ],
         }
     )
-    assert report.issues[0].reopen == "plan"
+    assert report.issues[0].reopen_target == "plan:workspace"
+
+
+def test_plan_review_may_only_reopen_the_plan():
+    with pytest.raises(ValidationError, match="invalid target"):
+        ReviewReport.model_validate(
+            {
+                "subject": "plan:workspace",
+                "subject_digest": "c" * 64,
+                "verdict": "changes_requested",
+                "issues": [
+                    {
+                        "category": "domain-coverage",
+                        "claim": "Usage is missing.",
+                        "resolution": "Add the usage domain.",
+                        "reopen_target": "page:usage.md",
+                    }
+                ],
+            }
+        )

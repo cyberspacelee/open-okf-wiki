@@ -37,6 +37,12 @@ In a multi-source Workspace, prefix the registered Source name:
 embedded: the Run binds the Locator to its Revision and Pin. Line ranges must
 exist at that Revision.
 
+`search` returns Locators. Pass one directly to the packet's `read_command`;
+expand its `#Lx-Ly` range when surrounding evidence is needed. Do not split a
+Locator into source, path and line arguments. The attempt-wide navigation
+budget is cumulative across `outline`, `search` and `read`; when exhausted,
+finish from gathered evidence, record an honest gap or fail the Target.
+
 Cite only files actually opened. Plans and Candidate pages are routing inputs,
 not provenance. Unmaterialized LFS pointers and binary files are not evidence.
 Database concepts use credential-free resources from the captured Catalog.
@@ -47,9 +53,10 @@ Every load-bearing claim carries a footnote id. The same id appears exactly
 once in frontmatter `sources:` and once as a footnote definition. The kernel
 fills Git author and last_modified metadata.
 
-Writers set type, title, routing description, coverage, useful tags, optional
-asset-level resource and sources. The State Gate owns generated metadata;
-review owns verified, status and stale_after. Workers never set trust fields.
+The Page Plan owns page type, owner, title, routing description, tags, scopes,
+evidence seeds and dependencies. Page writers own body, coverage, gaps and
+sources. The State Gate owns generated metadata; review owns verified, status
+and stale_after. Workers never set trust fields.
 
 Partial coverage requires a non-empty Gaps section naming missing evidence and
 the searched scope. Causal language requires cited written rationale.
@@ -61,11 +68,16 @@ so published Markdown carries topology without a separate connection graph.
 ## Page DAG
 
 The Page Plan is the single writer of page paths, owners, metadata, `scopes`
-and `depends_on` edges. A dependency points from a parent synthesis page to a
+and `depends_on` edges. Its `evidence_seeds` are one to three Locators the
+planner actually opened to justify each source-owned Git/files concept; they
+bootstrap page research but are not page provenance. Workspace synthesis pages
+may use an empty list. A dependency points from a parent synthesis page to a
 child. Paths are unique, every dependency names a planned page and dependencies
 are acyclic.
 
-A leaf researches and writes from Source evidence. A parent waits for all
+A Plan review bound to the exact Plan digest must approve domain recall,
+concept boundaries, routing metadata and the DAG before any page becomes
+ready. A leaf then researches and writes from Source evidence. A parent waits for all
 children to become Machine-confirmed, then synthesizes them with Source
 evidence. Review is per page and binds its exact digest. Changing a page
 invalidates its review and dependent parents.
@@ -86,6 +98,11 @@ plan, Candidate page or review artifact. A rejected attempt cannot mutate
 completed artifacts or unlock downstream Targets. Target dependencies,
 ready-set calculation, retries and invalidation belong to the CLI, not the
 coordinator.
+
+The packet is persisted at `packet_path` and replayed only through `task
+packet`. Its `inputs` are typed: `source_index`, `catalog_index`, `subject`,
+`dependency_page`, `previous_output` or `previous_review`. Read only roles
+required by the Target; never inspect run internals to discover more inputs.
 
 ## Language
 

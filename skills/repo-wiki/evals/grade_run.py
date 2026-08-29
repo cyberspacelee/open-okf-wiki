@@ -23,6 +23,36 @@ def load(path: pathlib.Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def trace_commands(path: pathlib.Path) -> tuple[int, list[dict]]:
+    parsed = 0
+    commands = []
+    if not path.is_file():
+        return parsed, commands
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        parsed += 1
+        item = event.get("item", event)
+        if (
+            item.get("type") == "command_execution"
+            and item.get("exit_code") is not None
+        ):
+            commands.append(item)
+        elif item.get("type") == "tool_use" and item.get("name") == "Bash":
+            command = item.get("input", {}).get("command")
+            if command:
+                commands.append(
+                    {
+                        "command": command,
+                        "exit_code": item.get("exit_code", 0),
+                        "aggregated_output": item.get("output", ""),
+                    }
+                )
+    return parsed, commands
+
+
 def grade(ws: pathlib.Path) -> list[dict]:
     results = []
 
@@ -35,6 +65,39 @@ def grade(ws: pathlib.Path) -> list[dict]:
     run_id = manifest["producer_run_id"]
     run_dir = ws / ".okf-wiki/runs" / run_id
     state = load(run_dir / "state.json")
+    trace_events, commands = trace_commands(ws / "host-run.log")
+    command_text = [str(item.get("command", "")) for item in commands]
+    direct_state = [
+        command
+        for command in command_text
+        if re.search(r"(?:find|rg|ls)\b[^\n]*\.okf-wiki", command)
+        or re.search(
+            r"(?:cat|sed|head|tail|less|jq)\b[^\n]*"
+            r"(?:state\.json|current-run\.json)",
+            command,
+        )
+    ]
+    failed_reads = [
+        item
+        for item in commands
+        if "task read" in str(item.get("command", "")) and item.get("exit_code")
+    ]
+    help_probes = [command for command in command_text if "--help" in command]
+    check(
+        "host emitted a structured command trace",
+        trace_events > 0 and bool(commands),
+        f"events={trace_events}, commands={len(commands)}",
+    )
+    check(
+        "workers used packets instead of inspecting run internals",
+        not direct_state,
+        f"direct_state_commands={len(direct_state)}",
+    )
+    check(
+        "locator reads required no recovery probes",
+        not failed_reads and not help_probes,
+        f"failed_reads={len(failed_reads)}, help={len(help_probes)}",
+    )
     targets = state.get("targets", {})
     incomplete = [
         key for key, value in targets.items() if value["status"] != "complete"
@@ -58,6 +121,12 @@ def grade(ws: pathlib.Path) -> list[dict]:
     plans = [target for target in targets.values() if target["kind"] == "plan"]
     pages = [target for target in targets.values() if target["kind"] == "page"]
     reviews = [target for target in targets.values() if target["kind"] == "review"]
+    plan_reviews = [
+        target
+        for target in reviews
+        if target.get("spec", {}).get("subject") == "plan:workspace"
+    ]
+    page_reviews = [target for target in reviews if target not in plan_reviews]
     plan = None
     if len(plans) == 1:
         try:
@@ -70,11 +139,31 @@ def grade(ws: pathlib.Path) -> list[dict]:
         "page and review target counts come from the Page Plan",
         bool(planned)
         and {target["name"] for target in pages} == set(planned)
-        and {target["name"] for target in reviews} == set(planned),
-        f"planned={len(planned)}, pages={len(pages)}, reviews={len(reviews)}",
+        and {target["name"] for target in page_reviews} == set(planned),
+        f"planned={len(planned)}, pages={len(pages)}, reviews={len(page_reviews)}",
+    )
+    check(
+        "one independent Plan review completed before page fan-out",
+        len(plan_reviews) == 1
+        and plan_reviews[0]["status"] == "complete"
+        and all("review:plan" in target["depends_on"] for target in pages),
+        f"plan_reviews={len(plan_reviews)}",
+    )
+    source_owned = [
+        entry for entry in planned.values() if entry.get("owner") != "workspace"
+    ]
+    missing_seeds = [
+        entry.get("path", "<unknown>")
+        for entry in source_owned
+        if not entry.get("evidence_seeds")
+    ]
+    check(
+        "source-owned concepts are evidence-seeded",
+        bool(source_owned) and not missing_seeds,
+        f"source_owned={len(source_owned)}, missing={missing_seeds[:5]}",
     )
     dependency_errors = []
-    review_by_page = {target["name"]: target for target in reviews}
+    review_by_page = {target["name"]: target for target in page_reviews}
     for path, entry in planned.items():
         for child in entry.get("depends_on", []):
             if review_by_page.get(child, {}).get("status") != "complete":
@@ -127,6 +216,86 @@ def grade(ws: pathlib.Path) -> list[dict]:
         (bundle / "overview.md").is_file() and (bundle / "architecture.md").is_file(),
         f"{len(concept_pages)} concepts",
     )
+    revision_names = {item["name"] for item in state["revisions"]}
+    if "killbill" in revision_names:
+        routing_text = json.dumps(
+            [
+                {
+                    key: entry.get(key)
+                    for key in ("path", "title", "description", "tags")
+                }
+                for entry in planned.values()
+            ],
+            ensure_ascii=False,
+        ).lower()
+        wiki_text = "\n".join(
+            [json.dumps(plan, ensure_ascii=False)]
+            + [path.read_text(encoding="utf-8") for path in concept_pages]
+        ).lower()
+        domain_terms = {
+            "catalog-plan-phase": ("catalog", "plan", "phase"),
+            "subscription-entitlement": ("subscription", "entitlement"),
+            "usage-metering": ("usage",),
+            "invoice-payment-overdue": ("invoice", "payment", "overdue"),
+            "durable-queue": ("queue",),
+            "service-lifecycle": ("lifecycle",),
+            "plugins": ("plugin",),
+        }
+        missing_domains = [
+            name
+            for name, terms in domain_terms.items()
+            if not all(term in routing_text for term in terms)
+        ]
+        check(
+            "Kill Bill plan covers the billing domain rubric",
+            not missing_domains,
+            f"missing={missing_domains}",
+        )
+        public_internal = ("public api" in wiki_text or "公开 api" in wiki_text) and (
+            "internal api" in wiki_text or "内部 api" in wiki_text
+        )
+        check(
+            "Kill Bill distinguishes public and internal APIs",
+            public_internal,
+            f"distinguished={public_internal}",
+        )
+        root_text = "\n".join(
+            (bundle / name).read_text(encoding="utf-8").lower()
+            for name in ("architecture.md", "overview.md")
+        )
+        disconnected = [
+            name for name in revision_names if name.lower() not in root_text
+        ]
+        check(
+            "Kill Bill roots connect every registered repository",
+            not disconnected,
+            f"disconnected={disconnected}",
+        )
+        check(
+            "Kill Bill plan stays concept-sized rather than module-sized",
+            len(planned) <= 24,
+            f"planned_pages={len(planned)}",
+        )
+        output_chars = sum(
+            len(str(item.get("aggregated_output", item.get("output", ""))))
+            for item in commands
+        )
+        check(
+            "Kill Bill command and tool output stay below half the QA baseline",
+            len(commands) <= 444 and output_chars <= 1_202_346,
+            f"commands={len(commands)}, output_chars={output_chars}",
+        )
+    if state["language"] == "zh":
+        cjk = re.compile(r"[\u3400-\u9fff]")
+        titles = [entry.get("title", "") for entry in planned.values()]
+        descriptions = [entry.get("description", "") for entry in planned.values()]
+        check(
+            "Chinese plans use Chinese routing metadata",
+            all(cjk.search(text) for text in descriptions)
+            and sum(bool(cjk.search(text)) for text in titles)
+            >= max(1, len(titles) * 4 // 5),
+            f"titles={len(titles)}, descriptions={len(descriptions)}",
+        )
     validation = subprocess.run(
         [
             "uv",

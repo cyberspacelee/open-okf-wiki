@@ -18,23 +18,36 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("base", type=pathlib.Path)
     parser.add_argument("host", choices=("claude", "codex"), nargs="?", default="codex")
+    parser.add_argument("--scenario", choices=("feign", "killbill"), default="feign")
     args = parser.parse_args()
     if os.environ.get("WIKI_EVAL") != "1":
         parser.error("set WIKI_EVAL=1; this eval spends real model tokens")
     setup = subprocess.run(
-        ["uv", "run", str(EVALS / "setup_java_ws.py"), str(args.base)],
-        check=True,
+        [
+            "uv",
+            "run",
+            str(EVALS / "setup_java_ws.py"),
+            str(args.base),
+            "--scenario",
+            args.scenario,
+        ],
+        check=False,
         capture_output=True,
         text=True,
     )
+    if setup.returncode:
+        sys.stderr.write(setup.stderr or setup.stdout)
+        return setup.returncode
     ws = pathlib.Path(setup.stdout.strip().splitlines()[-1])
     prompt = (
-        f"Workspace: {ws}. Skill: {SKILL}. Read SKILL.md and follow it strictly. "
+        f"Workspace: {ws}. Scenario: {args.scenario}. Skill: {SKILL}. "
+        "Read SKILL.md and follow it strictly. "
         "The multi-source Run has plan:workspace ready. Stay coordinator-only: dispatch "
         "only ready_targets, preserve each task-start attempt token, consume path-only "
         "Handoffs, and repair every rejected State Gate. Use the bounded outline/search/read "
-        "Interface instead of recursive file inventory. Bind one distinct review session, "
-        "finish every per-page review, publish the generation and export wiki/. Do not "
+        "Interface and task packet replay instead of inspecting run internals. Bind one "
+        "distinct review session, finish the Plan review and every Page review, publish "
+        "the generation and export wiki/. Do not "
         "modify the skill."
     )
     log = ws / "host-run.log"
@@ -42,6 +55,7 @@ def main() -> int:
         command = [
             "codex",
             "exec",
+            "--json",
             "--approve-for-me",
             "--skip-git-repo-check",
             "-C",

@@ -5,7 +5,7 @@
       "id": 1,
       "name": "cli-contract-e2e",
       "tier": 1,
-      "prompt": "(no LLM) run_cli_e2e.py exercises multi-source Page DAG readiness, Refresh invalidation, stale attempts, per-page independent review and OKF Publication",
+      "prompt": "(no LLM) run_cli_e2e.py exercises persisted packets, Plan review, multi-source Page DAG readiness, Refresh invalidation, stale attempts, per-page independent review and OKF Publication",
       "expected_output": "passed true; exit 0 on Windows, Linux and macOS"
     },
     {
@@ -17,16 +17,37 @@
       "expected_output": "published thin wiki, 0 validation errors, honest citations",
       "assertions": [
         "Run reached published and every plan/page/review Target is complete",
+        "one digest-bound Plan review approved before any page became ready",
         "Page Target count equals the bounded Page Plan, not repository package count",
         "parent pages became ready only after every child was Machine-confirmed",
         "one bounded agent-facing Source outline exists per Revision",
         "required overview and architecture routing concepts exist",
+        "at least one source-owned concept exists and every source-owned concept has evidence seeds",
         "re-running okf.py validate --published reports 0 errors",
         "sampled cited line ranges exist in the pinned sources (anti-fabrication)",
         "proposal files are well-formed when present; zero files is allowed",
         "every page description is non-empty (routing text)",
-        "each independent approved review is bound to its exact page digest",
+        "each independent approved review is bound to its exact subject digest",
+        "structured host trace has no direct run-state inspection, failed locator reads or CLI help recovery probes",
         "OKF reserved files and lifecycle trust fields conform"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "killbill-finance-multi-repository",
+      "tier": 2,
+      "prompt": "Run run_live_eval.py with --scenario killbill as an opt-in high-cost domain-recall and review-convergence QA run.",
+      "fixture": "setup_java_ws.py --scenario killbill (four fixed Kill Bill revisions)",
+      "expected_output": "published thin wiki that connects billing domains across API, implementation, commons and platform repositories",
+      "assertions": [
+        "Plan distinguishes public API contracts from the implementation repository's internal APIs",
+        "Plan covers catalog plans/phases, subscription versus entitlement, usage/metering, invoice/payment/overdue, durable queues, service lifecycle and plugins",
+        "Plan groups durable concepts instead of creating one page per Maven module or package",
+        "Chinese runs use Chinese page titles and routing descriptions",
+        "review:plan catches domain, boundary and language defects before Page fan-out",
+        "review routes Page Plan-owned metadata defects back to plan:workspace",
+        "a repair review converges without reopening already-resolved issues",
+        "the published architecture and overview connect all four repositories"
       ]
     }
   ]

@@ -99,6 +99,29 @@ def test_thousands_of_files_keep_complete_inventory_and_bounded_outline(tmp_path
     assert outline.count("C.java") == 0
 
 
+def test_many_structural_anchors_fold_instead_of_exceeding_budget(tmp_path):
+    files = []
+    for number in range(60):
+        module = f"module-{number:02d}"
+        for rel in (
+            f"{module}/pom.xml",
+            f"{module}/src/main/java/org/example/m{number}/Main.java",
+            f"{module}/src/test/java/org/example/m{number}/MainTest.java",
+        ):
+            write(tmp_path / rel, "<project/>\n" if rel.endswith("pom.xml") else "class Main {}\n")
+            files.append(rel)
+    write(tmp_path / "pom.xml", "<project/>\n")
+    files.append("pom.xml")
+
+    payload = _index.build_index("many-modules", tmp_path, sorted(files))
+    outline = _index.render_index(payload)
+
+    assert sum(item["files"] for item in payload["directories"]) == len(files)
+    assert len(outline.encode("utf-8")) <= _index.MAX_INDEX_BYTES
+    assert payload["truncated"]
+    assert "inventory complete" in outline
+
+
 def test_scope_digest_changes_only_for_selected_inventory(tmp_path):
     write(tmp_path / "api/inside.py", "VALUE = 1\n")
     write(tmp_path / "web/outside.py", "VALUE = 1\n")
