@@ -9,10 +9,10 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from _files import atomic_json, directory_digest
-from _models import PagePlan, ReviewReport
+from _models import PagePlan, ReviewReport, SourceBrief
 
 VERSION = 2
-CONTRACT = "target-dag"
+CONTRACT = "source-plan-dag"
 KINDS = {"plan", "page", "review"}
 LOCK_TIMEOUT_SEC = 60
 MAX_SEARCH_RESULTS = 20
@@ -139,10 +139,15 @@ def read(root: pathlib.Path) -> dict | None:
         or not isinstance(state.get("targets"), dict)
         or "tasks" in state
     ):
-        raise StateError("legacy or unsupported run state; target-dag is required")
+        raise StateError("legacy or unsupported run state; source-plan-dag is required")
     for target_id, target in state["targets"].items():
         if target.get("id") != target_id or target.get("kind") not in KINDS:
             raise StateError(f"invalid target state: {target_id}")
+        if target["kind"] == "plan" and target.get("spec", {}).get("mode") not in {
+            "source",
+            "workspace",
+        }:
+            raise StateError(f"invalid plan target state: {target_id}")
     return state
 
 
@@ -261,13 +266,34 @@ def start_run(root: pathlib.Path, producer: str, session: str) -> dict:
         _index.write_source_index(
             root, run_id, workspace.sources[revision["name"]], revision
         )
+    plan_scopes = _plan_scopes(workspace, catalogs)
+    code_sources = [
+        source
+        for source in workspace.sources.values()
+        if source.kind in ("git", "files")
+    ]
+    source_plans = []
+    if len(code_sources) > 1:
+        for source in code_sources:
+            target = _target(
+                "plan",
+                source.name,
+                f"drafts/plan/{source.name.lower()}.json",
+                mode="source",
+                source=source.name,
+                scopes=[{"source": source.name, "paths": ["."]}],
+            )
+            _add_target(state, target)
+            source_plans.append(target["id"])
     _add_target(
         state,
         _target(
             "plan",
             "workspace",
             "drafts/plan/workspace.json",
-            scopes=_plan_scopes(workspace, catalogs),
+            dependencies=source_plans,
+            mode="workspace",
+            scopes=plan_scopes,
         ),
     )
     _write(root, state)
@@ -356,7 +382,10 @@ def assert_revisions_current(root: pathlib.Path, state: dict) -> None:
 
 
 def _reference(target: dict) -> pathlib.Path:
-    name = {"plan": "plan.md", "page": "page.md", "review": "review.md"}[target["kind"]]
+    if target["kind"] == "plan":
+        name = "source-plan.md" if target["spec"]["mode"] == "source" else "plan.md"
+    else:
+        name = {"page": "page.md", "review": "review.md"}[target["kind"]]
     return pathlib.Path(__file__).resolve().parent.parent / "references" / name
 
 
@@ -474,13 +503,18 @@ def _dispatch_inputs(root: pathlib.Path, state: dict, target: dict) -> list[dict
                 }
             )
         elif dependency["kind"] in ("plan", "page"):
-            result.append(
-                {
-                    "role": "subject",
-                    "target": dependency["id"],
-                    "path": str(base / dependency["artifact"]),
-                }
+            is_source_brief = (
+                dependency["kind"] == "plan"
+                and dependency["spec"].get("mode") == "source"
             )
+            item = {
+                "role": "source_brief" if is_source_brief else "subject",
+                "target": dependency["id"],
+                "path": str(base / dependency["artifact"]),
+            }
+            if is_source_brief:
+                item["source"] = dependency["spec"]["source"]
+            result.append(item)
     canonical = base / target["artifact"]
     if canonical.is_file():
         result.append(
@@ -642,13 +676,15 @@ def _promote(root: pathlib.Path, state: dict, target: dict) -> pathlib.Path:
     return destination
 
 
-def _plan_targets(plan: PagePlan, plan_scopes: list[dict]) -> dict[str, dict]:
+def _plan_targets(
+    plan: PagePlan, plan_scopes: list[dict], source_plans: list[str]
+) -> dict[str, dict]:
     targets = {
         "review:plan": _target(
             "review",
             "plan",
             "drafts/review/plan.json",
-            dependencies=["plan:workspace"],
+            dependencies=["plan:workspace", *source_plans],
             subject="plan:workspace",
             scopes=plan_scopes,
         )
@@ -713,11 +749,18 @@ def _materialize_plan(root: pathlib.Path, state: dict, plan: PagePlan) -> None:
     import _validate
 
     old = state["targets"]
-    planned = _plan_targets(plan, old["plan:workspace"]["spec"]["scopes"])
-    desired = {"plan:workspace": old["plan:workspace"], **planned}
+    planning = {
+        target_id: target
+        for target_id, target in old.items()
+        if target["kind"] == "plan"
+    }
+    workspace_plan = planning["plan:workspace"]
+    source_plans = list(workspace_plan["depends_on"])
+    planned = _plan_targets(plan, workspace_plan["spec"]["scopes"], source_plans)
+    desired = {**planning, **planned}
     changed = set(old).symmetric_difference(desired)
     metadata_pages = set()
-    for target_id in set(old).intersection(desired) - {"plan:workspace"}:
+    for target_id in set(old).intersection(desired) - set(planning):
         previous = old[target_id]
         target = desired[target_id]
         if _target_definition(previous) == _target_definition(target):
@@ -742,7 +785,7 @@ def _materialize_plan(root: pathlib.Path, state: dict, plan: PagePlan) -> None:
     for target_id in set(old) - set(desired):
         _discard_attempt(root, state, old[target_id])
         (base / old[target_id]["artifact"]).unlink(missing_ok=True)
-    reconciled = {"plan:workspace": old["plan:workspace"]}
+    reconciled = dict(planning)
     for target_id, target in planned.items():
         previous = old.get(target_id)
         if (
@@ -853,7 +896,16 @@ def _finish_review(
     if report.verdict == "changes_requested":
         rounds = state["review_rounds"].get(subject, 0) + 1
         state["review_rounds"][subject] = rounds
-        if any(issue.reopen_target == "plan:workspace" for issue in report.issues):
+        plan_reopens = {
+            issue.reopen_target
+            for issue in report.issues
+            if issue.reopen_target.startswith("plan:")
+        }
+        if plan_reopens:
+            for target_id in plan_reopens - {"plan:workspace"}:
+                source_plan = state["targets"][target_id]
+                _discard_attempt(root, state, source_plan)
+                _reset_target(source_plan)
             affected = {target["id"]} if subject.startswith("page:") else set()
             _reopen_plan(root, state, affected)
         else:
@@ -932,9 +984,12 @@ def task_complete(root: pathlib.Path, target_id: str, attempt: str) -> dict:
     report = None
     plan = None
     if target["kind"] == "plan":
-        plan = PagePlan.model_validate_json(
+        model = SourceBrief if target["spec"]["mode"] == "source" else PagePlan
+        value = model.model_validate_json(
             attempt_path.read_text(encoding="utf-8"), strict=True
         )
+        if isinstance(value, PagePlan):
+            plan = value
     elif target["kind"] == "review":
         report = ReviewReport.model_validate_json(
             attempt_path.read_text(encoding="utf-8"), strict=True
@@ -1071,6 +1126,14 @@ def _inside_roots(path: str, roots: list[str]) -> bool:
 
 
 def _navigation_limits(target: dict) -> tuple[int, int]:
+    if target["kind"] == "plan" and target["spec"].get("mode") == "source":
+        return 12, 64 * 1024
+    if (
+        target["kind"] == "plan"
+        and target["spec"].get("mode") == "workspace"
+        and target["depends_on"]
+    ):
+        return 32, 128 * 1024
     base_calls, base_bytes, source_calls, source_bytes, max_calls, max_bytes = (
         NAVIGATION_LIMITS[target["kind"]]
     )
@@ -1304,6 +1367,10 @@ def refresh_source(root: pathlib.Path, name: str) -> dict:
                 if item["source"] == name
             ]
         }
+        source_plan = state["targets"].get(f"plan:{name}")
+        if source_plan is not None and source_plan["spec"].get("mode") == "source":
+            _discard_attempt(root, state, source_plan)
+            _reset_target(source_plan)
         _reopen_plan(root, state, affected)
         state["status"] = "active" if state["status"] != "paused" else "paused"
         state.pop("approved_digest", None)

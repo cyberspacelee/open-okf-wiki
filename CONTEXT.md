@@ -70,10 +70,16 @@ One registered Source paired with relative paths that a planned page may
 investigate and cite; a page carries one or more entries as `scopes`.
 _Avoid_: Package task, file inventory
 
+**Source Brief**:
+A bounded, evidence-seeded account of one Git/files Source's roles, candidate
+lifecycles, cross-Source counterpart queries and gaps, produced before
+Workspace planning when multiple code Sources exist.
+_Avoid_: Page Plan shard, Source Wiki, file inventory
+
 **Page Plan**:
 The bounded Workspace decision that assigns concept paths, owners, routing
 metadata, Page Scopes, evidence seeds and child dependencies.
-_Avoid_: Suggested outline, plan shard
+_Avoid_: Suggested outline, Source Brief
 
 **Plan Review**:
 Independent verification of domain recall, concept boundaries and routing,

@@ -1,12 +1,25 @@
 # Plan
 
-Read contract.md, then build one bounded Workspace Page Plan. Use the packet's
-`outline`, `search` and `read` commands to navigate each Pin. Start at build
-modules and source sets, descend into package clusters only when the parent
-view cannot support a page decision. Structure is routing evidence, not
-semantic importance. `search` accepts one literal query and returns a Locator;
-expand its line range and pass it directly to `read`. Prefer `--path` before
-broad searches. Do not open the first 40 lines of many files when only their
+Read contract.md, then build the one bounded Workspace Page Plan. This Target
+is the only writer of page paths, owners, scopes and dependencies.
+
+When the packet has `source_brief` inputs, read every Brief before navigating
+Pins. Account for every reported role, concept, connection and gap; merge
+duplicate lifecycle candidates across Sources. Follow connection counterpart
+queries and reopen evidence on both sides before planning a cross-Source
+boundary. Briefs are routing inputs, not provenance. Investigate omissions and
+conflicts rather than repeating each Source scout's complete pass.
+
+When there are no `source_brief` inputs, perform the Source domain pass below
+directly. Catalog Sources are always inspected from their bounded
+`catalog_index` inputs because they do not have Source scouts.
+
+Use `outline`, `search` and `read` to navigate Pins. Start at build modules and
+source sets, descend into package clusters only when the parent view cannot
+support a page decision. Structure is routing evidence, not semantic
+importance. `search` accepts one literal query and returns a Locator; expand
+its line range and pass it directly to `read`. Prefer `--path` before broad
+searches. Do not open the first 40 lines of many files when only their
 declarations are relevant.
 
 Before choosing pages, complete this domain pass:

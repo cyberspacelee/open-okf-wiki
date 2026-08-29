@@ -1,4 +1,5 @@
 import pathlib
+import re
 from datetime import date, datetime
 from typing import Annotated, Literal
 
@@ -24,6 +25,13 @@ PagePath = Annotated[
 ]
 ScopePath = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1024)
+]
+SourceRole = Literal[
+    "business-domain-owner",
+    "public-contract",
+    "shared-infrastructure",
+    "extension-surface",
+    "evidence-only-dependency",
 ]
 _WINDOWS_RESERVED = {
     "CON",
@@ -97,20 +105,70 @@ class PageScope(BaseModel):
     @field_validator("paths")
     @classmethod
     def normalized_relative_paths(cls, values: list[str]) -> list[str]:
-        for value in values:
-            pure = pathlib.PurePosixPath(value)
-            windows = pathlib.PureWindowsPath(value)
-            if value != "." and (
-                "\\" in value
-                or pure.is_absolute()
-                or bool(windows.drive)
-                or ".." in pure.parts
-                or pure.as_posix() != value
-                or value.endswith("/")
-                or value.startswith("./")
-            ):
-                raise ValueError("scope paths must be normalized relative POSIX paths")
-        return values
+        return _normalized_scope_paths(values)
+
+
+def _normalized_scope_paths(values: list[str]) -> list[str]:
+    for value in values:
+        pure = pathlib.PurePosixPath(value)
+        windows = pathlib.PureWindowsPath(value)
+        if value != "." and (
+            "\\" in value
+            or pure.is_absolute()
+            or bool(windows.drive)
+            or ".." in pure.parts
+            or pure.as_posix() != value
+            or value.endswith("/")
+            or value.startswith("./")
+        ):
+            raise ValueError("scope paths must be normalized relative POSIX paths")
+    return values
+
+
+class SourceConcept(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    name: ShortText
+    description: ClaimText
+    paths: list[ScopePath] = Field(min_length=1, max_length=16)
+    evidence_seeds: list[ScopePath] = Field(min_length=1, max_length=3)
+
+    @field_validator("paths", mode="after")
+    @classmethod
+    def normalized_relative_paths(cls, values: list[str]) -> list[str]:
+        return _normalized_scope_paths(values)
+
+
+class SourceConnection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    name: ShortText
+    description: ClaimText
+    evidence_seeds: list[ScopePath] = Field(min_length=1, max_length=3)
+    counterpart_sources: list[ShortText] = Field(min_length=1, max_length=8)
+    counterpart_queries: list[ShortText] = Field(min_length=1, max_length=8)
+
+
+class SourceBrief(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source: ShortText
+    roles: list[SourceRole] = Field(min_length=1, max_length=5)
+    concepts: list[SourceConcept] = Field(default_factory=list, max_length=32)
+    connections: list[SourceConnection] = Field(default_factory=list, max_length=32)
+    gaps: list[ClaimText] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def unique_items(self):
+        if len(self.roles) != len(set(self.roles)):
+            raise ValueError("source roles must be unique")
+        for label, values in (
+            ("concept", [item.name for item in self.concepts]),
+            ("connection", [item.name for item in self.connections]),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(f"{label} names must be unique")
+        return self
 
 
 class PagePlanEntry(BaseModel):
@@ -224,10 +282,19 @@ class ReviewReport(BaseModel):
             raise ValueError("approved review must not contain issues")
         if self.verdict == "changes_requested" and not self.issues:
             raise ValueError("changes_requested review must contain issues")
-        allowed = {"plan:workspace"}
-        if self.subject.startswith("page:"):
-            allowed.add(self.subject)
-        if any(issue.reopen_target not in allowed for issue in self.issues):
+        if self.subject == "plan:workspace":
+            invalid = any(
+                not re.fullmatch(
+                    r"plan:(workspace|[A-Za-z0-9][A-Za-z0-9-]*)", issue.reopen_target
+                )
+                for issue in self.issues
+            )
+        else:
+            invalid = any(
+                issue.reopen_target not in {"plan:workspace", self.subject}
+                for issue in self.issues
+            )
+        if invalid:
             raise ValueError("review issue reopens an invalid target")
         return self
 

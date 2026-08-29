@@ -19,6 +19,11 @@ For `plan:workspace`, independently test whether the Plan:
 - records evidence gaps honestly and writes titles and descriptions in the
   packet language.
 
+Read every `source_brief` input. Route a Source-specific role, concept or local
+contract omission to that Brief's `plan:<source>` Target. Route cross-Source
+reconciliation, page admission, metadata or DAG defects to `plan:workspace`.
+The State Gate rejects unknown scout targets.
+
 Use bounded navigation to challenge omissions, not to repeat the entire Plan
 worker. Approve only when missing domain work would not materially change the
 page set or routing DAG.
@@ -39,8 +44,8 @@ Ownership determines repair routing:
 | `page:<path>` | body, headings, links, sources, citations, coverage, Page Gaps |
 
 Never reopen a page for a Plan-owned defect: the State Gate will restore Plan
-metadata. A Plan review may reopen only `plan:workspace`; a Page review may
-reopen its own subject or `plan:workspace`.
+metadata. A Plan review may reopen `plan:workspace` or an exact dispatched
+`plan:<source>`; a Page review may reopen its own subject or `plan:workspace`.
 
 ## Follow-up
 

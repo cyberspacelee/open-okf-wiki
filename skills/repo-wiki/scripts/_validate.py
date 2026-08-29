@@ -14,6 +14,7 @@ from _models import (
     ConceptFrontmatter,
     PagePlan,
     ReviewReport,
+    SourceBrief,
     model_errors,
 )
 from pydantic import ValidationError
@@ -242,9 +243,17 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[Issue]:
         ]
     kind = task["kind"]
     if kind == "plan":
-        value, issues = _model_issues(path, PagePlan)
-        if value:
+        mode = task["spec"].get("mode")
+        model = SourceBrief if mode == "source" else PagePlan
+        value, issues = _model_issues(path, model)
+        if value and mode == "source":
+            issues.extend(_validate_source_brief(root, state, task, value, path))
+        elif value and mode == "workspace":
             issues.extend(_validate_page_plan(root, state, value, path))
+        elif mode not in {"source", "workspace"}:
+            issues.append(
+                issue("error", "plan-mode-invalid", str(path), f"unknown mode {mode!r}")
+            )
         return issues
     if kind == "page":
         return _validate_page_target(root, state, task, path)
@@ -266,6 +275,19 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[Issue]:
                         "review does not bind the dispatched subject digest",
                     )
                 )
+            for report_issue in value.issues:
+                reopened = state["targets"].get(report_issue.reopen_target)
+                if reopened is None or (
+                    subject == "plan:workspace" and reopened["kind"] != "plan"
+                ):
+                    issues.append(
+                        issue(
+                            "error",
+                            "review-reopen-target-invalid",
+                            str(path),
+                            report_issue.reopen_target,
+                        )
+                    )
         return issues
     return [issue("error", "target-kind-unknown", str(path), f"unknown kind {kind}")]
 
@@ -277,6 +299,126 @@ def _path_in_scope(path: str, roots: list[str]) -> bool:
         or path.startswith(root.rstrip("/") + "/")
         for root in roots
     )
+
+
+def _validate_source_brief(
+    root: pathlib.Path,
+    state: dict,
+    task: dict,
+    brief: SourceBrief,
+    path: pathlib.Path,
+) -> list[Issue]:
+    import _workspace
+
+    expected = task["spec"].get("source")
+    issues = []
+    if brief.source != expected:
+        issues.append(
+            issue(
+                "error",
+                "source-brief-owner-invalid",
+                str(path),
+                f"expected {expected}, got {brief.source}",
+            )
+        )
+        return issues
+    workspace = _workspace.load(root)
+    source = workspace.sources.get(brief.source)
+    if source is None or source.kind not in ("git", "files"):
+        return [
+            issue(
+                "error",
+                "source-brief-owner-invalid",
+                str(path),
+                f"{brief.source} is not a Git/files Source",
+            )
+        ]
+    pin = _workspace.pin_dir(root, state["run_id"], brief.source)
+    target_roots = [
+        item
+        for scope in task["spec"].get("scopes", [])
+        if scope["source"] == brief.source
+        for item in scope["paths"]
+    ]
+    for concept in brief.concepts:
+        for concept_path in concept.paths:
+            candidate = pin if concept_path == "." else pin / concept_path
+            if not _path_in_scope(concept_path, target_roots) or not candidate.exists():
+                issues.append(
+                    issue(
+                        "error",
+                        "source-brief-path-invalid",
+                        str(path),
+                        f"{brief.source}/{concept_path}",
+                    )
+                )
+        issues.extend(
+            _source_brief_evidence_issues(
+                root,
+                state,
+                path,
+                brief.source,
+                concept.paths,
+                concept.evidence_seeds,
+            )
+        )
+    known = {item["name"] for item in [*state["revisions"], *state["catalogs"]]}
+    for connection in brief.connections:
+        invalid = set(connection.counterpart_sources) - (known - {brief.source})
+        if invalid:
+            issues.append(
+                issue(
+                    "error",
+                    "source-brief-counterpart-invalid",
+                    str(path),
+                    ", ".join(sorted(invalid)),
+                )
+            )
+        issues.extend(
+            _source_brief_evidence_issues(
+                root,
+                state,
+                path,
+                brief.source,
+                target_roots,
+                connection.evidence_seeds,
+            )
+        )
+    return issues
+
+
+def _source_brief_evidence_issues(
+    root: pathlib.Path,
+    state: dict,
+    artifact: pathlib.Path,
+    source: str,
+    roots: list[str],
+    resources: list[str],
+) -> list[Issue]:
+    issues = []
+    for resource in resources:
+        parsed = parse_resource(resource)
+        resolved = _resolve_resource(root, state, resource)
+        if parsed is None or resolved is None:
+            issues.append(
+                issue(
+                    "error", "source-brief-evidence-unresolved", str(artifact), resource
+                )
+            )
+            continue
+        source_name, rel, _, _ = parsed
+        if source_name != source or not _path_in_scope(rel, roots):
+            issues.append(
+                issue(
+                    "error",
+                    "source-brief-evidence-outside-scope",
+                    str(artifact),
+                    resource,
+                )
+            )
+            continue
+        issues.extend(_check_range(*resolved, resource))
+    return issues
 
 
 def _validate_page_plan(

@@ -50,16 +50,21 @@ Run state or citations.
 `run start` records each Git/files Source Revision, materializes its Pin and
 captures selected Catalogs. Workers read Pins and captured Catalog shards, not
 live Sources or databases. `source refresh --name` may reopen the current
-active, paused or approved Run: it replaces one Pin and Index, then
-invalidates pages whose scopes use that Source and their dependent parent
-pages. Unrelated branches of the Page DAG remain complete.
+active, paused or approved Run: it replaces one Pin and Index, reopens that
+Source's planning scout and Workspace synthesis, then invalidates pages whose
+scopes use that Source and their dependent parent pages. Other scouts and
+unrelated Page DAG branches remain complete.
 
 ## Target loop
 
 Capture and Index are deterministic setup; Publication is deterministic
 finalization. Agent work has only three Target kinds:
 
-    plan:workspace -> review:plan -> page:<path> -> review:<path>
+    plan:<source> -> plan:workspace -> review:plan -> page:<path> -> review:<path>
+
+`plan:<source>` exists only when a Run has more than one Git/files Source; all
+such scouts enter the Ready Set together. A single-Source Run starts directly
+at `plan:workspace`. Catalog Sources have no scout.
 
 There is no global phase cursor. `run status --json` returns the ready set:
 every pending or failed Target whose dependencies are satisfied. Independent
@@ -94,19 +99,27 @@ artifact bodies.
 
 ## Plan and pages
 
-`plan:workspace` is one bounded planning Target. It navigates the Index as
-`Source -> build module -> source set -> package cluster`, then writes the
-smallest Page Plan that passes the Grep Test. Package clusters are navigation
-scopes, not automatic Targets; the plan need not classify every file or
-package. Every source-owned Git/files concept carries one to three opened
-evidence seeds inside its Page Scope so later workers can reopen the code that
-justified the boundary.
+In a multi-code-Source Run, each `plan:<source>` worker navigates only its Pin
+as `Source -> build module -> source set -> package cluster` and writes one
+bounded Source Brief: Source roles, lifecycle/invariant candidates, local
+evidence, cross-Source counterpart queries and gaps. Scouts do not choose page
+paths or dependencies. Their independent Targets may run concurrently.
 
-The State Gate validates the complete Page DAG before creating page Targets.
-An independent `review:plan` first audits domain recall, concept boundaries,
-cross-Source connections, routing ownership and output language. No page is
-ready before that review is approved. Leaf pages research and write directly
-from their `scopes`. A parent page
+`plan:workspace` waits for every Source Brief, then becomes the only Page Plan
+writer. It merges duplicate concepts, follows cross-Source queries, reopens
+both sides of important boundaries and incorporates Catalog inputs. In a
+single-code-Source Run it performs the Source investigation itself. It writes
+the smallest Page Plan that passes the Grep Test; package clusters are
+navigation scopes, not automatic Targets. Every source-owned Git/files concept
+carries one to three opened evidence seeds inside its Page Scope.
+
+The State Gate validates each Source Brief and the complete Page DAG before
+creating page Targets. An independent `review:plan` receives the Page Plan and
+all Briefs, then audits domain recall, concept boundaries, cross-Source
+connections, routing ownership and output language. It routes Source-specific
+recall defects to `plan:<source>` and synthesis or DAG defects to
+`plan:workspace`. No page is ready before that review is approved. Leaf pages
+research and write directly from their `scopes`. A parent page
 becomes ready only after every child is Machine-confirmed, and receives those
 approved child pages as inputs. Each page Target still reopens Pin or Catalog
 evidence for every load-bearing claim; child pages are synthesis inputs, not
@@ -124,11 +137,11 @@ Candidate pages or review reports. Every content Target runs in a worker
 session. If workers are unavailable, use `okf run pause`; resume with
 `okf run resume`.
 
-Long-form Markdown stays on disk. Structured plan and review decisions are
-bounded JSON Attempt Artifacts. Dispatch packets contain typed paths, commands
-and budgets, never copied file bodies or whole-repository JSON. Workers never
-inspect `state.json`, other attempts or Candidate directories to reconstruct
-context.
+Long-form Markdown stays on disk. Structured Source Brief, plan and review
+decisions are bounded JSON Attempt Artifacts. Dispatch packets contain typed
+paths, commands and budgets, never copied file bodies or whole-repository JSON.
+Workers never inspect `state.json`, other attempts or Candidate directories to
+reconstruct context.
 
 ## Review and Publication
 

@@ -47,6 +47,15 @@ Cite only files actually opened. Plans and Candidate pages are routing inputs,
 not provenance. Unmaterialized LFS pointers and binary files are not evidence.
 Database concepts use credential-free resources from the captured Catalog.
 
+## Source Briefs
+
+When a Workspace has multiple Git/files Sources, one Source planning Target
+owns each Source Brief. A Brief accounts for that Source's roles, bounded
+lifecycle or invariant candidates, local evidence, cross-Source counterpart
+queries and gaps. It never owns Wiki pages. The Workspace planning Target is
+the single writer of the Page Plan and must reopen evidence before adopting a
+Brief decision.
+
 ## Citations and metadata
 
 Every load-bearing claim carries a footnote id. The same id appears exactly
@@ -100,9 +109,10 @@ ready-set calculation, retries and invalidation belong to the CLI, not the
 coordinator.
 
 The packet is persisted at `packet_path` and replayed only through `task
-packet`. Its `inputs` are typed: `source_index`, `catalog_index`, `subject`,
-`dependency_page`, `previous_output` or `previous_review`. Read only roles
-required by the Target; never inspect run internals to discover more inputs.
+packet`. Its `inputs` are typed: `source_index`, `source_brief`,
+`catalog_index`, `subject`, `dependency_page`, `previous_output` or
+`previous_review`. Read only roles required by the Target; never inspect run
+internals to discover more inputs.
 
 ## Language
 

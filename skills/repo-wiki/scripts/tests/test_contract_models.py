@@ -1,5 +1,5 @@
 import pytest
-from _models import PagePlan, PagePlanEntry, PageScope, ReviewReport
+from _models import PagePlan, PagePlanEntry, PageScope, ReviewReport, SourceBrief
 from pydantic import ValidationError
 
 
@@ -20,6 +20,64 @@ def page(path: str, *, depends_on=None, **overrides) -> dict:
         "depends_on": depends_on or [],
         **overrides,
     }
+
+
+def source_brief(**overrides) -> dict:
+    return {
+        "source": "SourceA",
+        "roles": ["business-domain-owner"],
+        "concepts": [
+            {
+                "name": "request-lifecycle",
+                "description": "Requests move through validated lifecycle states.",
+                "paths": ["src/core"],
+                "evidence_seeds": ["SourceA/src/core/Request.java#L1-L2"],
+            }
+        ],
+        "connections": [
+            {
+                "name": "public-api",
+                "description": "The public API is consumed by SourceB.",
+                "evidence_seeds": ["SourceA/src/core/RequestApi.java#L1-L2"],
+                "counterpart_sources": ["SourceB"],
+                "counterpart_queries": ["RequestApi"],
+            }
+        ],
+        "gaps": [],
+        **overrides,
+    }
+
+
+def test_source_brief_is_bounded_strict_and_allows_evidence_only_sources():
+    brief = SourceBrief.model_validate(source_brief())
+    assert brief.source == "SourceA"
+    assert brief.concepts[0].paths == ["src/core"]
+
+    evidence_only = source_brief(
+        roles=["evidence-only-dependency"], concepts=[], connections=[]
+    )
+    assert SourceBrief.model_validate(evidence_only).concepts == []
+
+    with pytest.raises(ValidationError):
+        SourceBrief.model_validate(source_brief(extra="forbidden"))
+    with pytest.raises(ValidationError):
+        SourceBrief.model_validate(source_brief(roles=["unknown-role"]))
+    with pytest.raises(ValidationError, match="roles must be unique"):
+        SourceBrief.model_validate(
+            source_brief(roles=["public-contract", "public-contract"])
+        )
+    with pytest.raises(ValidationError, match="concept names must be unique"):
+        payload = source_brief()
+        payload["concepts"] *= 2
+        SourceBrief.model_validate(payload)
+
+
+@pytest.mark.parametrize("path", ["../src", "./src", "src/", r"src\core"])
+def test_source_brief_rejects_non_normalized_concept_paths(path):
+    payload = source_brief()
+    payload["concepts"][0]["paths"] = [path]
+    with pytest.raises(ValidationError):
+        SourceBrief.model_validate(payload)
 
 
 @pytest.mark.parametrize("path", [".", "src", "src/main/java", "build.gradle.kts"])
@@ -206,7 +264,24 @@ def test_review_plan_reopen_may_target_the_plan_owner():
     assert report.issues[0].reopen_target == "plan:workspace"
 
 
-def test_plan_review_may_only_reopen_the_plan():
+def test_plan_review_may_reopen_workspace_or_source_plan_but_not_pages():
+    report = ReviewReport.model_validate(
+        {
+            "subject": "plan:workspace",
+            "subject_digest": "c" * 64,
+            "verdict": "changes_requested",
+            "issues": [
+                {
+                    "category": "domain-coverage",
+                    "claim": "Usage is missing from the API brief.",
+                    "resolution": "Repair the API Source Brief.",
+                    "reopen_target": "plan:API",
+                }
+            ],
+        }
+    )
+    assert report.issues[0].reopen_target == "plan:API"
+
     with pytest.raises(ValidationError, match="invalid target"):
         ReviewReport.model_validate(
             {

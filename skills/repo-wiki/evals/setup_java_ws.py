@@ -104,8 +104,11 @@ def main() -> int:
         item["id"] if isinstance(item, dict) else item
         for item in status.get("ready_targets", [])
     }
-    if ready != {"plan:workspace"}:
-        raise RuntimeError(f"live fixture must start with one planner: {status}")
+    expected = {f"plan:{name}" for name in sources}
+    if ready != expected:
+        raise RuntimeError(
+            f"live fixture must start with one scout per Source: {status}"
+        )
     indexes = sorted(
         pathlib.Path(status["run_dir"]).joinpath("drafts/index").glob("*.md")
     )

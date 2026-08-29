@@ -69,6 +69,10 @@ def ready_ids(status: dict) -> set[str]:
 
 def complete(cwd: pathlib.Path, target: str, content: str) -> dict:
     packet = run(cwd, "task", "start", target)
+    return finish(cwd, target, packet, content)
+
+
+def finish(cwd: pathlib.Path, target: str, packet: dict, content: str) -> dict:
     if not all(key in packet for key in ("attempt", "artifact", "complete_command")):
         raise RuntimeError(f"incomplete dispatch packet for {target}: {sorted(packet)}")
     replayed = run(cwd, "task", "packet", target, "--attempt", packet["attempt"])
@@ -86,6 +90,37 @@ def complete(cwd: pathlib.Path, target: str, content: str) -> dict:
     if not result.get("ok"):
         raise RuntimeError(f"target gate rejected {target}: {result}")
     return result
+
+
+def brief(source_name: str, counterpart: str) -> str:
+    return json.dumps(
+        {
+            "source": source_name,
+            "roles": ["public-contract"],
+            "concepts": [
+                {
+                    "name": "application-entry-point",
+                    "description": "The application exposes its source-owned entry point.",
+                    "paths": ["src/main/java/example/App.java"],
+                    "evidence_seeds": [
+                        f"{source_name}/src/main/java/example/App.java#L1-L2"
+                    ],
+                }
+            ],
+            "connections": [
+                {
+                    "name": "application-contract",
+                    "description": "The application contract crosses Source boundaries.",
+                    "evidence_seeds": [
+                        f"{source_name}/src/main/java/example/App.java#L1-L2"
+                    ],
+                    "counterpart_sources": [counterpart],
+                    "counterpart_queries": ["class App"],
+                }
+            ],
+            "gaps": [],
+        }
+    )
 
 
 def page(title: str, refs: list[tuple[str, str]], links: str) -> str:
@@ -153,21 +188,21 @@ def evaluate(base: pathlib.Path) -> dict:
         "--session",
         "writer-1",
     )
-    if ready_ids(started) != {"plan:workspace"}:
-        raise RuntimeError(f"run must start with only the planner ready: {started}")
+    if ready_ids(started) != {"plan:API", "plan:WebUI"}:
+        raise RuntimeError(f"run must start with Source scouts ready: {started}")
 
-    stale = run(ws, "task", "start", "plan:workspace")
+    stale = run(ws, "task", "start", "plan:API")
     search = run(
         ws,
         "task",
         "search",
-        "plan:workspace",
+        "plan:API",
         "public class",
         "--source",
         "API",
     )
     locator = search.get("results", [{}])[0].get("locator")
-    if not locator or run(ws, "task", "read", "plan:workspace", locator)[
+    if not locator or run(ws, "task", "read", "plan:API", locator)[
         "locator"
     ] != locator.replace("#L2", "#L2-L2"):
         raise RuntimeError(f"search/read locator handoff failed: {search}")
@@ -182,14 +217,19 @@ def evaluate(base: pathlib.Path) -> dict:
         ws,
         "task",
         "complete",
-        "plan:workspace",
+        "plan:API",
         "--attempt",
         stale["attempt"],
         json_output=True,
         check=False,
     )
     if stale_result.returncode == 0:
-        raise RuntimeError("refresh must reject the stale planner attempt")
+        raise RuntimeError("refresh must reject the stale Source scout attempt")
+
+    complete(ws, "plan:API", brief("API", "WebUI"))
+    complete(ws, "plan:WebUI", brief("WebUI", "API"))
+    if ready_ids(run(ws, "run", "status")) != {"plan:workspace"}:
+        raise RuntimeError("workspace planner became ready before all Source Briefs")
 
     plan = {
         "pages": [
@@ -249,7 +289,19 @@ def evaluate(base: pathlib.Path) -> dict:
         ],
         "gaps": [],
     }
-    complete(ws, "plan:workspace", json.dumps(plan))
+    workspace_packet = run(ws, "task", "start", "plan:workspace")
+    brief_inputs = {
+        (item.get("target"), item.get("source"))
+        for item in workspace_packet["inputs"]
+        if item["role"] == "source_brief"
+    }
+    if brief_inputs != {("plan:API", "API"), ("plan:WebUI", "WebUI")}:
+        raise RuntimeError(
+            f"workspace planner did not receive both briefs: {brief_inputs}"
+        )
+    if workspace_packet["navigation_budget"] != {"calls": 32, "bytes": 128 * 1024}:
+        raise RuntimeError("workspace synthesis budget changed")
+    finish(ws, "plan:workspace", workspace_packet, json.dumps(plan))
     review = run(
         ws,
         "review",

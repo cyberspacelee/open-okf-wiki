@@ -41,8 +41,57 @@ def workspace(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
 
 def start(root: pathlib.Path) -> pathlib.Path:
     _state.start_run(root, "repo-wiki/test", "producer-session")
+    complete_source_plans(root)
     state = _state.read(root)
     return _state.run_dir(root, state["run_id"])
+
+
+def source_brief(source: str, counterparts: list[str] | None = None) -> dict:
+    counterparts = counterparts or []
+    return {
+        "source": source,
+        "roles": ["business-domain-owner"],
+        "concepts": [
+            {
+                "name": "answer-lifecycle",
+                "description": "The answer follows one implementation lifecycle.",
+                "paths": ["app.py"],
+                "evidence_seeds": [f"{source}/app.py#L1-L2"],
+            }
+        ],
+        "connections": (
+            [
+                {
+                    "name": "answer-contract",
+                    "description": "The answer contract is shared with another Source.",
+                    "evidence_seeds": [f"{source}/app.py#L1-L2"],
+                    "counterpart_sources": counterparts,
+                    "counterpart_queries": ["answer"],
+                }
+            ]
+            if counterparts
+            else []
+        ),
+        "gaps": [],
+    }
+
+
+def complete_source_plans(root: pathlib.Path) -> None:
+    state = _state.read(root)
+    source_targets = [
+        target
+        for target in state["targets"].values()
+        if target["kind"] == "plan" and target["spec"].get("mode") == "source"
+    ]
+    names = [target["spec"]["source"] for target in source_targets]
+    for target in source_targets:
+        counterparts = [name for name in names if name != target["spec"]["source"]]
+        packet = _state.task_start(root, target["id"])
+        write(
+            pathlib.Path(packet["artifact"]),
+            json.dumps(source_brief(target["spec"]["source"], counterparts)),
+        )
+        assert _state.task_complete(root, target["id"], packet["attempt"])["ok"]
 
 
 def plan_page(
@@ -195,12 +244,139 @@ def test_run_start_exposes_only_workspace_plan(tmp_path):
 
     result = _state.start_run(root, "repo-wiki/test", "producer-session")
 
-    assert result["contract"] == "target-dag"
+    assert result["contract"] == "source-plan-dag"
     assert result["ready_targets"] == ["plan:workspace"]
     assert result["targets"] == [
         {"id": "plan:workspace", "kind": "plan", "status": "pending"}
     ]
     assert result["next_actions"] == ["task start plan:workspace"]
+
+
+def test_legacy_run_contract_is_rejected_without_migration(tmp_path):
+    root, _ = workspace(tmp_path)
+    started = _state.start_run(root, "repo-wiki/test", "producer-session")
+    path = pathlib.Path(started["run_dir"]) / "state.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["contract"] = "target-dag"
+    write(path, json.dumps(state))
+
+    with pytest.raises(_state.StateError, match="source-plan-dag is required"):
+        _state.read(root)
+
+
+def test_multi_source_run_fans_out_briefs_then_fans_in_workspace_plan(tmp_path):
+    root, _ = workspace(tmp_path)
+    other = git_source(root / "other")
+    _workspace.add_git_link(root, str(other), "other")
+
+    started = _state.start_run(root, "repo-wiki/test", "producer-session")
+
+    assert set(started["ready_targets"]) == {"plan:src", "plan:other"}
+    for name, counterpart in (("src", "other"), ("other", "src")):
+        packet = _state.task_start(root, f"plan:{name}")
+        assert packet["reference"].endswith("/references/source-plan.md")
+        assert packet["navigation_budget"] == {"calls": 12, "bytes": 64 * 1024}
+        assert {
+            item.get("source")
+            for item in packet["inputs"]
+            if item["role"] == "source_index"
+        } == {name}
+        with pytest.raises(_state.StateError, match="outside target scope"):
+            _state.task_read(root, f"plan:{name}", f"{counterpart}/app.py#L1-L2")
+        write(
+            pathlib.Path(packet["artifact"]),
+            json.dumps(source_brief(name, [counterpart])),
+        )
+        assert _state.task_complete(root, f"plan:{name}", packet["attempt"])["ok"]
+
+    assert _state.status(root)["ready_targets"] == ["plan:workspace"]
+    packet = _state.task_start(root, "plan:workspace")
+    brief_inputs = [item for item in packet["inputs"] if item["role"] == "source_brief"]
+    assert {(item["target"], item["source"]) for item in brief_inputs} == {
+        ("plan:src", "src"),
+        ("plan:other", "other"),
+    }
+    assert packet["navigation_budget"] == {"calls": 32, "bytes": 128 * 1024}
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (lambda payload: payload.update(source="other"), "source-brief-owner-invalid"),
+        (
+            lambda payload: payload["concepts"][0].update(paths=["missing.py"]),
+            "source-brief-path-invalid",
+        ),
+        (
+            lambda payload: payload["connections"][0].update(
+                counterpart_sources=["src"]
+            ),
+            "source-brief-counterpart-invalid",
+        ),
+    ],
+)
+def test_source_brief_gate_binds_owner_paths_evidence_and_counterparts(
+    tmp_path, mutate, expected
+):
+    root, _ = workspace(tmp_path)
+    other = git_source(root / "other")
+    _workspace.add_git_link(root, str(other), "other")
+    _state.start_run(root, "repo-wiki/test", "producer-session")
+    packet = _state.task_start(root, "plan:src")
+    payload = source_brief("src", ["other"])
+    mutate(payload)
+    write(pathlib.Path(packet["artifact"]), json.dumps(payload))
+
+    result = _state.task_complete(root, "plan:src", packet["attempt"])
+
+    assert not result["ok"]
+    assert expected in {item["code"] for item in result["issues"]}
+
+
+def test_source_brief_counterparts_are_bound_to_run_inputs(tmp_path):
+    root, _ = workspace(tmp_path)
+    other = git_source(root / "other")
+    _workspace.add_git_link(root, str(other), "other")
+    _state.start_run(root, "repo-wiki/test", "producer-session")
+    git_source(root / "late")
+    config_path = root / "workspace.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["sources"].append(
+        {"name": "late", "kind": "git", "path": "late", "origin": "late"}
+    )
+    write(config_path, json.dumps(config))
+
+    _, result = submit(root, "plan:src", json.dumps(source_brief("src", ["late"])))
+
+    assert not result["ok"]
+    assert "source-brief-counterpart-invalid" in {
+        item["code"] for item in result["issues"]
+    }
+
+
+def test_plan_review_routes_source_recall_repair_to_only_that_brief(tmp_path):
+    root, _ = workspace(tmp_path)
+    other = git_source(root / "other")
+    _workspace.add_git_link(root, str(other), "other")
+    start(root)
+    assert submit_plan(root, root_plan())[1]["ok"]
+    before = _state.read(root)["targets"]["plan:other"]["output_digest"]
+
+    packet, changed = request_changes(root, "review:plan", "plan:src")
+
+    assert {
+        item["source"] for item in packet["inputs"] if item["role"] == "source_brief"
+    } == {
+        "src",
+        "other",
+    }
+    assert changed["state"]["ready_targets"] == ["plan:src"]
+    state = _state.read(root)
+    assert state["targets"]["plan:other"]["status"] == "complete"
+    assert state["targets"]["plan:other"]["output_digest"] == before
+    assert state["targets"]["plan:workspace"]["status"] == "pending"
+    submit(root, "plan:src", json.dumps(source_brief("src", ["other"])))
+    assert _state.status(root)["ready_targets"] == ["plan:workspace"]
 
 
 def test_attempt_is_isolated_until_gate_promotes_it(tmp_path):
@@ -558,17 +734,25 @@ def test_refresh_and_replan_preserve_unaffected_source_branch(tmp_path):
     _state.review_start(root, "repo-wiki/reviewer", "review-session")
     approve_review(root, src_leaf)
     approve_review(root, other_leaf)
+    other_brief_digest = _state.read(root)["targets"]["plan:other"]["output_digest"]
 
     write(source / "app.py", "def answer():\n    return 43\n")
     subprocess.run(["git", "-C", str(source), "add", "app.py"], check=True)
     subprocess.run(["git", "-C", str(source), "commit", "-qm", "refresh"], check=True)
     refreshed = _state.refresh_source(root, "src")
 
-    assert refreshed["ready_targets"] == ["plan:workspace"]
+    assert refreshed["ready_targets"] == ["plan:src"]
     statuses = target_statuses(root)
+    assert statuses["plan:other"] == "complete"
     assert statuses[f"page:{other_leaf}"] == "complete"
     assert statuses[f"review:{other_leaf}"] == "complete"
+    assert (
+        _state.read(root)["targets"]["plan:other"]["output_digest"]
+        == other_brief_digest
+    )
 
+    assert submit(root, "plan:src", json.dumps(source_brief("src", ["other"])))[1]["ok"]
+    assert _state.status(root)["ready_targets"] == ["plan:workspace"]
     assert submit_plan(root, payload)[1]["ok"]
     assert approve_plan_review(root)[1]["ok"]
     statuses = target_statuses(root)

@@ -119,6 +119,12 @@ def grade(ws: pathlib.Path) -> list[dict]:
     )
 
     plans = [target for target in targets.values() if target["kind"] == "plan"]
+    workspace_plan = targets.get("plan:workspace")
+    if workspace_plan and workspace_plan.get("spec", {}).get("mode") != "workspace":
+        workspace_plan = None
+    source_plans = [
+        target for target in plans if target.get("spec", {}).get("mode") == "source"
+    ]
     pages = [target for target in targets.values() if target["kind"] == "page"]
     reviews = [target for target in targets.values() if target["kind"] == "review"]
     plan_reviews = [
@@ -127,13 +133,34 @@ def grade(ws: pathlib.Path) -> list[dict]:
         if target.get("spec", {}).get("subject") == "plan:workspace"
     ]
     page_reviews = [target for target in reviews if target not in plan_reviews]
+    revision_names = {item["name"] for item in state["revisions"]}
     plan = None
-    if len(plans) == 1:
+    if workspace_plan:
         try:
-            plan_path = run_dir / plans[0]["artifact"]
+            plan_path = run_dir / workspace_plan["artifact"]
             plan = load(plan_path)
         except (OSError, json.JSONDecodeError):
             plan = None
+    bad_briefs = []
+    for target in source_plans:
+        try:
+            brief = load(run_dir / target["artifact"])
+        except (OSError, json.JSONDecodeError):
+            bad_briefs.append(target["id"])
+            continue
+        if brief.get("source") != target.get("spec", {}).get("source"):
+            bad_briefs.append(target["id"])
+    expected_source_plans = {f"plan:{name}" for name in revision_names}
+    actual_source_plans = {target["id"] for target in source_plans}
+    source_dependencies = set(workspace_plan["depends_on"]) if workspace_plan else set()
+    check(
+        "each code Source produced one persistent Source Brief before synthesis",
+        actual_source_plans == expected_source_plans
+        and source_dependencies == expected_source_plans
+        and not bad_briefs,
+        f"expected={sorted(expected_source_plans)}, actual={sorted(actual_source_plans)}, "
+        f"bad={bad_briefs}",
+    )
     planned = {item["path"]: item for item in (plan or {}).get("pages", [])}
     check(
         "page and review target counts come from the Page Plan",
@@ -146,6 +173,8 @@ def grade(ws: pathlib.Path) -> list[dict]:
         "one independent Plan review completed before page fan-out",
         len(plan_reviews) == 1
         and plan_reviews[0]["status"] == "complete"
+        and set(plan_reviews[0]["depends_on"])
+        == {"plan:workspace", *expected_source_plans}
         and all("review:plan" in target["depends_on"] for target in pages),
         f"plan_reviews={len(plan_reviews)}",
     )
@@ -174,7 +203,6 @@ def grade(ws: pathlib.Path) -> list[dict]:
         "; ".join(dependency_errors[:5]) or "all dependency reviews complete",
     )
 
-    revision_names = {item["name"] for item in state["revisions"]}
     indexes = sorted((run_dir / "drafts/index").glob("*.md"))
     bad_indexes = []
     for path in indexes:
@@ -216,7 +244,6 @@ def grade(ws: pathlib.Path) -> list[dict]:
         (bundle / "overview.md").is_file() and (bundle / "architecture.md").is_file(),
         f"{len(concept_pages)} concepts",
     )
-    revision_names = {item["name"] for item in state["revisions"]}
     if "killbill" in revision_names:
         routing_text = json.dumps(
             [
