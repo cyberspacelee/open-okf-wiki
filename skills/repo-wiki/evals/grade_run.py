@@ -18,12 +18,72 @@ SKILL = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL / "scripts"))
 
 from _frontmatter import parse_file
+from _markdown import extract
 
 CITE = re.compile(
     r"^\s*resource:\s*\"?([A-Za-z0-9][A-Za-z0-9-]*/[^\s#\"]+)"
     r"(?:#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?)?\"?\s*$",
     re.MULTILINE,
 )
+
+KILLBILL_INTENTS = {
+    "account-context": (r"account|账户",),
+    "tenant-context": (r"tenant|租户",),
+    "currency-boundary": (r"currency|币种|货币",),
+    "catalog-product-plan-phase": (
+        r"catalog|目录",
+        r"product|产品",
+        r"\bplan\b|方案",
+        r"phase|阶段",
+    ),
+    "subscription-entitlement": (r"subscription|订阅", r"entitlement|权益"),
+    "usage-capture-rollup": (
+        r"usage|用量",
+        r"raw|capture|record|采集|记录",
+        r"roll(?:ed)?[-_ ]?up|聚合|汇总",
+    ),
+    "invoice-generation-commit": (
+        r"invoice|发票",
+        r"generat|开票|生成",
+        r"commit|persist|提交|落盘|持久",
+    ),
+    "payment-retry-recovery": (
+        r"payment|支付",
+        r"retri|recover|repair|重试|恢复|修复",
+    ),
+    "overdue-blocking-feedback": (
+        r"overdue|dunning|逾期|催收",
+        r"block|lock|阻断|阻塞|锁",
+        r"feedback|clear|恢复|反馈|解除",
+    ),
+    "public-internal-plugin": (
+        r"public|external|公开|公共|外部",
+        r"internal|内部",
+        r"\bapis?\b|接口",
+        r"plugin|插件|spi",
+    ),
+    "durable-event-delivery": (
+        r"queue|bus|队列|事件总线",
+        r"persist|durable|持久",
+        r"retr(?:y|ies)|deliver|重试|投递",
+    ),
+    "runtime-lifecycle-osgi": (
+        r"lifecycle|生命周期",
+        r"osgi|runtime|bootstrap|运行时|启动",
+    ),
+    "persistence-locking": (
+        r"database|jdbc|jdbi|embeddeddb|persist|数据库|持久",
+        r"lock|transaction|锁|事务",
+    ),
+}
+
+
+def matches(record: str, patterns: tuple[str, ...]) -> bool:
+    return all(re.search(pattern, record, re.IGNORECASE) for pattern in patterns)
+
+
+def has_open_issues(report: dict) -> bool:
+    return any(item.get("status") == "open" for item in report.get("issues", []))
 
 
 def load(path: pathlib.Path) -> dict:
@@ -37,11 +97,42 @@ def frontmatter(path: pathlib.Path) -> dict:
     return parsed.meta
 
 
-def trace_commands(path: pathlib.Path) -> tuple[int, list[dict]]:
+def plan_subject_digest(plan: pathlib.Path, state: dict) -> str:
+    payload = {
+        "plan": hashlib.sha256(plan.read_bytes()).hexdigest(),
+        "revisions": state["revisions"],
+        "catalogs": [
+            {"name": item["name"], "content_hash": item["content_hash"]}
+            for item in state["catalogs"]
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def composition_subject_digest(
+    plan: pathlib.Path,
+    plan_review: pathlib.Path,
+    composition: pathlib.Path,
+    state: dict,
+) -> str:
+    payload = {
+        "plan_subject_digest": plan_subject_digest(plan, state),
+        "plan_review": hashlib.sha256(plan_review.read_bytes()).hexdigest(),
+        "composition": hashlib.sha256(composition.read_bytes()).hexdigest(),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def trace_data(path: pathlib.Path) -> tuple[int, list[dict], list[str]]:
     parsed = 0
     commands = []
+    spawn_prompts = []
     if not path.is_file():
-        return parsed, commands
+        return parsed, commands, spawn_prompts
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             event = json.loads(line)
@@ -60,10 +151,17 @@ def trace_commands(path: pathlib.Path) -> tuple[int, list[dict]]:
                 commands.append(
                     {"command": command, "exit_code": item.get("exit_code", 0)}
                 )
-    return parsed, commands
+        elif (
+            event.get("type") == "item.completed"
+            and item.get("type") == "collab_tool_call"
+            and item.get("tool") == "spawn_agent"
+            and item.get("receiver_thread_ids")
+        ):
+            spawn_prompts.append(item.get("prompt", ""))
+    return parsed, commands, spawn_prompts
 
 
-def grade(ws: pathlib.Path) -> list[dict]:
+def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     results = []
 
     def check(name: str, passed: bool, evidence: str) -> None:
@@ -75,7 +173,9 @@ def grade(ws: pathlib.Path) -> list[dict]:
     run_dir = ws / ".okf-wiki/runs" / manifest["run_id"]
     state = load(run_dir / "state.json")
     work = run_dir / "work"
-    parsed_events, commands = trace_commands(ws / "host-run.log")
+    trace_path = ws / "host-run.log"
+    trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
+    parsed_events, commands, spawn_prompts = trace_data(trace_path)
 
     check(
         "Run uses the artifact-loop contract without scheduler state",
@@ -100,9 +200,44 @@ def grade(ws: pathlib.Path) -> list[dict]:
         ),
         f"units={len(units)}",
     )
+    plan_review_path = work / "plan-review.json"
+    plan_review = load(plan_review_path) if plan_review_path.is_file() else {}
+    check(
+        "independent Plan review approved semantic recall before Composition",
+        plan_review.get("verdict") == "approved"
+        and not has_open_issues(plan_review)
+        and plan_review.get("subject_digest")
+        == plan_subject_digest(work / "plan.md", state),
+        f"verdict={plan_review.get('verdict')}",
+    )
+    if scenario == "killbill":
+        unit_records = [
+            " ".join(str(unit.get(field, "")) for field in ("id", "kind", "question"))
+            for unit in units
+        ]
+        semantic_records = unit_records + [str(gap) for gap in plan.get("gaps", [])]
+        missing_topics = [
+            name
+            for name, patterns in KILLBILL_INTENTS.items()
+            if not any(matches(record, patterns) for record in unit_records)
+        ]
+        causal_bridge = (
+            r"invoice|发票",
+            r"payment|支付",
+            r"overdue|dunning|逾期|催收",
+        )
+        if not any(matches(record, causal_bridge) for record in semantic_records):
+            missing_topics.append("invoice-payment-overdue")
+        check(
+            "Kill Bill Plan routes the enterprise domain rubric and preserves its causal bridge",
+            not missing_topics,
+            f"missing={missing_topics}",
+        )
     check(
         "long-run progress is one fixed living file",
         (work / "progress.md").is_file()
+        and "repo-wiki-progress:initial"
+        not in (work / "progress.md").read_text(encoding="utf-8")
         and not list(run_dir.rglob("*.checkpoint.md"))
         and not (run_dir / "attempts").exists(),
         str(work / "progress.md"),
@@ -120,6 +255,23 @@ def grade(ws: pathlib.Path) -> list[dict]:
         and len(mapped) == len(set(mapped))
         and all(not (removed_fields & set(page)) for page in pages.values()),
         f"units={len(unit_ids)}, pages={len(pages)}",
+    )
+    composition_review_path = work / "composition-review.json"
+    composition_review = (
+        load(composition_review_path) if composition_review_path.is_file() else {}
+    )
+    check(
+        "independent Composition review approves task routing before page fan-out",
+        composition_review.get("verdict") == "approved"
+        and not has_open_issues(composition_review)
+        and composition_review.get("subject_digest")
+        == composition_subject_digest(
+            work / "plan.md",
+            plan_review_path,
+            work / "composition.md",
+            state,
+        ),
+        f"verdict={composition_review.get('verdict')}",
     )
 
     drafts = {path.stem for path in (work / "drafts").glob("*.md")}
@@ -171,12 +323,125 @@ def grade(ws: pathlib.Path) -> list[dict]:
         and len(ids) == len(set(ids)),
         f"ids={ids}",
     )
+    if scenario == "killbill":
+        units_by_id = {unit["id"]: unit for unit in units}
+        route_records = {
+            page_id: " ".join(
+                " ".join(
+                    str(units_by_id.get(unit_id, {}).get(field, ""))
+                    for field in ("id", "kind", "question")
+                )
+                for unit_id in page.get("units", [])
+            )
+            for page_id, page in pages.items()
+        }
+        routed_pages = set(pages)
+        intent_owners = {
+            name: [
+                page_id
+                for page_id in routed_pages
+                if matches(route_records.get(page_id, ""), patterns)
+            ]
+            for name, patterns in KILLBILL_INTENTS.items()
+        }
+        missing_routes = [name for name, owners in intent_owners.items() if not owners]
+        generic_roots = {"domain", "flow", "integration", "lifecycle", "table"}
+        generic_paths = [
+            page["path"]
+            for page in pages.values()
+            if page.get("type") != "Overview"
+            and pathlib.PurePosixPath(page["path"]).parts[0] in generic_roots
+        ]
+        check(
+            "Kill Bill Composition distributes enterprise change intents into task routes",
+            bool(pages) and not missing_routes and not generic_paths,
+            f"pages={len(pages)}, missing={missing_routes}, "
+            f"generic_paths={generic_paths}",
+        )
 
+        published_records = {}
+        routing_metadata = {}
+        for path in concept_pages:
+            parsed = parse_file(path)
+            page_id = parsed.meta.get("id")
+            published_records[page_id] = " ".join(
+                (
+                    str(parsed.meta.get("title", "")),
+                    str(parsed.meta.get("description", "")),
+                    " ".join(str(tag) for tag in parsed.meta.get("tags", [])),
+                    parsed.body,
+                )
+            )
+            routing_metadata[page_id] = " ".join(
+                (
+                    str(parsed.meta.get("title", "")),
+                    str(parsed.meta.get("description", "")),
+                    " ".join(str(tag) for tag in parsed.meta.get("tags", [])),
+                    str(pages.get(page_id, {}).get("path", "")),
+                )
+            )
+        missing_page_coverage = [
+            name
+            for name, patterns in KILLBILL_INTENTS.items()
+            if not any(
+                matches(published_records.get(page_id, ""), patterns)
+                for page_id in intent_owners[name]
+            )
+        ]
+        missing_metadata_routes = [
+            name
+            for name, patterns in KILLBILL_INTENTS.items()
+            if not any(
+                matches(routing_metadata.get(page_id, ""), patterns)
+                for page_id in intent_owners[name]
+            )
+        ]
+        check(
+            "published Kill Bill pages carry each routed intent in metadata and evidence-backed prose",
+            not missing_page_coverage and not missing_metadata_routes,
+            f"missing_page_coverage={missing_page_coverage}, "
+            f"missing_metadata_routes={missing_metadata_routes}",
+        )
+    if state.get("language") == "zh":
+        unlocalized = []
+        english_template_headings = {
+            section.title
+            for template in (SKILL / "assets/templates/en").glob("*.md")
+            for section in extract(parse_file(template).body).sections
+        }
+        for path in concept_pages:
+            parsed = parse_file(path)
+            meta = parsed.meta
+            visible_fields = (
+                str(meta.get("title", "")),
+                str(meta.get("description", "")),
+                parsed.body,
+            )
+            headings = {section.title for section in extract(parsed.body).sections}
+            if (
+                any(
+                    not re.search(r"[\u3400-\u9fff]", field) for field in visible_fields
+                )
+                or headings & english_template_headings
+            ):
+                unlocalized.append(path.name)
+        check(
+            "published reader-visible metadata and prose match workspace language",
+            not unlocalized,
+            f"language=zh, unlocalized={unlocalized}",
+        )
+
+    runtime_skill = SKILL
+    metadata_path = ws / "live-eval.json"
+    if metadata_path.is_file():
+        candidate = pathlib.Path(load(metadata_path).get("runtime_skill", ""))
+        if (candidate / "scripts/okf.py").is_file():
+            runtime_skill = candidate
     validation = subprocess.run(
         [
             "uv",
             "run",
-            str(SKILL / "scripts/okf.py"),
+            str(runtime_skill / "scripts/okf.py"),
             "validate",
             "--published",
             "--json",
@@ -187,10 +452,18 @@ def grade(ws: pathlib.Path) -> list[dict]:
         check=False,
     )
     try:
-        errors = json.loads(validation.stdout)["errors"]
+        validation_data = json.loads(validation.stdout)
+        errors = validation_data["errors"]
     except (json.JSONDecodeError, KeyError):
+        validation_data = {}
         errors = -1
-    check("published validation has zero errors", errors == 0, f"errors={errors}")
+    check(
+        "published validation is complete with zero errors",
+        validation.returncode == 0
+        and validation_data.get("complete") is True
+        and errors == 0,
+        f"complete={validation_data.get('complete')}, errors={errors}",
+    )
 
     revisions = {item["name"]: item for item in state["revisions"]}
     workspace = load(ws / "workspace.json")
@@ -238,16 +511,156 @@ def grade(ws: pathlib.Path) -> list[dict]:
         item.get("command", "")
         for item in commands
         if "state.json" in item.get("command", "")
+        or re.search(r"/scripts/_[A-Za-z0-9_]+\.py\b", item.get("command", ""))
+        or re.search(
+            r"\.okf-wiki/runs/[^\s'\"]+/index(?:/|\b)",
+            item.get("command", ""),
+        )
         or re.search(
             r"\btask\s+(?:start|packet|checkpoint|complete)\b", item.get("command", "")
         )
         or "--session" in item.get("command", "")
     ]
+    source_roots = [
+        ws.joinpath(*pathlib.PurePosixPath(item["path"]).parts)
+        for item in workspace["sources"]
+        if item["kind"] in ("git", "files")
+    ]
+    direct_source_commands = []
+    for item in commands:
+        command = item.get("command", "")
+        scans_workspace = bool(
+            re.search(r"\bfind\s+\.\s", command)
+            or (
+                re.search(r"\brg\s+--files\b", command)
+                and str(runtime_skill / "assets" / "templates") not in command
+            )
+        )
+        reads_source = any(
+            str(source) in command
+            or re.search(rf"(?<![A-Za-z0-9_.-]){re.escape(source.name)}/", command)
+            for source in source_roots
+        )
+        uses_reader = bool(
+            re.search(r"\b(?:cat|find|grep|head|rg|sed|tail|awk)\b", command)
+        )
+        if scans_workspace or (reads_source and uses_reader):
+            direct_source_commands.append(command)
+    bad_commands.extend(direct_source_commands)
+    plan_review_command = next(
+        (
+            index
+            for index, item in enumerate(commands)
+            if re.search(r"\breview\s+plan\b", item.get("command", ""))
+        ),
+        len(commands),
+    )
+    late_references = (
+        "references/composition.md",
+        "references/composition-review.md",
+        "references/page.md",
+        "references/review.md",
+    )
+    bad_commands.extend(
+        item.get("command", "")
+        for item in commands[:plan_review_command]
+        if any(reference in item.get("command", "") for reference in late_references)
+    )
+    composition_review_command = next(
+        (
+            index
+            for index, item in enumerate(commands)
+            if re.search(r"\breview\s+composition\b", item.get("command", ""))
+        ),
+        len(commands),
+    )
+    bad_commands.extend(
+        item.get("command", "")
+        for item in commands[:composition_review_command]
+        if any(
+            reference in item.get("command", "")
+            for reference in ("references/page.md", "references/review.md")
+        )
+    )
     check(
         "host trace uses the artifact loop without execution IDs",
-        not bad_commands,
+        parsed_events > 0 and not bad_commands,
         f"events={parsed_events}, bad={bad_commands[:3]}",
     )
+    if scenario == "killbill":
+        role_counts = {
+            role: 0 for role in ("evidence", "plan-review", "page", "bundle-review")
+        }
+        role_prompts = {role: [] for role in role_counts}
+        for prompt in spawn_prompts:
+            if "plan-review.json" in prompt or "Knowledge Plan Review" in prompt:
+                role = "plan-review"
+            elif "review.json" in prompt and "candidate" in prompt.lower():
+                role = "bundle-review"
+            elif "/work/drafts/" in prompt or "page writer" in prompt.lower():
+                role = "page"
+            elif "/work/evidence/" in prompt or "evidence worker" in prompt.lower():
+                role = "evidence"
+            else:
+                continue
+            role_counts[role] += 1
+            role_prompts[role].append(prompt)
+        expected_roles = {"evidence", "plan-review", "page", "bundle-review"}
+        check(
+            "trace contains focused workers for each independent role",
+            all(role_counts[role] for role in expected_roles),
+            f"spawns={len(spawn_prompts)}, roles={role_counts}",
+        )
+        check(
+            "trace obtains Composition approval before page work",
+            composition_review_command < len(commands),
+            f"review_composition_command={composition_review_command}",
+        )
+        check(
+            "review and page repairs use original agents or bounded follow-up replacements",
+            role_counts["plan-review"] <= 2
+            and role_counts["bundle-review"] <= 2
+            and role_counts["page"] <= 2 * len(pages)
+            and all(
+                re.search(
+                    r"follow-up|repair|replacement|修复|复审", prompt, re.IGNORECASE
+                )
+                for role in ("plan-review", "bundle-review")
+                for prompt in role_prompts[role][1:]
+            )
+            and all(
+                re.search(
+                    r"follow-up|repair|replacement|修复|复审", prompt, re.IGNORECASE
+                )
+                for prompt in role_prompts["page"][len(pages) :]
+            ),
+            f"roles={role_counts}, pages={len(pages)}",
+        )
+        status_calls = sum(
+            bool(re.search(r"\brun\s+status\b", item.get("command", "")))
+            for item in commands
+        )
+        output_chars = sum(len(item.get("aggregated_output", "")) for item in commands)
+        nonzero = sum(item.get("exit_code", 0) != 0 for item in commands)
+        help_calls = sum("--help" in item.get("command", "") for item in commands)
+        router_errors = trace_text.count("ERROR codex_core::tools::router")
+        concurrency_errors = len(
+            re.findall(
+                r"Concurrency limit exceeded|agent thread limit reached",
+                trace_text,
+                re.IGNORECASE,
+            )
+        )
+        check(
+            "trace stays within navigation and recovery budgets",
+            output_chars <= 512 * 1024
+            and nonzero + router_errors <= 12
+            and help_calls <= 3
+            and concurrency_errors == 0,
+            f"status={status_calls}, output_chars={output_chars}, nonzero={nonzero}, "
+            f"router_errors={router_errors}, help={help_calls}, "
+            f"concurrency_errors={concurrency_errors}",
+        )
 
     root_index = (bundle / "index.md").read_text(encoding="utf-8")
     log = (bundle / "log.md").read_text(encoding="utf-8")
@@ -272,10 +685,11 @@ def grade(ws: pathlib.Path) -> list[dict]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("workspace", type=pathlib.Path)
+    parser.add_argument("--scenario", choices=("killbill",), default="killbill")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     try:
-        results = grade(args.workspace.resolve())
+        results = grade(args.workspace.resolve(), args.scenario)
     except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:
         results = [
             {

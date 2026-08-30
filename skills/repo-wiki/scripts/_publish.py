@@ -377,16 +377,17 @@ def publish(root: pathlib.Path) -> dict:
         raise PublishError("publication requires an approved run")
     _state.assert_revisions_current(root, state)
     candidate = _state.candidate_dir(root, state)
+    if state.get("candidate_inputs_digest") != _state._work_digest(root, state):
+        raise PublishError("working artifacts changed after approval")
     if directory_digest(candidate) != state.get("approved_digest"):
         raise PublishError("candidate changed after approval")
-    errors = [
-        item
-        for item in _validate.validate_candidate(root, state, published=True)
-        if item.severity == "error"
-    ]
-    if errors:
+    validation = _validate.validate_candidate(root, state, published=True)
+    errors = [item for item in validation.issues if item.severity == "error"]
+    if errors or not validation.complete:
         raise PublishError(
-            f"candidate validation failed: {[item.to_dict() for item in errors[:3]]}"
+            "candidate validation failed: "
+            f"{[item.to_dict() for item in errors[:3]]}; "
+            f"skipped checks: {validation.skipped_checks}"
         )
 
     with publication_lock(root):
@@ -562,14 +563,13 @@ def _rollback_locked(root: pathlib.Path) -> dict:
     generation = publication / "generations" / prior["generation"]
     if not generation.is_dir():
         raise PublishError("previous generation is missing")
-    errors = [
-        item
-        for item in _validate.validate_publication(root, generation)
-        if item.severity == "error"
-    ]
-    if errors:
+    validation = _validate.validate_publication(root, generation)
+    errors = [item for item in validation.issues if item.severity == "error"]
+    if errors or not validation.complete:
         raise PublishError(
-            f"previous generation is invalid: {[item.to_dict() for item in errors[:3]]}"
+            "previous generation is invalid: "
+            f"{[item.to_dict() for item in errors[:3]]}; "
+            f"skipped checks: {validation.skipped_checks}"
         )
     atomic_json(publication / "current.json", prior)
     if old:

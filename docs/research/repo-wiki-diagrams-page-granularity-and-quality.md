@@ -72,7 +72,7 @@ Mermaid 官方语义已经给出足够窄的选择边界：flowchart 表示节�
 | `Table` | 该表的 row shape、keys 和使用边界是什么？ | schema、keys、usage；不重复父 DataModel 的 ER 图 |
 
 `Flow` 和 `Lifecycle` 是完整修复中最关键的新类型：它们从当前
-[`domain.md`](../../skills/repo-wiki/assets/templates/domain.md) 的“Lifecycle and failure paths”中
+[`domain.md`](../../skills/repo-wiki/assets/templates/en/domain.md) 的“Lifecycle and failure paths”中
 拆出两种不同的推理任务。不要新增 `Diagram` 页面类型；图是页面的视图，不是知识边界。
 
 ### 拆页规则

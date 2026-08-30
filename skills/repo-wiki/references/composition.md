@@ -1,7 +1,9 @@
 # Composition Map
 
-Read the complete Plan and relevant evidence notes, then design the Wiki as a
-whole. This is the first stage allowed to choose pages and physical paths.
+Read the complete Plan, then design the Wiki as a whole. A fresh composer also
+reads each relevant evidence note once; the planner that already synthesized
+those notes into the approved Plan does not reread them. This is the first
+stage allowed to choose pages and physical paths.
 
 Write `work/composition.md` with one entry per final page:
 
@@ -24,17 +26,36 @@ gaps: []
 ---
 ```
 
+After the frontmatter, add a short analysis paragraph explaining the routing
+and unit grouping. Write page titles, descriptions, tags and Diagram questions
+in `status.language`; preserve exact domain identifiers where needed.
+
 Assign every Plan unit to exactly one page. A page inherits the union of its
 units' scopes and evidence seeds, so do not repeat those fields. Page IDs and
 paths are unique. The physical path is both the final hierarchy and navigation
 binding; do not maintain a separate parent graph or writer dependency graph.
+Every page includes `diagrams`; use `diagrams: []` when no diagram is planned.
 
-Choose the smallest set of independently routable pages that passes the Grep
-Test. A one-unit repository may produce one page. Do not manufacture fixed
-Overview or Architecture pages. Select page types and diagrams from the writing
-contract. Writers may run concurrently because each reopens Source evidence;
-final review checks cross-page consistency and may request `split`, `merge` or
-`move`.
+Apply the Task Routing Test: a maintainer arriving with one concrete change or
+failure question lands on one page. Split units when they have independent
+owners, failure modes or change surfaces. Merge only when separate pages would
+force the reader to reconstruct one causal chain. Also merge related units when
+they share the same reader entry point, evidence neighborhood and maintenance
+session and neither remains independently useful after the split. Do not map
+units to pages mechanically: units are coverage obligations, not a requested
+page count. Record the routing and every multi-unit merge rationale in the body.
+A one-unit repository may produce one page; a large repository is not thin
+merely because unrelated knowledge was compressed into a few pages.
 
-An empty Plan has `pages: []`. It proceeds directly to bundle review with no
-drafts; do not create a placeholder page.
+Thin means omitting inventories, signature catalogs and duplicated background.
+It does not mean minimizing page count. Use capability-oriented paths that
+match maintainer tasks; page-type folders such as `flow/` or `lifecycle/` are
+not an information architecture by themselves. Add an Overview or Architecture
+page only when it provides a real cross-page map, and keep detailed ownership
+in the linked pages. An Overview routes common task clusters; it need not list
+every leaf when a routed capability page links its related details. Select page
+types and diagrams from the writing contract. Writers may run concurrently
+after Composition review because each reopens Source evidence.
+
+An empty Plan has `pages: []`. It still receives Composition review, then
+proceeds to bundle review with no drafts; do not create a placeholder page.

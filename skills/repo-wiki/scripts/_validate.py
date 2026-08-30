@@ -16,6 +16,7 @@ from _models import (
     CompositionMap,
     ConceptFrontmatter,
     KnowledgePlan,
+    PlanReviewReport,
     ReviewReport,
     model_errors,
 )
@@ -28,6 +29,18 @@ CAUSAL = re.compile(
 _INLINE_REF = re.compile(r"\[\^[^\]]+\]")
 _LFS_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 MAX_STRUCTURED_ARTIFACT_BYTES = 256 * 1024
+_INITIAL_PROGRESS = "<!-- repo-wiki-progress:initial -->"
+_HAN = re.compile(r"[\u3400-\u9fff]")
+_LATIN = re.compile(r"[A-Za-z]")
+_TEMPLATE_NAMES = {
+    "Overview": "overview.md",
+    "Architecture": "architecture.md",
+    "Domain": "domain.md",
+    "Flow": "flow.md",
+    "Lifecycle": "lifecycle.md",
+    "DataModel": "data-model.md",
+    "Table": "table.md",
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -48,6 +61,16 @@ class Issue:
         }
 
 
+@dataclasses.dataclass(frozen=True)
+class ValidationResult:
+    issues: list[Issue]
+    skipped_checks: list[str]
+
+    @property
+    def complete(self) -> bool:
+        return not self.skipped_checks
+
+
 def issue(
     severity: Literal["error", "warning"],
     code: str,
@@ -56,6 +79,36 @@ def issue(
     line: int | None = None,
 ) -> Issue:
     return Issue(severity, code, path, message, line)
+
+
+def validation_result(
+    issues: list[Issue], skipped_checks: list[str] | None = None
+) -> ValidationResult:
+    unique = {
+        (item.severity, item.code, item.path, item.line, item.message): item
+        for item in issues
+    }
+    ordered = sorted(
+        unique.values(),
+        key=lambda item: (item.path, item.line or 0, item.code, item.message),
+    )
+    return ValidationResult(ordered, sorted(set(skipped_checks or [])))
+
+
+def _template_headings(
+    language: str, page_type: str
+) -> tuple[set[str], set[str]] | None:
+    name = _TEMPLATE_NAMES[page_type]
+    templates = pathlib.Path(__file__).resolve().parent.parent / "assets/templates"
+    current = templates / language / name
+    other = templates / ("zh" if language == "en" else "en") / name
+    if not current.is_file() or not other.is_file():
+        return None
+    current_headings = {
+        item.title for item in extract(parse_file(current).body).sections
+    }
+    other_headings = {item.title for item in extract(parse_file(other).body).sections}
+    return current_headings, other_headings - current_headings
 
 
 def _revision(state: dict, name: str) -> dict | None:
@@ -437,8 +490,56 @@ def validate_plan_artifact(
     return value, issues
 
 
+def validate_progress_artifact(path: pathlib.Path) -> list[Issue]:
+    if not path.is_file():
+        return [issue("error", "progress-missing", str(path), "write run progress")]
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [issue("error", "progress-invalid", str(path), str(exc))]
+    if not text.strip() or _INITIAL_PROGRESS in text:
+        return [
+            issue(
+                "error",
+                "progress-stale",
+                str(path),
+                "replace the initial progress note with findings, gaps and next actions",
+            )
+        ]
+    return []
+
+
+def validate_plan_review(
+    path: pathlib.Path, expected_digest: str | None
+) -> tuple[PlanReviewReport | None, list[Issue]]:
+    if not path.is_file():
+        return None, [
+            issue(
+                "error",
+                "plan-review-missing",
+                str(path),
+                "run an independent Knowledge Plan review",
+            )
+        ]
+    value, issues = _model_issues(path, PlanReviewReport)
+    if (
+        value
+        and expected_digest is not None
+        and value.subject_digest != expected_digest
+    ):
+        issues.append(
+            issue(
+                "error",
+                "plan-review-digest-invalid",
+                str(path),
+                "plan review does not bind the current Knowledge Plan",
+            )
+        )
+    return value, issues
+
+
 def validate_composition_artifact(
-    path: pathlib.Path, plan: KnowledgePlan
+    path: pathlib.Path, plan: KnowledgePlan | None
 ) -> tuple[CompositionMap | None, list[Issue]]:
     if not path.is_file():
         return None, [
@@ -447,8 +548,58 @@ def validate_composition_artifact(
             )
         ]
     value, issues = _model_issues(path, CompositionMap, markdown=True)
-    if value:
+    if value and plan is not None:
         issues.extend(_validate_composition(plan, value, path))
+    return value, issues
+
+
+def validate_composition_review(
+    path: pathlib.Path, expected_digest: str | None, page_ids: set[str] | None
+) -> tuple[ReviewReport | None, list[Issue]]:
+    if not path.is_file():
+        return None, [
+            issue(
+                "error",
+                "composition-review-missing",
+                str(path),
+                "run an independent Composition review",
+            )
+        ]
+    value, issues = _model_issues(path, ReviewReport)
+    if value:
+        if expected_digest is not None and value.subject_digest != expected_digest:
+            issues.append(
+                issue(
+                    "error",
+                    "composition-review-digest-invalid",
+                    str(path),
+                    "composition review does not bind the current Plan and Composition",
+                )
+            )
+        for report_issue in value.issues:
+            if report_issue.status == "open" and report_issue.area != "composition":
+                issues.append(
+                    issue(
+                        "error",
+                        "composition-review-area-invalid",
+                        str(path),
+                        "Composition review issues must use the composition area",
+                    )
+                )
+            unknown = (
+                set(report_issue.page_ids) - page_ids
+                if page_ids is not None and report_issue.status == "open"
+                else set()
+            )
+            if unknown:
+                issues.append(
+                    issue(
+                        "error",
+                        "composition-review-page-invalid",
+                        str(path),
+                        str(sorted(unknown)),
+                    )
+                )
     return value, issues
 
 
@@ -491,6 +642,23 @@ def validate_drafts(
     return issues
 
 
+def validate_unbound_drafts(path: pathlib.Path) -> list[Issue]:
+    issues = []
+    for draft in sorted(path.glob("*.md")):
+        parsed = parse_file(draft)
+        issues.extend(
+            issue("error", "frontmatter-invalid", str(draft), message)
+            for message in parsed.errors
+        )
+        if parsed.errors:
+            continue
+        for placeholder, line in extract(parsed.body).placeholders:
+            issues.append(
+                issue("error", "placeholder-remaining", str(draft), placeholder, line)
+            )
+    return issues
+
+
 def validate_review(
     path: pathlib.Path, expected_digest: str, page_ids: set[str]
 ) -> tuple[ReviewReport | None, list[Issue]]:
@@ -512,7 +680,11 @@ def validate_review(
                 )
             )
         for report_issue in value.issues:
-            unknown = set(report_issue.page_ids) - page_ids
+            unknown = (
+                set(report_issue.page_ids) - page_ids
+                if report_issue.status == "open"
+                else set()
+            )
             if unknown:
                 issues.append(
                     issue(
@@ -632,6 +804,54 @@ def validate_page(
             )
         )
     structure = extract(parsed.body)
+    if frontmatter.language is not None:
+        if frontmatter.language != state.get("language"):
+            issues.append(
+                issue(
+                    "error",
+                    "page-language-mismatch",
+                    str(path),
+                    f"page language must match workspace language {state.get('language')}",
+                )
+            )
+        pattern = _HAN if frontmatter.language == "zh" else _LATIN
+        for field, value in (
+            ("title", frontmatter.title or ""),
+            ("description", frontmatter.description or ""),
+            ("body", parsed.body),
+        ):
+            if not pattern.search(value):
+                issues.append(
+                    issue(
+                        "error",
+                        "language-content-missing",
+                        str(path),
+                        f"{field} has no {frontmatter.language} language text",
+                    )
+                )
+        headings = _template_headings(frontmatter.language, frontmatter.type)
+        if headings is None:
+            issues.append(
+                issue(
+                    "error",
+                    "template-missing",
+                    str(path),
+                    f"missing {frontmatter.language}/{_TEMPLATE_NAMES[frontmatter.type]}",
+                )
+            )
+        else:
+            _, forbidden = headings
+            for section in structure.sections:
+                if section.title in forbidden:
+                    issues.append(
+                        issue(
+                            "error",
+                            "template-heading-leak",
+                            str(path),
+                            f"heading belongs to the other language template: {section.title}",
+                            section.start_line,
+                        )
+                    )
     for code, message, line in validate_diagrams(structure, frontmatter.diagrams):
         issues.append(issue("error", code, str(path), message, line))
     refs = {ref for ref, _ in structure.footnote_refs}
@@ -680,14 +900,15 @@ def validate_page(
             issue("error", "placeholder-remaining", str(path), placeholder, line)
         )
     if frontmatter.coverage == "partial":
-        gaps = [section for section in structure.sections if section.title == "Gaps"]
+        gap_title = "缺口" if frontmatter.language == "zh" else "Gaps"
+        gaps = [section for section in structure.sections if section.title == gap_title]
         if not gaps or not gaps[0].content:
             issues.append(
                 issue(
                     "error",
                     "gaps-missing",
                     str(path),
-                    "partial coverage requires a non-empty Gaps section",
+                    f"partial coverage requires a non-empty {gap_title} section",
                 )
             )
     for line, raw in enumerate(parsed.body.splitlines(), 1):
@@ -706,22 +927,91 @@ def validate_page(
 
 def validate_candidate(
     root: pathlib.Path, state: dict, *, published: bool
-) -> list[Issue]:
+) -> ValidationResult:
+    import _state
+
     base = root / ".okf-wiki" / "runs" / state["run_id"]
     candidate = base / "candidate"
-    plan, plan_issues = validate_plan_artifact(root, state, base / "work/plan.md")
-    if plan is None:
-        return plan_issues
-    composition, composition_issues = validate_composition_artifact(
-        base / "work/composition.md", plan
+    work = base / "work"
+    plan_path = work / "plan.md"
+    composition_path = work / "composition.md"
+    plan, plan_issues = validate_plan_artifact(root, state, plan_path)
+    plan_digest = (
+        _state._plan_subject_digest(root, state) if plan_path.is_file() else None
     )
-    if composition is None:
-        return composition_issues
+    plan_review, plan_review_issues = validate_plan_review(
+        work / "plan-review.json", plan_digest
+    )
+    composition, composition_issues = validate_composition_artifact(
+        composition_path, plan
+    )
+    composition_inputs_exist = all(
+        path.is_file()
+        for path in (plan_path, work / "plan-review.json", composition_path)
+    )
+    composition_digest = (
+        _state._composition_subject_digest(root, state)
+        if composition_inputs_exist
+        else None
+    )
+    composition_review, composition_review_issues = validate_composition_review(
+        work / "composition-review.json",
+        composition_digest,
+        {page.id for page in composition.pages} if composition is not None else None,
+    )
     pages = sorted(candidate.rglob("*.md")) if candidate.exists() else []
-    issues = [*plan_issues, *composition_issues]
+    issues = [
+        *plan_issues,
+        *plan_review_issues,
+        *composition_issues,
+        *composition_review_issues,
+    ]
+    skipped = []
+    if plan is None:
+        skipped.extend(
+            [
+                "composition-unit-binding",
+                "draft-scope-binding",
+                "page-scope-binding",
+            ]
+        )
+    if composition is None:
+        skipped.extend(
+            [
+                "composition-review-page-binding",
+                "draft-page-binding",
+                "candidate-page-binding",
+            ]
+        )
+    if plan_digest is None:
+        skipped.append("plan-review-digest")
+    if composition_digest is None:
+        skipped.append("composition-review-digest")
+    if plan_review is not None and plan_review.verdict != "approved":
+        issues.append(
+            issue(
+                "error",
+                "plan-review-rejected",
+                str(work / "plan-review.json"),
+                "Knowledge Plan review must be approved",
+            )
+        )
+    if composition_review is not None and composition_review.verdict != "approved":
+        issues.append(
+            issue(
+                "error",
+                "composition-review-rejected",
+                str(work / "composition-review.json"),
+                "Composition review must be approved",
+            )
+        )
     page_set = {path.relative_to(candidate).as_posix() for path in pages}
-    page_by_path = {page.path: page for page in composition.pages}
-    if page_set != set(page_by_path):
+    page_by_path = (
+        {page.path: page for page in composition.pages}
+        if composition is not None
+        else {}
+    )
+    if composition is not None and page_set != set(page_by_path):
         issues.append(
             issue(
                 "error",
@@ -733,7 +1023,13 @@ def validate_candidate(
     for path in pages:
         rel = path.relative_to(candidate).as_posix()
         page = page_by_path.get(rel)
-        expected = page_spec(plan, page) if page else None
+        expected = (
+            page_spec(plan, page)
+            if plan is not None and page is not None
+            else page.model_dump(mode="json")
+            if page is not None
+            else None
+        )
         issues.extend(
             validate_page(
                 root,
@@ -745,7 +1041,11 @@ def validate_candidate(
             )
         )
     issues.extend(_link_issues(candidate, pages, page_set))
-    return issues
+    if plan is not None and composition is not None:
+        issues.extend(validate_drafts(root, state, plan, composition, work / "drafts"))
+    else:
+        issues.extend(validate_unbound_drafts(work / "drafts"))
+    return validation_result(issues, skipped)
 
 
 def _link_issues(
@@ -868,14 +1168,18 @@ def validate_bundle(path: pathlib.Path) -> list[Issue]:
     return issues
 
 
-def validate_publication(root: pathlib.Path, path: pathlib.Path) -> list[Issue]:
+def validate_publication(root: pathlib.Path, path: pathlib.Path) -> ValidationResult:
+    import _workspace
+
     issues = validate_bundle(path)
+    skipped = []
     manifest_path = path / ".okf-manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         issues.append(issue("error", "manifest-invalid", str(manifest_path), str(exc)))
-        return issues
+        skipped.append("manifest-binding")
+        return validation_result(issues, skipped)
     if (
         not isinstance(manifest, dict)
         or not isinstance(manifest.get("revisions"), list)
@@ -889,7 +1193,8 @@ def validate_publication(root: pathlib.Path, path: pathlib.Path) -> list[Issue]:
                 "manifest fields are invalid",
             )
         )
-        return issues
+        skipped.append("manifest-binding")
+        return validation_result(issues, skipped)
     if manifest.get("digest") != directory_digest(
         path, exclude_names={".okf-manifest.json"}
     ):
@@ -935,6 +1240,7 @@ def validate_publication(root: pathlib.Path, path: pathlib.Path) -> list[Issue]:
         "run_id": manifest.get("run_id"),
         "revisions": revisions,
         "catalogs": catalogs,
+        "language": _workspace.load(root).language,
     }
     concepts = sorted(
         page for page in path.rglob("*.md") if page.name not in ("index.md", "log.md")
@@ -944,7 +1250,7 @@ def validate_publication(root: pathlib.Path, path: pathlib.Path) -> list[Issue]:
     linked_pages = sorted(page for page in path.rglob("*.md") if page.name != "log.md")
     allowed = {page.relative_to(path).as_posix() for page in path.rglob("*.md")}
     issues.extend(_link_issues(path, linked_pages, allowed))
-    return issues
+    return validation_result(issues, skipped)
 
 
 def validate_proposals(

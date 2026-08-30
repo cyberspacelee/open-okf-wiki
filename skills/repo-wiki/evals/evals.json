@@ -5,48 +5,33 @@
       "id": 1,
       "name": "cli-contract-e2e",
       "tier": 1,
-      "prompt": "(no LLM) run_cli_e2e.py exercises the fixed Artifact loop, bounded evidence, explicit follow-up review input, late link binding and atomic Publication",
+      "prompt": "(no LLM) run_cli_e2e.py exercises the fixed Artifact loop, bounded evidence, Plan and Composition review gates, explicit follow-up input, late link binding and atomic Publication",
       "expected_output": "passed true; exit 0 on Windows, Linux and macOS"
     },
     {
       "id": 2,
-      "name": "java-multi-source",
-      "tier": 2,
-      "prompt": "You are the coordinator for repo-wiki. Workspace: {WS}. Skill: {SKILL_DIR}. Read SKILL.md first. Keep one cross-Source planner, use focused evidence workers, persist fixed Artifacts, dispatch independent page writers, use one fresh Wiki reviewer and loop until published or externally blocked.",
-      "fixture": "setup_java_ws.py (feign + spring-cloud-openfeign)",
-      "expected_output": "published thin wiki, 0 validation errors, honest citations",
-      "assertions": [
-        "Run reaches published through the explicit status loop",
-        "one living Knowledge Plan owns the cross-Source model and fixed progress file",
-        "Composition assigns every Knowledge Unit exactly once without parent or dependency graphs",
-        "draft filenames use stable page IDs while final paths remain late-bound",
-        "one digest-bound independent Wiki review approves the complete bundle",
-        "review changes re-enter the loop and require a new complete-bundle review",
-        "one bounded compact Source outline exists per Revision",
-        "published pages exactly match Composition without fixed root-page requirements",
-        "an explained empty Plan can publish without placeholder pages",
-        "re-running validate --published reports 0 errors",
-        "sampled cited line ranges exist at captured Revisions",
-        "host trace has no run-state inspection, Target commands, sessions or Attempt IDs",
-        "OKF reserved files and lifecycle trust fields conform"
-      ]
-    },
-    {
-      "id": 3,
       "name": "killbill-finance-multi-repository",
       "tier": 2,
       "prompt": "Run run_live_eval.py with --scenario killbill as an opt-in high-cost domain-recall and bundle-review QA run.",
       "fixture": "setup_java_ws.py --scenario killbill (four fixed Kill Bill revisions)",
       "expected_output": "published thin wiki connecting billing domains across API, implementation, commons and platform repositories",
       "assertions": [
-        "one long-lived planner integrates all four Sources and distinguishes public from internal APIs",
-        "focused workers return evidence notes rather than competing Source plans",
-        "Plan covers catalog phases, subscriptions, usage, invoices, queues, lifecycle and plugins",
-        "Composition groups durable concepts instead of mirroring Maven modules",
-        "Chinese runs localize page and diagram routing text",
-        "final Wiki review catches domain, evidence, split, merge and move defects",
-        "every repair is followed by a fresh digest-bound bundle review",
-        "published navigation connects all four repositories"
+        "one long-lived planner integrates all four Sources",
+        "focused evidence workers return notes and independent page writers own drafts",
+        "an independent digest-bound Plan review approves domain recall before Composition",
+        "Plan routes the scenario's enterprise change intents and covers or explicitly gaps the invoice/payment/overdue feedback bridge",
+        "Plan uses cohesive routable units without imposing a fixed unit count",
+        "an independent digest-bound Composition review approves task routing before page fan-out",
+        "Composition routes the Kill Bill intents across cohesive capability-oriented pages instead of imposing a fixed page count or mirroring Maven modules",
+        "Composition review rejects both unrelated bundling and mechanical one-unit-per-page fan-out",
+        "the final Wiki carries every routed intent in page metadata and evidence-backed prose",
+        "Chinese runs use the Chinese template set and localize title, description, prose and diagram routing text",
+        "each review reports all independently supportable issues in one pass and retains stable issue IDs as resolved history",
+        "final Wiki review checks unit mapping, evidence, split, merge and move defects without repeating repository-wide discovery",
+        "repairs return to the same reviewer for digest-bound focused follow-up",
+        "published validation reports complete true with zero errors, or names skipped checks when prerequisites are missing",
+        "published navigation connects all four repositories",
+        "trace reports status calls and stays within internal-access, tool-output and recovery budgets"
       ]
     }
   ]

@@ -1,6 +1,7 @@
 import json
 import pathlib
 import subprocess
+from datetime import datetime
 
 import _publish
 import _state
@@ -15,7 +16,7 @@ def write(path: pathlib.Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
-def workspace(tmp_path: pathlib.Path) -> pathlib.Path:
+def workspace(tmp_path: pathlib.Path, language: str = "en") -> pathlib.Path:
     root = tmp_path / "workspace"
     source = root / "source"
     source.mkdir(parents=True)
@@ -29,7 +30,7 @@ def workspace(tmp_path: pathlib.Path) -> pathlib.Path:
     write(source / "architecture.py", "class Service:\n    pass\n")
     subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(source), "commit", "-qm", "initial"], check=True)
-    _workspace.init(root, "en", 30)
+    _workspace.init(root, language, 30)
     _workspace.add_git_link(root, str(source), "src")
     return root
 
@@ -37,8 +38,12 @@ def workspace(tmp_path: pathlib.Path) -> pathlib.Path:
 def start(root: pathlib.Path) -> pathlib.Path:
     result = _state.start_run(root)
     assert result["contract"] == "artifact-loop-late-bind"
+    assert result["language"] in ("en", "zh")
+    assert result["sources"] == ["src"]
     assert result["phase"] == "plan"
-    return _state.run_dir(root, _state.read(root)["run_id"])
+    run = _state.run_dir(root, _state.read(root)["run_id"])
+    assert "repo-wiki-progress:initial" in (run / "work/progress.md").read_text()
+    return run
 
 
 def unit(unit_id: str, source_path: str, kind: str) -> dict:
@@ -125,10 +130,19 @@ def write_work(run: pathlib.Path) -> None:
 
 
 def review(path: pathlib.Path, digest: str, verdict: str) -> None:
-    issues = []
+    issues = (
+        [
+            {**item, "status": "resolved"}
+            for item in json.loads(path.read_text()).get("issues", [])
+        ]
+        if path.is_file() and verdict == "approved"
+        else []
+    )
     if verdict == "changes_requested":
         issues = [
             {
+                "id": "coverage.answer-failure",
+                "status": "open",
                 "category": "coverage",
                 "claim": "The answer page omits its failure behavior.",
                 "resolution": "Add the failure behavior with evidence.",
@@ -143,6 +157,76 @@ def review(path: pathlib.Path, digest: str, verdict: str) -> None:
     )
 
 
+def plan_review(path: pathlib.Path, digest: str, verdict: str) -> None:
+    issues = (
+        [
+            {**item, "status": "resolved"}
+            for item in json.loads(path.read_text()).get("issues", [])
+        ]
+        if path.is_file() and verdict == "approved"
+        else []
+    )
+    if verdict == "changes_requested":
+        issues = [
+            {
+                "id": "domain.visible-subsystem",
+                "status": "open",
+                "category": "domain-coverage",
+                "claim": "A visible subsystem is absent from units and gaps.",
+                "resolution": "Account for it in a unit or evidence-backed gap.",
+            }
+        ]
+    write(
+        path,
+        json.dumps({"subject_digest": digest, "verdict": verdict, "issues": issues}),
+    )
+
+
+def composition_review(path: pathlib.Path, digest: str, verdict: str) -> None:
+    issues = (
+        [
+            {**item, "status": "resolved"}
+            for item in json.loads(path.read_text()).get("issues", [])
+        ]
+        if path.is_file() and verdict == "approved"
+        else []
+    )
+    if verdict == "changes_requested":
+        issues = [
+            {
+                "id": "routing.shared-route",
+                "status": "open",
+                "category": "routing",
+                "claim": "Two independently maintained units share one route.",
+                "resolution": "Split the change surfaces or explain the causal merge.",
+                "area": "composition",
+                "page_ids": ["answer"],
+                "operation": "split",
+            }
+        ]
+    write(
+        path,
+        json.dumps({"subject_digest": digest, "verdict": verdict, "issues": issues}),
+    )
+
+
+def approve_plan(root: pathlib.Path, run: pathlib.Path) -> None:
+    progress = run / "work/progress.md"
+    if "repo-wiki-progress:initial" in progress.read_text():
+        write(progress, "# Progress\n\nPlan complete; review is next.\n")
+    packet = _state.plan_review_prepare(root)
+    assert packet["ok"]
+    plan_review(run / "work/plan-review.json", packet["subject_digest"], "approved")
+
+
+def approve_composition(root: pathlib.Path, run: pathlib.Path) -> None:
+    packet = _state.composition_review_prepare(root)
+    assert packet["ok"]
+    composition_review(
+        run / "work/composition-review.json", packet["subject_digest"], "approved"
+    )
+
+
 def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
@@ -153,6 +237,56 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
     assert "return 42" in _state.evidence_read(root, "src/app.py#L1-L2")["text"]
 
     write_work(run)
+    assert _state.status(root)["next_actions"] == ["review plan"]
+    plan_packet = _state.plan_review_prepare(root)
+    plan_review(
+        run / "work/plan-review.json",
+        plan_packet["subject_digest"],
+        "changes_requested",
+    )
+    assert _state.status(root)["phase"] == "plan"
+    plan_path = run / "work/plan.md"
+    write(
+        plan_path,
+        plan_path.read_text() + "\nThe missing subsystem is now accounted for.\n",
+    )
+    repaired_plan_packet = _state.plan_review_prepare(root)
+    assert repaired_plan_packet["subject_digest"] != plan_packet["subject_digest"]
+    assert repaired_plan_packet["previous_review"]["issues"][0]["id"] == (
+        "domain.visible-subsystem"
+    )
+    plan_review(
+        run / "work/plan-review.json",
+        repaired_plan_packet["subject_digest"],
+        "approved",
+    )
+    assert _state.status(root)["next_actions"] == ["review composition"]
+    composition_packet = _state.composition_review_prepare(root)
+    composition_review(
+        run / "work/composition-review.json",
+        composition_packet["subject_digest"],
+        "changes_requested",
+    )
+    assert _state.status(root)["phase"] == "write"
+    composition_path = run / "work/composition.md"
+    write(
+        composition_path,
+        composition_path.read_text()
+        + "\nEach page now has an explicit maintainer route.\n",
+    )
+    repaired_composition_packet = _state.composition_review_prepare(root)
+    assert (
+        repaired_composition_packet["subject_digest"]
+        != composition_packet["subject_digest"]
+    )
+    assert repaired_composition_packet["previous_review"]["issues"][0]["id"] == (
+        "routing.shared-route"
+    )
+    composition_review(
+        run / "work/composition-review.json",
+        repaired_composition_packet["subject_digest"],
+        "approved",
+    )
     assert _state.status(root)["next_actions"] == ["review prepare"]
     packet = _state.review_prepare(root)
     assert packet["ok"]
@@ -167,7 +301,7 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
     assert _state.status(root)["next_actions"] == ["review prepare"]
     second = _state.review_prepare(root)
     assert second["subject_digest"] != packet["subject_digest"]
-    assert second["previous_review"]["issue_count"] == 1
+    assert second["previous_review"]["issues"][0]["id"] == ("coverage.answer-failure")
     assert second["previous_review"]["artifact"] == str(run / "work/review.json")
     review(run / "work/review.json", second["subject_digest"], "approved")
     completed = _state.review_complete(root)
@@ -180,7 +314,7 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
         item
         for item in _validate.validate_publication(
             root, pathlib.Path(published["path"])
-        )
+        ).issues
         if item.severity == "error"
     ]
     assert errors == []
@@ -210,6 +344,8 @@ def test_explained_empty_plan_publishes_without_placeholder_pages(tmp_path):
         ),
     )
 
+    approve_plan(root, run)
+    approve_composition(root, run)
     assert _state.status(root)["next_actions"] == ["review prepare"]
     packet = _state.review_prepare(root)
     assert "previous_review" not in packet
@@ -223,7 +359,7 @@ def test_explained_empty_plan_publishes_without_placeholder_pages(tmp_path):
         item
         for item in _validate.validate_publication(
             root, pathlib.Path(published["path"])
-        )
+        ).issues
         if item.severity == "error"
     ]
     assert errors == []
@@ -233,11 +369,66 @@ def test_status_derives_plan_composition_and_draft_repairs(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
     write(run / "work/plan.md", plan())
+    assert _state.status(root)["issues"][0]["code"] == "progress-stale"
+    write(run / "work/progress.md", "# Progress\n\nPlan complete; review is next.\n")
+    assert _state.status(root)["issues"][0]["code"] == "plan-review-missing"
+    approve_plan(root, run)
     assert _state.status(root)["issues"][0]["code"] == "composition-missing"
     write(run / "work/composition.md", composition())
     status = _state.status(root)
+    assert status["phase"] == "composition-review"
+    assert status["issues"][0]["code"] == "composition-review-missing"
+    packet = _state.composition_review_prepare(root)
+    write(
+        run / "work/composition-review.json",
+        json.dumps(
+            {
+                "subject_digest": packet["subject_digest"],
+                "verdict": "changes_requested",
+                "issues": [
+                    {
+                        "id": "routing.invalid-area",
+                        "status": "open",
+                        "category": "routing",
+                        "claim": "The route is ambiguous.",
+                        "resolution": "Repair the Composition route.",
+                        "area": "page",
+                        "page_ids": ["answer"],
+                        "operation": "repair",
+                    }
+                ],
+            }
+        ),
+    )
+    assert _state.status(root)["issues"][0]["code"] == (
+        "composition-review-area-invalid"
+    )
+    approve_composition(root, run)
+    status = _state.status(root)
     assert status["phase"] == "write"
     assert {item["code"] for item in status["issues"]} == {"page-draft-missing"}
+
+
+def test_status_summarizes_large_issue_sets(tmp_path):
+    root = workspace(tmp_path)
+    start(root)
+    state = _state.read(root)
+    issues = [
+        {
+            "severity": "error",
+            "code": "draft-invalid" if index < 11 else "link-invalid",
+            "path": f"drafts/{index}.md",
+            "line": None,
+            "message": "invalid",
+        }
+        for index in range(12)
+    ]
+
+    status = _state._status_payload(root, state, "write", [], issues=issues)
+
+    assert len(status["issues"]) == 10
+    assert status["issue_counts"] == {"draft-invalid": 11, "link-invalid": 1}
+    assert status["issues_truncated"] == 2
 
 
 def test_one_unit_plan_can_publish_one_page(tmp_path):
@@ -277,8 +468,135 @@ def test_one_unit_plan_can_publish_one_page(tmp_path):
         ),
     )
     write(run / "work/drafts/answer.md", draft("src/app.py#L1-L2", "answer", "answer"))
+    approve_plan(root, run)
+    approve_composition(root, run)
     packet = _state.review_prepare(root)
     assert packet["ok"]
+
+
+def test_chinese_partial_page_uses_localized_gap_heading(tmp_path):
+    root = workspace(tmp_path, "zh")
+    run = start(root)
+    write(
+        run / "work/plan.md",
+        render(
+            {
+                "kind": "knowledge-plan",
+                "units": [unit("answer", "app.py", "capability")],
+                "gaps": [],
+            },
+            "# Plan\n\n一个语义单元。\n",
+        ),
+    )
+    write(run / "work/progress.md", "# Progress\n\n规划完成，下一步审查。\n")
+    approve_plan(root, run)
+    write(
+        run / "work/composition.md",
+        render(
+            {
+                "kind": "composition-map",
+                "pages": [
+                    {
+                        "id": "answer",
+                        "path": "answer.md",
+                        "type": "Domain",
+                        "title": "答案行为",
+                        "description": "修改答案行为前阅读。",
+                        "tags": ["答案"],
+                        "units": ["answer"],
+                        "diagrams": [],
+                    }
+                ],
+                "gaps": [],
+            },
+            "# Composition\n\n一个单元对应一个页面。\n",
+        ),
+    )
+    write(
+        run / "work/drafts/answer.md",
+        render(
+            {
+                "coverage": "partial",
+                "sources": [{"id": "entry", "resource": "src/app.py#L1-L2"}],
+            },
+            "## 职责\n\n入口定义答案行为。[^entry]\n\n"
+            "## 缺口\n\n异常路径尚未捕获。\n\n"
+            "[^entry]: 冻结的源码入口。\n",
+        ),
+    )
+    approve_composition(root, run)
+    assert _state.status(root)["next_actions"] == ["review prepare"]
+
+
+def test_chinese_page_rejects_english_template_heading(tmp_path):
+    root = workspace(tmp_path, "zh")
+    run = start(root)
+    state = _state.read(root)
+    page = run / "candidate/answer.md"
+    write(
+        page,
+        render(
+            {
+                "id": "answer",
+                "type": "Domain",
+                "title": "答案行为",
+                "description": "修改答案行为前阅读。",
+                "tags": [],
+                "generated": {
+                    "by": "repo-wiki",
+                    "at": datetime.fromisoformat(state["started_at"]),
+                },
+                "status": "draft",
+                "coverage": "full",
+                "language": "zh",
+                "diagrams": [],
+                "sources": [],
+            },
+            "## Responsibility and public surface\n\n这里说明答案行为。\n",
+        ),
+    )
+    issues = _validate.validate_page(root, state, page)
+    assert [item.code for item in issues] == ["template-heading-leak"]
+
+
+def test_candidate_validation_collects_independent_errors_after_bad_plan(tmp_path):
+    root = workspace(tmp_path)
+    run = start(root)
+    state = _state.read(root)
+    write(run / "work/plan.md", "---\nkind: wrong\n---\n\n# Bad plan\n")
+    page = run / "candidate/answer.md"
+    write(
+        page,
+        render(
+            {
+                "id": "answer",
+                "type": "Domain",
+                "title": "答案",
+                "description": "只有中文说明。",
+                "tags": [],
+                "generated": {
+                    "by": "repo-wiki",
+                    "at": datetime.fromisoformat(state["started_at"]),
+                },
+                "status": "draft",
+                "coverage": "full",
+                "language": "en",
+                "diagrams": [],
+                "sources": [],
+            },
+            "## 职责与公开边界\n\n{{unfinished}}\n",
+        ),
+    )
+    result = _validate.validate_candidate(root, state, published=False)
+    codes = {item.code for item in result.issues}
+    assert {
+        "schema-invalid",
+        "language-content-missing",
+        "template-heading-leak",
+    } <= codes
+    assert "placeholder-remaining" in codes
+    assert not result.complete
+    assert "composition-unit-binding" in result.skipped_checks
 
 
 def test_block_resume_and_legacy_state_rejection(tmp_path):

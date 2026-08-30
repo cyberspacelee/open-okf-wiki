@@ -31,12 +31,22 @@ def emit(data, as_json: bool) -> None:
         print(data)
 
 
-def emit_issues(issues: list[dict], as_json: bool) -> int:
+def emit_issues(
+    issues: list[dict], as_json: bool, *, skipped_checks: list[str] | None = None
+) -> int:
     errors = [item for item in issues if item.get("severity") == "error"]
+    skipped_checks = skipped_checks or []
     if as_json:
         print(
             json.dumps(
-                {"errors": len(errors), "total": len(issues), "issues": issues},
+                {
+                    "complete": not skipped_checks,
+                    "errors": len(errors),
+                    "warnings": len(issues) - len(errors),
+                    "total": len(issues),
+                    "skipped_checks": skipped_checks,
+                    "issues": issues,
+                },
                 ensure_ascii=False,
                 indent=2,
             )
@@ -50,7 +60,7 @@ def emit_issues(issues: list[dict], as_json: bool) -> int:
         if len(issues) > MAX_ISSUES:
             print(f"... and {len(issues) - MAX_ISSUES} more; use --json")
         print(f"{len(errors)} error(s), {len(issues) - len(errors)} warning(s)")
-    return 1 if errors else 0
+    return 1 if errors or skipped_checks else 0
 
 
 def cmd_workspace(args) -> int:
@@ -157,11 +167,14 @@ def cmd_evidence(args) -> int:
 def cmd_review(args) -> int:
     import _state
 
-    result = (
-        _state.review_prepare(workspace_root())
-        if args.action == "prepare"
-        else _state.review_complete(workspace_root())
-    )
+    if args.action == "plan":
+        result = _state.plan_review_prepare(workspace_root())
+    elif args.action == "composition":
+        result = _state.composition_review_prepare(workspace_root())
+    elif args.action == "prepare":
+        result = _state.review_prepare(workspace_root())
+    else:
+        result = _state.review_complete(workspace_root())
     if not result.get("ok"):
         return emit_issues(result["issues"], args.json)
     emit(result, args.json)
@@ -198,15 +211,19 @@ def cmd_validate(args) -> int:
         current = _publish.current(root)
         if current is None:
             raise _publish.PublishError("nothing has been published")
-        issues = _validate.validate_publication(root, pathlib.Path(current["path"]))
+        result = _validate.validate_publication(root, pathlib.Path(current["path"]))
     else:
         state = _state.read(root)
         if state is None:
             raise _state.StateError("no run")
-        issues = _validate.validate_candidate(
+        result = _validate.validate_candidate(
             root, state, published=state["status"] in ("approved", "published")
         )
-    return emit_issues([item.to_dict() for item in issues], args.json)
+    return emit_issues(
+        [item.to_dict() for item in result.issues],
+        args.json,
+        skipped_checks=result.skipped_checks,
+    )
 
 
 def cmd_db(args) -> int:
@@ -382,6 +399,16 @@ def build_parser() -> argparse.ArgumentParser:
         "review", help="prepare or complete one independent Wiki bundle review"
     )
     review_actions = review.add_subparsers(dest="action", required=True)
+    leaf(
+        review_actions.add_parser(
+            "plan", help="prepare one independent Knowledge Plan review"
+        )
+    )
+    leaf(
+        review_actions.add_parser(
+            "composition", help="prepare one independent Composition review"
+        )
+    )
     leaf(
         review_actions.add_parser("prepare", help="bind drafts into the review bundle")
     )

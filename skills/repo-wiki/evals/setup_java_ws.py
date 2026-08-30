@@ -13,13 +13,6 @@ import time
 EVALS = pathlib.Path(__file__).resolve().parent
 OKF = EVALS.parent / "scripts" / "okf.py"
 SCENARIOS = {
-    "feign": {
-        "feign": ("https://github.com/OpenFeign/feign.git", None),
-        "spring-cloud-openfeign": (
-            "https://github.com/spring-cloud/spring-cloud-openfeign.git",
-            None,
-        ),
-    },
     "killbill": {
         "killbill": (
             "https://github.com/killbill/killbill.git",
@@ -52,7 +45,7 @@ def call(cwd: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("base", type=pathlib.Path)
-    parser.add_argument("--scenario", choices=SCENARIOS, default="feign")
+    parser.add_argument("--scenario", choices=SCENARIOS, default="killbill")
     args = parser.parse_args()
     base = args.base.resolve()
     base.mkdir(parents=True, exist_ok=True)

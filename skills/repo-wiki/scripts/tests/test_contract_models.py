@@ -7,6 +7,7 @@ from _models import (
     CompositionPage,
     KnowledgePlan,
     PageScope,
+    PlanReviewReport,
     ReviewReport,
 )
 from pydantic import ValidationError
@@ -84,9 +85,59 @@ def test_empty_plan_requires_an_explanation_and_empty_composition_is_valid():
     assert composition.pages == []
 
 
+def test_plan_review_binds_semantic_recall_before_composition():
+    report = PlanReviewReport.model_validate(
+        {"subject_digest": "a" * 64, "verdict": "approved", "issues": []}
+    )
+    assert report.verdict == "approved"
+    with pytest.raises(ValidationError, match="must contain open issues"):
+        PlanReviewReport.model_validate(
+            {
+                "subject_digest": "a" * 64,
+                "verdict": "changes_requested",
+                "issues": [],
+            }
+        )
+
+    approved = PlanReviewReport.model_validate(
+        {
+            "subject_digest": "a" * 64,
+            "verdict": "approved",
+            "issues": [
+                {
+                    "id": "domain.missing",
+                    "status": "resolved",
+                    "category": "domain-coverage",
+                    "claim": "A domain was missing.",
+                    "resolution": "Add the domain unit.",
+                }
+            ],
+        }
+    )
+    assert approved.issues[0].status == "resolved"
+    with pytest.raises(ValidationError):
+        PlanReviewReport.model_validate(
+            {
+                "subject_digest": "a" * 64,
+                "verdict": "changes_requested",
+                "issues": [
+                    {
+                        "category": "domain-coverage",
+                        "claim": "Legacy issue without ledger fields.",
+                        "resolution": "Regenerate the report.",
+                    }
+                ],
+            }
+        )
+
+
 def test_page_templates_only_seed_writer_owned_frontmatter():
     templates = pathlib.Path(__file__).parents[2] / "assets/templates"
-    for path in templates.glob("*.md"):
+    assert not list(templates.glob("*.md"))
+    assert {path.name for path in (templates / "en").glob("*.md")} == {
+        path.name for path in (templates / "zh").glob("*.md")
+    }
+    for path in templates.glob("*/*.md"):
         assert parse_file(path).meta == {"coverage": "full", "sources": []}
 
 
@@ -124,6 +175,8 @@ def test_bundle_review_routes_content_and_structural_repairs():
             "verdict": "changes_requested",
             "issues": [
                 {
+                    "id": "boundary.answer",
+                    "status": "open",
                     "category": "concept-boundary",
                     "claim": "Two unrelated capabilities share one page.",
                     "resolution": "Split the page.",
@@ -142,6 +195,8 @@ def test_bundle_review_routes_content_and_structural_repairs():
                 "verdict": "changes_requested",
                 "issues": [
                     {
+                        "id": "coverage.answer",
+                        "status": "open",
                         "category": "coverage",
                         "claim": "Missing behavior.",
                         "resolution": "Add it.",

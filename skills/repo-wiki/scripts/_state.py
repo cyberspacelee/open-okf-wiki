@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from _files import atomic_json, directory_digest
 from _frontmatter import parse_file, parse_page, render
-from _models import CompositionMap, KnowledgePlan, ReviewReport
+from _models import CompositionMap, KnowledgePlan, PlanReviewReport, ReviewReport
 
 VERSION = 3
 CONTRACT = "artifact-loop-late-bind"
@@ -19,6 +19,7 @@ MAX_SEARCH_RESULTS = 20
 MAX_SEARCH_BYTES = 8 * 1024
 MAX_READ_LINES = 200
 MAX_READ_BYTES = 64 * 1024
+MAX_STATUS_ISSUES = 10
 
 
 class StateError(Exception):
@@ -149,7 +150,9 @@ def _artifact_paths(root: pathlib.Path, state: dict) -> dict[str, str]:
         "plan": str(work / "plan.md"),
         "progress": str(work / "progress.md"),
         "evidence": str(work / "evidence"),
+        "plan_review": str(work / "plan-review.json"),
         "composition": str(work / "composition.md"),
+        "composition_review": str(work / "composition-review.json"),
         "drafts": str(work / "drafts"),
         "review": str(work / "review.json"),
         "candidate": str(base / "candidate"),
@@ -207,6 +210,12 @@ def start_run(root: pathlib.Path) -> dict:
     base = run_dir(root, run_id)
     for relative in ("index", "work/evidence", "work/drafts", "candidate", "proposals"):
         (base / relative).mkdir(parents=True, exist_ok=True)
+    (base / "work/progress.md").write_text(
+        "# Progress\n\n<!-- repo-wiki-progress:initial -->\n"
+        "Run started; replace this note after evidence synthesis.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     for revision in revisions:
         _index.write_source_index(
             root, run_id, workspace.sources[revision["name"]], revision
@@ -220,11 +229,33 @@ def _errors(items) -> list[dict]:
     return [item.to_dict() for item in items if item.severity == "error"]
 
 
+def _open_review_issues(report) -> list[dict]:
+    return [
+        item.model_dump(mode="json") for item in report.issues if item.status == "open"
+    ]
+
+
+def _previous_review(path: pathlib.Path, model) -> dict | None:
+    if not path.is_file():
+        return None
+    try:
+        report = model.model_validate_json(
+            path.read_text(encoding="utf-8"), strict=True
+        )
+    except (OSError, ValueError):
+        return None
+    if report.verdict != "changes_requested":
+        return None
+    return {"artifact": str(path), **report.model_dump(mode="json")}
+
+
 def _work_digest(root: pathlib.Path, state: dict) -> str:
     work = work_dir(root, state)
     files = [
         work / "plan.md",
+        work / "plan-review.json",
         work / "composition.md",
+        work / "composition-review.json",
         *sorted((work / "drafts").glob("*.md")),
     ]
     payload = {
@@ -246,6 +277,37 @@ def _work_digest(root: pathlib.Path, state: dict) -> str:
     ).hexdigest()
 
 
+def _plan_subject_digest(root: pathlib.Path, state: dict) -> str:
+    plan = work_dir(root, state) / "plan.md"
+    payload = {
+        "plan": hashlib.sha256(plan.read_bytes()).hexdigest(),
+        "revisions": state["revisions"],
+        "catalogs": [
+            {"name": item["name"], "content_hash": item["content_hash"]}
+            for item in state["catalogs"]
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _composition_subject_digest(root: pathlib.Path, state: dict) -> str:
+    work = work_dir(root, state)
+    payload = {
+        "plan_subject_digest": _plan_subject_digest(root, state),
+        "plan_review": hashlib.sha256(
+            (work / "plan-review.json").read_bytes()
+        ).hexdigest(),
+        "composition": hashlib.sha256(
+            (work / "composition.md").read_bytes()
+        ).hexdigest(),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def _status_payload(
     root: pathlib.Path,
     state: dict,
@@ -254,13 +316,23 @@ def _status_payload(
     *,
     issues: list[dict] | None = None,
 ) -> dict:
+    all_issues = issues or []
+    issue_counts = {}
+    for item in all_issues:
+        code = item.get("code", "unknown")
+        issue_counts[code] = issue_counts.get(code, 0) + 1
     return {
         "run_id": state["run_id"],
         "status": state["status"],
         "phase": phase,
         "contract": CONTRACT,
+        "language": state["language"],
+        "sources": [item["name"] for item in state["revisions"]]
+        + [item["name"] for item in state["catalogs"]],
         "artifacts": _artifact_paths(root, state),
-        "issues": (issues or [])[:50],
+        "issues": all_issues[:MAX_STATUS_ISSUES],
+        "issue_counts": issue_counts,
+        "issues_truncated": max(0, len(all_issues) - MAX_STATUS_ISSUES),
         "next_actions": next_actions,
         "block_reason": state.get("block_reason"),
         "run_dir": str(run_dir(root, state["run_id"])),
@@ -293,6 +365,32 @@ def status(root: pathlib.Path) -> dict:
             root, state, "plan", ["repair work/plan.md"], issues=errors
         )
 
+    progress_issues = _validate.validate_progress_artifact(
+        pathlib.Path(paths["progress"])
+    )
+    errors = _errors(progress_issues)
+    if errors:
+        return _status_payload(
+            root, state, "plan", ["update work/progress.md"], issues=errors
+        )
+
+    plan_review, plan_review_issues = _validate.validate_plan_review(
+        pathlib.Path(paths["plan_review"]), _plan_subject_digest(root, state)
+    )
+    errors = _errors(plan_review_issues)
+    if errors:
+        return _status_payload(
+            root, state, "plan-review", ["review plan"], issues=errors
+        )
+    if plan_review.verdict == "changes_requested":
+        return _status_payload(
+            root,
+            state,
+            "plan",
+            ["repair the issues in work/plan-review.json", "review plan"],
+            issues=_open_review_issues(plan_review),
+        )
+
     composition, composition_issues = _validate.validate_composition_artifact(
         pathlib.Path(paths["composition"]), plan
     )
@@ -300,6 +398,34 @@ def status(root: pathlib.Path) -> dict:
     if errors:
         return _status_payload(
             root, state, "write", ["repair work/composition.md"], issues=errors
+        )
+
+    composition_review, composition_review_issues = (
+        _validate.validate_composition_review(
+            pathlib.Path(paths["composition_review"]),
+            _composition_subject_digest(root, state),
+            {page.id for page in composition.pages},
+        )
+    )
+    errors = _errors(composition_review_issues)
+    if errors:
+        return _status_payload(
+            root,
+            state,
+            "composition-review",
+            ["review composition"],
+            issues=errors,
+        )
+    if composition_review.verdict == "changes_requested":
+        return _status_payload(
+            root,
+            state,
+            "write",
+            [
+                "repair the issues in work/composition-review.json",
+                "review composition",
+            ],
+            issues=_open_review_issues(composition_review),
         )
 
     draft_issues = _validate.validate_drafts(
@@ -334,7 +460,7 @@ def status(root: pathlib.Path) -> dict:
             state,
             "repair",
             ["repair the issues in work/review.json", "review prepare"],
-            issues=[item.model_dump(mode="json") for item in report.issues],
+            issues=_open_review_issues(report),
         )
     return _status_payload(root, state, "review", ["review complete"])
 
@@ -406,6 +532,102 @@ def _review_subject_digest(root: pathlib.Path, state: dict) -> str:
 
 
 @_locked
+def plan_review_prepare(root: pathlib.Path) -> dict:
+    import _validate
+
+    state = _require_run(root, {"active"})
+    assert_revisions_current(root, state)
+    work = work_dir(root, state)
+    _, issues = _validate.validate_plan_artifact(root, state, work / "plan.md")
+    issues.extend(_validate.validate_progress_artifact(work / "progress.md"))
+    errors = _errors(issues)
+    if errors:
+        return {"ok": False, "issues": errors, "state": status(root)}
+
+    review_path = work / "plan-review.json"
+    previous_review = _previous_review(review_path, PlanReviewReport)
+
+    packet = {
+        "ok": True,
+        "subject_digest": _plan_subject_digest(root, state),
+        "artifact": str(review_path),
+        "reference": str(
+            pathlib.Path(__file__).resolve().parent.parent / "references/plan-review.md"
+        ),
+        "contract": str(
+            pathlib.Path(__file__).resolve().parent.parent / "references/contract.md"
+        ),
+        "inputs": {
+            "plan": str(work / "plan.md"),
+            "evidence": str(work / "evidence"),
+            "sources": [item["name"] for item in state["revisions"]]
+            + [item["name"] for item in state["catalogs"]],
+        },
+        "workdir": str(root),
+    }
+    if previous_review:
+        packet["previous_review"] = previous_review
+    return packet
+
+
+@_locked
+def composition_review_prepare(root: pathlib.Path) -> dict:
+    import _validate
+
+    state = _require_run(root, {"active"})
+    assert_revisions_current(root, state)
+    work = work_dir(root, state)
+    plan, issues = _validate.validate_plan_artifact(root, state, work / "plan.md")
+    errors = _errors(issues)
+    if plan is not None:
+        plan_review, plan_review_issues = _validate.validate_plan_review(
+            work / "plan-review.json", _plan_subject_digest(root, state)
+        )
+        errors.extend(_errors(plan_review_issues))
+        if plan_review is not None and plan_review.verdict != "approved":
+            errors.append(
+                {
+                    "severity": "error",
+                    "code": "plan-review-rejected",
+                    "path": str(work / "plan-review.json"),
+                    "line": None,
+                    "message": "repair the Knowledge Plan and obtain approval",
+                }
+            )
+        _, composition_issues = _validate.validate_composition_artifact(
+            work / "composition.md", plan
+        )
+        errors.extend(_errors(composition_issues))
+    if errors:
+        return {"ok": False, "issues": errors, "state": status(root)}
+
+    review_path = work / "composition-review.json"
+    previous_review = _previous_review(review_path, ReviewReport)
+
+    packet = {
+        "ok": True,
+        "subject_digest": _composition_subject_digest(root, state),
+        "artifact": str(review_path),
+        "reference": str(
+            pathlib.Path(__file__).resolve().parent.parent
+            / "references/composition-review.md"
+        ),
+        "contract": str(
+            pathlib.Path(__file__).resolve().parent.parent / "references/contract.md"
+        ),
+        "inputs": {
+            "plan": str(work / "plan.md"),
+            "plan_review": str(work / "plan-review.json"),
+            "composition": str(work / "composition.md"),
+        },
+        "workdir": str(root),
+    }
+    if previous_review:
+        packet["previous_review"] = previous_review
+    return packet
+
+
+@_locked
 def review_prepare(root: pathlib.Path) -> dict:
     import _validate
 
@@ -415,6 +637,21 @@ def review_prepare(root: pathlib.Path) -> dict:
     plan, issues = _validate.validate_plan_artifact(root, state, work / "plan.md")
     errors = _errors(issues)
     if plan is not None:
+        plan_review, plan_review_issues = _validate.validate_plan_review(
+            work / "plan-review.json", _plan_subject_digest(root, state)
+        )
+        errors.extend(_errors(plan_review_issues))
+        if plan_review is not None and plan_review.verdict != "approved":
+            errors.append(
+                {
+                    "severity": "error",
+                    "code": "plan-review-rejected",
+                    "path": str(work / "plan-review.json"),
+                    "line": None,
+                    "message": "repair the Knowledge Plan and obtain approval",
+                }
+            )
+    if plan is not None:
         composition, composition_issues = _validate.validate_composition_artifact(
             work / "composition.md", plan
         )
@@ -422,6 +659,24 @@ def review_prepare(root: pathlib.Path) -> dict:
     else:
         composition = None
     if plan is not None and composition is not None:
+        composition_review, composition_review_issues = (
+            _validate.validate_composition_review(
+                work / "composition-review.json",
+                _composition_subject_digest(root, state),
+                {page.id for page in composition.pages},
+            )
+        )
+        errors.extend(_errors(composition_review_issues))
+        if composition_review is not None and composition_review.verdict != "approved":
+            errors.append(
+                {
+                    "severity": "error",
+                    "code": "composition-review-rejected",
+                    "path": str(work / "composition-review.json"),
+                    "line": None,
+                    "message": "repair the Composition and obtain approval",
+                }
+            )
         errors.extend(
             _errors(
                 _validate.validate_drafts(
@@ -430,34 +685,26 @@ def review_prepare(root: pathlib.Path) -> dict:
             )
         )
     if errors:
-        return {"ok": False, "issues": errors[:50], "state": status(root)}
+        return {"ok": False, "issues": errors, "state": status(root)}
 
     review_path = work / "review.json"
-    previous_review = None
-    if review_path.is_file():
-        try:
-            report = ReviewReport.model_validate_json(
-                review_path.read_text(encoding="utf-8"), strict=True
-            )
-            if report.verdict == "changes_requested":
-                previous_review = {
-                    "artifact": str(review_path),
-                    "issue_count": len(report.issues),
-                }
-        except (OSError, ValueError):
-            pass
+    previous_review = _previous_review(review_path, ReviewReport)
 
     _bind_candidate(root, state, plan, composition)
-    candidate_issues = _validate.validate_candidate(root, state, published=False)
-    errors = _errors(candidate_issues)
-    if errors:
-        return {"ok": False, "issues": errors[:50], "state": status(root)}
+    candidate_validation = _validate.validate_candidate(root, state, published=False)
+    errors = _errors(candidate_validation.issues)
+    if errors or not candidate_validation.complete:
+        return {
+            "ok": False,
+            "issues": errors,
+            "skipped_checks": candidate_validation.skipped_checks,
+            "state": status(root),
+        }
 
     state["candidate_inputs_digest"] = _work_digest(root, state)
     state["candidate_digest"] = directory_digest(candidate_dir(root, state))
     state["review_subject_digest"] = _review_subject_digest(root, state)
     _write(root, state)
-    okf = pathlib.Path(__file__).resolve().parent / "okf.py"
     packet = {
         "ok": True,
         "subject_digest": state["review_subject_digest"],
@@ -471,10 +718,10 @@ def review_prepare(root: pathlib.Path) -> dict:
         "inputs": {
             "plan": str(work / "plan.md"),
             "composition": str(work / "composition.md"),
+            "composition_review": str(work / "composition-review.json"),
             "evidence": str(work / "evidence"),
             "candidate": str(candidate_dir(root, state)),
         },
-        "complete_command": f"uv run {okf} review complete --json",
         "workdir": str(root),
     }
     if previous_review:
@@ -516,17 +763,18 @@ def review_complete(root: pathlib.Path) -> dict:
     )
     errors = _errors(issues)
     if errors:
-        return {"ok": False, "issues": errors[:50], "state": status(root)}
+        return {"ok": False, "issues": errors, "state": status(root)}
     if report.verdict == "changes_requested":
         return {
             "ok": True,
             "verdict": report.verdict,
-            "issues": [item.model_dump(mode="json") for item in report.issues],
+            "issues": _open_review_issues(report),
             "state": status(root),
         }
     _stamp_candidate(root, state)
-    errors = _errors(_validate.validate_candidate(root, state, published=True))
-    if errors:
+    validation = _validate.validate_candidate(root, state, published=True)
+    errors = _errors(validation.issues)
+    if errors or not validation.complete:
         raise StateError(f"approved candidate is invalid: {errors[:3]}")
     state["status"] = "approved"
     state["approved_at"] = _now()

@@ -5,12 +5,20 @@ the Candidate, Plan, Composition, writing contract and relevant evidence notes.
 Reopen frozen Source evidence for decision-changing claims. Do not use the
 producer's conversation history.
 
-When the packet includes `previous_review`, read its Artifact before
-overwriting it and verify every prior issue against the complete new bundle.
+The approved Plan review owns repository-wide domain recall, and the approved
+Composition review owns initial task routing and page cohesion. Verify that the
+bundle carries both through honestly and that writing introduced no routing
+regression; do not repeat either pre-write review from scratch.
+
+Sweep the complete bundle and report every independently supportable issue in
+one pass; do not stop after the first failure. When the packet includes
+`previous_review`, read its complete ledger before replacement. Preserve every
+issue ID, mark verified repairs `resolved`, retain failures as `open`, and add a
+new ID only when the repair introduced an issue or an earlier issue prevented
+assessment. Replace the fixed Artifact in one update.
 
 Judge the Wiki globally:
 
-- domain recall, Source roles, lifecycles, failures and cross-Source contracts;
 - knowledge-unit coverage and honest gaps;
 - Grep Test, page boundaries, duplicate concepts and routing quality;
 - page type, representation, hierarchy implied by paths and cross-links;
@@ -24,6 +32,8 @@ Write strict JSON to the packet's fixed `artifact` path:
   "subject_digest": "<packet subject_digest>",
   "verdict": "changes_requested",
   "issues": [{
+    "id": "boundary.request-recovery",
+    "status": "open",
     "category": "concept-boundary",
     "claim": "Two unrelated capabilities share one page.",
     "resolution": "Split them into independently routable pages.",
@@ -41,7 +51,8 @@ operations always use the composition area. Categories are
 `invented-rationale`, `padded-gap`, `routing`, `coverage`, `language` and
 `representation`.
 
-An approved report has no issues. An empty Candidate is approvable only when
-the empty Plan explains why no knowledge passes the Grep Test. On every
-follow-up, review the complete new bundle. Return only the report path, verdict
-and issue count.
+Issue IDs are stable lowercase slugs. An approved report has no open issues and
+retains resolved entries. An empty Candidate is approvable only when the empty
+Plan explains why no knowledge passes the Grep Test. Do not run coordinator
+commands such as status, `review complete`, Publication or export. Return only
+the report path, verdict and open issue count.

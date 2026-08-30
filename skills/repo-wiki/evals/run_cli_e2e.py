@@ -95,7 +95,12 @@ def evaluate(base: pathlib.Path) -> dict:
     run(ws, "source", "add", "link", str(web), "--name", "WebUI")
 
     started = run(ws, "run", "start")
-    if started["phase"] != "plan" or started["next_actions"] != ["repair work/plan.md"]:
+    if (
+        started["phase"] != "plan"
+        or started["language"] != "en"
+        or started["sources"] != ["API", "WebUI"]
+        or started["next_actions"] != ["repair work/plan.md"]
+    ):
         raise RuntimeError(f"Run did not enter Plan: {started}")
     search = run(ws, "evidence", "search", "public class", "--source", "API")
     locator = search.get("results", [{}])[0].get("locator")
@@ -117,6 +122,57 @@ def evaluate(base: pathlib.Path) -> dict:
                 "gaps": [],
             },
             "# Knowledge Plan\n\nThe API and WebUI expose one cross-Source boundary.",
+        ),
+    )
+
+    plan_packet = run(ws, "review", "plan")
+    write(
+        pathlib.Path(plan_packet["artifact"]),
+        json.dumps(
+            {
+                "subject_digest": plan_packet["subject_digest"],
+                "verdict": "changes_requested",
+                "issues": [
+                    {
+                        "id": "domain.failure-handling",
+                        "status": "open",
+                        "category": "domain-coverage",
+                        "claim": "The Plan does not explain failure handling.",
+                        "resolution": "Record the bounded fixture's lack of failure behavior.",
+                    }
+                ],
+            }
+        ),
+    )
+    if run(ws, "run", "status")["phase"] != "plan":
+        raise RuntimeError("rejected Plan review did not return to planning")
+    plan_path = work / "plan.md"
+    write(
+        plan_path,
+        plan_path.read_text()
+        + "\n\n## Gaps\n\nThe bounded fixture has no failure behavior to document.\n",
+    )
+    plan_packet = run(ws, "review", "plan")
+    if plan_packet.get("previous_review", {}).get("issues", [{}])[0].get("id") != (
+        "domain.failure-handling"
+    ):
+        raise RuntimeError("follow-up Plan review omitted the prior report")
+    write(
+        pathlib.Path(plan_packet["artifact"]),
+        json.dumps(
+            {
+                "subject_digest": plan_packet["subject_digest"],
+                "verdict": "approved",
+                "issues": [
+                    {
+                        "id": "domain.failure-handling",
+                        "status": "resolved",
+                        "category": "domain-coverage",
+                        "claim": "The Plan does not explain failure handling.",
+                        "resolution": "Record the bounded fixture's lack of failure behavior.",
+                    }
+                ],
+            }
         ),
     )
     write(
@@ -151,6 +207,66 @@ def evaluate(base: pathlib.Path) -> dict:
             "# Composition\n\nStable page IDs are independent of publication paths.",
         ),
     )
+    composition_packet = run(ws, "review", "composition")
+    write(
+        pathlib.Path(composition_packet["artifact"]),
+        json.dumps(
+            {
+                "subject_digest": composition_packet["subject_digest"],
+                "verdict": "changes_requested",
+                "issues": [
+                    {
+                        "id": "routing.page-routes",
+                        "status": "open",
+                        "category": "routing",
+                        "claim": "The Composition does not explain its page routes.",
+                        "resolution": "Record why each maintainer task lands on one page.",
+                        "area": "composition",
+                        "page_ids": [],
+                        "operation": "repair",
+                    }
+                ],
+            }
+        ),
+    )
+    if run(ws, "run", "status")["phase"] != "write":
+        raise RuntimeError("rejected Composition review did not return to composition")
+    composition_path = work / "composition.md"
+    write(
+        composition_path,
+        composition_path.read_text()
+        + "\nEach maintainer task has one explicit route.\n",
+    )
+    composition_packet = run(ws, "review", "composition")
+    if (
+        composition_packet.get("previous_review", {}).get("issues", [{}])[0].get("id")
+        != "routing.page-routes"
+    ):
+        raise RuntimeError("follow-up Composition review omitted the prior report")
+    write(
+        pathlib.Path(composition_packet["artifact"]),
+        json.dumps(
+            {
+                "subject_digest": composition_packet["subject_digest"],
+                "verdict": "approved",
+                "issues": [
+                    {
+                        "id": "routing.page-routes",
+                        "status": "resolved",
+                        "category": "routing",
+                        "claim": "The Composition does not explain its page routes.",
+                        "resolution": "Record why each maintainer task lands on one page.",
+                        "area": "composition",
+                        "page_ids": [],
+                        "operation": "repair",
+                    }
+                ],
+            }
+        ),
+    )
+    if run(ws, "run", "status")["phase"] != "write":
+        raise RuntimeError("approved Composition review did not unlock page writing")
+
     api_ref = "API/src/main/java/example/App.java#L1-L2"
     web_ref = "WebUI/src/main/java/example/App.java#L1-L2"
     write(
@@ -167,6 +283,12 @@ def evaluate(base: pathlib.Path) -> dict:
     packet = run(ws, "review", "prepare")
     if "previous_review" in packet:
         raise RuntimeError("first review packet included prior review state")
+    if "complete_command" in packet:
+        raise RuntimeError("review packet leaked a coordinator-only command")
+    if packet.get("inputs", {}).get("composition_review") != str(
+        work / "composition-review.json"
+    ):
+        raise RuntimeError("bundle review packet omitted Composition approval")
     write(
         pathlib.Path(packet["artifact"]),
         json.dumps(
@@ -175,6 +297,8 @@ def evaluate(base: pathlib.Path) -> dict:
                 "verdict": "changes_requested",
                 "issues": [
                     {
+                        "id": "coverage.overview-routing",
+                        "status": "open",
                         "category": "coverage",
                         "claim": "Overview needs an explicit routing statement.",
                         "resolution": "Add the routing statement with evidence.",
@@ -194,7 +318,9 @@ def evaluate(base: pathlib.Path) -> dict:
 
     packet = run(ws, "review", "prepare")
     previous = packet.get("previous_review", {})
-    if previous.get("issue_count") != 1 or not previous.get("artifact"):
+    if previous.get("issues", [{}])[0].get(
+        "id"
+    ) != "coverage.overview-routing" or not previous.get("artifact"):
         raise RuntimeError("follow-up review packet omitted the prior report")
     write(
         pathlib.Path(packet["artifact"]),
@@ -202,7 +328,18 @@ def evaluate(base: pathlib.Path) -> dict:
             {
                 "subject_digest": packet["subject_digest"],
                 "verdict": "approved",
-                "issues": [],
+                "issues": [
+                    {
+                        "id": "coverage.overview-routing",
+                        "status": "resolved",
+                        "category": "coverage",
+                        "claim": "Overview needs an explicit routing statement.",
+                        "resolution": "Add the routing statement with evidence.",
+                        "area": "page",
+                        "page_ids": ["overview"],
+                        "operation": "repair",
+                    }
+                ],
             }
         ),
     )
@@ -213,7 +350,7 @@ def evaluate(base: pathlib.Path) -> dict:
     published = run(ws, "publication", "publish")
     run(ws, "publication", "export", "--to", "wiki")
     validation = run(ws, "validate", "--published")
-    if validation["errors"]:
+    if validation["errors"] or validation.get("complete") is not True:
         raise RuntimeError(f"published validation failed: {validation}")
     bound = pathlib.Path(published["path"]) / "overview.md"
     if "](/architecture.md)" not in bound.read_text(encoding="utf-8"):

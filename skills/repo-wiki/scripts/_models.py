@@ -202,6 +202,44 @@ class KnowledgePlan(BaseModel):
         return self
 
 
+class PlanReviewIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: StableId
+    status: Literal["open", "resolved"]
+    category: Literal[
+        "domain-coverage",
+        "source-role",
+        "lifecycle",
+        "failure-path",
+        "cross-source-contract",
+        "grep-test",
+        "gap",
+    ]
+    claim: ClaimText
+    resolution: ClaimText
+
+
+class PlanReviewReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    subject_digest: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    verdict: Literal["approved", "changes_requested"]
+    issues: list[PlanReviewIssue] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def verdict_matches_issues(self):
+        ids = [item.id for item in self.issues]
+        if len(ids) != len(set(ids)):
+            raise ValueError("plan review issue ids must be unique")
+        open_issues = [item for item in self.issues if item.status == "open"]
+        if self.verdict == "approved" and open_issues:
+            raise ValueError("approved plan review must not contain open issues")
+        if self.verdict == "changes_requested" and not open_issues:
+            raise ValueError("changes_requested plan review must contain open issues")
+        return self
+
+
 class CompositionPage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -246,6 +284,8 @@ class CompositionMap(BaseModel):
 class ReviewIssue(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    id: StableId
+    status: Literal["open", "resolved"]
     category: Literal[
         "domain-coverage",
         "concept-boundary",
@@ -282,10 +322,14 @@ class ReviewReport(BaseModel):
 
     @model_validator(mode="after")
     def verdict_matches_issues(self):
-        if self.verdict == "approved" and self.issues:
-            raise ValueError("approved review must not contain issues")
-        if self.verdict == "changes_requested" and not self.issues:
-            raise ValueError("changes_requested review must contain issues")
+        ids = [item.id for item in self.issues]
+        if len(ids) != len(set(ids)):
+            raise ValueError("review issue ids must be unique")
+        open_issues = [item for item in self.issues if item.status == "open"]
+        if self.verdict == "approved" and open_issues:
+            raise ValueError("approved review must not contain open issues")
+        if self.verdict == "changes_requested" and not open_issues:
+            raise ValueError("changes_requested review must contain open issues")
         return self
 
 
