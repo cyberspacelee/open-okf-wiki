@@ -209,6 +209,27 @@ test("implicit Workspace citations are relative to the Workspace root", async (t
   assert.equal(result.ok, true, result.issues.map((issue) => issue.message).join("\n"));
 });
 
+test("implicit Workspace citations reject Run handoffs as source evidence", async (t) => {
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-handoff-source-"));
+  const wikiRoot = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-handoff-candidate-"));
+  t.after(async () => {
+    await rm(sourceRoot, { recursive: true, force: true });
+    await rm(wikiRoot, { recursive: true, force: true });
+  });
+  const handoff = path.join(sourceRoot, ".okf-wiki", "run", "handoffs", "survey.md");
+  await mkdir(path.dirname(handoff), { recursive: true });
+  await writeFile(handoff, "survey evidence\n");
+  await writeFile(path.join(wikiRoot, "overview.md"), okfPage(
+    "Overview",
+    "Overview",
+    "Claim. [^main]",
+    ".okf-wiki/run/handoffs/survey.md#L1",
+  ));
+  const result = await validateWikiTree(wikiRoot, [{ scopeId: "self", logicalPath: ".", realPath: sourceRoot }]);
+  assert.equal(result.ok, false);
+  assert.ok(result.issues.some((issue) => issue.code === "citation"));
+});
+
 test("validation requires claim line ranges and checks them against the pinned file", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-citation-range-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));

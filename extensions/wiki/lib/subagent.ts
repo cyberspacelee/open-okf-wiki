@@ -83,8 +83,15 @@ export async function createSubagentRuntime(
   const byName = new Map(agents.map((agent) => [agent.name, agent]));
   const guard = writeGuardFromPlan(plan, candidateRoot);
   await mkdir(guard.candidateRoot, { recursive: true });
+  const maxConcurrency = options.maxConcurrency;
+  if (maxConcurrency !== undefined && (!Number.isInteger(maxConcurrency) || maxConcurrency < 1)) {
+    throw new Error("subagent maxConcurrency must be a positive integer");
+  }
+  let activeWorkers = 0;
+  const workerWaiters: Array<() => void> = [];
   let activeSharedBatches = 0;
   let exclusiveBatch = false;
+  let activeWriteTargets: WikiWriteTarget[] = [];
   return {
     async run(tasks, signal, onUpdate) {
       if (!tasks.length) throw new Error("subagent requires at least one task");
@@ -93,10 +100,6 @@ export async function createSubagentRuntime(
       options.assertDispatch?.(tasks);
       const release = acquireBatch(tasks);
       try {
-        const maxConcurrency = options.maxConcurrency ?? tasks.length;
-        if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
-          throw new Error("subagent maxConcurrency must be a positive integer");
-        }
         const jobs = tasks.map((task) => ({ ...task, id: executionId(task.agent) }));
         const live = new Map(jobs.map((task) => [task.id, { ...task, status: "queued" as SubagentTaskStatus, tools: [] as WikiToolView[] }]));
         const report = async () => {
@@ -125,26 +128,31 @@ export async function createSubagentRuntime(
         };
         for (const task of jobs) await onTask?.({ ...task, status: "queued" });
         await report();
-        return await mapWithConcurrency(jobs, maxConcurrency, async (task) => {
-          const entry = live.get(task.id)!;
-          entry.status = "running";
-          await onTask?.({ ...task, status: "running" });
-          await flushReport();
-          const result = await runOne(task, byName, guard, plan.fingerprint, {
-            ...session,
-            onActivity(event) {
-              const scoped = { ...event, scope: task.id };
-              session.onActivity?.(scoped);
-              if (scoped.kind === "tool") applyChildTool(live.get(task.id)!.tools, scoped);
-              scheduleReport();
-            },
-          }, signal, catalogsForTask(task, plan, catalogs), options.templates, options.maxWorkerRepairRounds, options.language,
-          options.handoffsForTask?.(task) ?? []);
-          const status = result.error ? "failed" : result.status ?? "complete";
-          entry.status = status;
-          await onTask?.({ ...result, status });
-          await flushReport();
-          return result;
+        return await mapWithConcurrency(jobs, maxConcurrency ?? tasks.length, async (task) => {
+          const releaseWorker = await acquireWorkerSlot();
+          try {
+            const entry = live.get(task.id)!;
+            entry.status = "running";
+            await onTask?.({ ...task, status: "running" });
+            await flushReport();
+            const result = await runOne(task, byName, guard, plan.fingerprint, {
+              ...session,
+              onActivity(event) {
+                const scoped = { ...event, scope: task.id };
+                session.onActivity?.(scoped);
+                if (scoped.kind === "tool") applyChildTool(live.get(task.id)!.tools, scoped);
+                scheduleReport();
+              },
+            }, signal, catalogsForTask(task, plan, catalogs), options.templates, options.maxWorkerRepairRounds, options.language,
+            options.handoffsForTask?.(task) ?? []);
+            const status = result.error ? "failed" : result.status ?? "complete";
+            entry.status = status;
+            await onTask?.({ ...result, status });
+            await flushReport();
+            return result;
+          } finally {
+            releaseWorker();
+          }
         });
       } finally {
         release();
@@ -152,14 +160,37 @@ export async function createSubagentRuntime(
     },
   };
 
+  async function acquireWorkerSlot(): Promise<() => void> {
+    if (maxConcurrency === undefined) return () => {};
+    if (activeWorkers < maxConcurrency) activeWorkers += 1;
+    else await new Promise<void>((resolve) => workerWaiters.push(resolve));
+    return () => {
+      const next = workerWaiters.shift();
+      if (next) next();
+      else activeWorkers -= 1;
+    };
+  }
+
   function acquireBatch(tasks: readonly SubagentTask[]): () => void {
     const shared = tasks.every((task) => task.agent === "survey");
     if (shared) {
-      if (exclusiveBatch) throw new Error("survey cannot start while synthesize, write, or review is running");
+      if (exclusiveBatch || activeWriteTargets.length) {
+        throw new Error("survey cannot start while synthesize, write, or review is running");
+      }
       activeSharedBatches += 1;
       return () => { activeSharedBatches -= 1; };
     }
-    if (exclusiveBatch || activeSharedBatches > 0) {
+    const writeTargets = tasks.every((task) => task.agent === "write") ? tasks.map(targetFromTask) : [];
+    if (writeTargets.length) {
+      if (exclusiveBatch || activeSharedBatches > 0) {
+        throw new Error("write cannot start while survey, synthesize, or review is running");
+      }
+      const overlap = writeTargets.find((target) => activeWriteTargets.some((active) => writeTargetsOverlap(active, target)));
+      if (overlap) throw new Error(`overlapping write target already running: ${overlap.mode}:${overlap.path}`);
+      activeWriteTargets.push(...writeTargets);
+      return () => { activeWriteTargets = activeWriteTargets.filter((target) => !writeTargets.includes(target)); };
+    }
+    if (exclusiveBatch || activeSharedBatches > 0 || activeWriteTargets.length) {
       throw new Error("synthesize, write, and review require exclusive subagent execution");
     }
     exclusiveBatch = true;

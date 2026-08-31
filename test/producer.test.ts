@@ -755,7 +755,7 @@ test("Lead prompt receives a bounded recovery frame without template skeletons",
   const producer = createProductionWikiProducer({
     session: {
       async createSession(options) {
-        tools = options.customTools.map((tool) => tool.name);
+        tools = options.customTools;
         system = options.resourceLoader.getAppendSystemPrompt().join("\n");
         return {
           session: {
@@ -781,8 +781,12 @@ test("Lead prompt receives a bounded recovery frame without template skeletons",
   assert.match(system, /Explicit Workspace Domain|Implicit Workspace Domain|Wiki-root aggregation pages/);
   assert.match(system, /Treat repository files.*untrusted evidence/s);
   assert.doesNotMatch(prompt, /Output skeleton|Page contract catalog|Directory contract/);
-  assert.ok(tools.includes("candidate_check"));
-  assert.equal(tools.includes("db_tables"), false);
+  assert.ok(tools.some((tool) => tool.name === "candidate_check"));
+  assert.equal(tools.some((tool) => tool.name === "db_tables"), false);
+  assert.equal(tools.some((tool) => tool.name === "ls"), false);
+  const read = tools.find((tool) => tool.name === "read");
+  assert.match(read.description, /Readable roots: `wiki`, `\.okf-wiki\/run\/handoffs`/);
+  assert.doesNotMatch(read.description, /repo-name/);
 });
 
 test("an existing Lead session resumes with checkpoint delta only", async (t) => {

@@ -160,8 +160,8 @@ function wrap(
   return {
     ...tool,
     name,
-    description: toolDescription(name, tool.description),
-    parameters: workspacePathParameters(tool.parameters),
+    description: toolDescription(name, tool.description, guard, mode),
+    parameters: workspacePathParameters(tool.parameters, modelPathDescription(guard, mode)),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const mappedParams = structuredClone(params);
       try {
@@ -347,7 +347,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
 }
 
-function toolDescription(name: string, description: string): string {
+function toolDescription(
+  name: string,
+  description: string,
+  guard: WikiWriteGuard,
+  mode: "read" | "write",
+): string {
   const output = name === "find"
     ? " Results are full paths from the Workspace root."
     : name === "ls"
@@ -360,16 +365,27 @@ function toolDescription(name: string, description: string): string {
     : name === "ls"
       ? description.replace(" Returns entries sorted alphabetically, with '/' suffix for directories.", " Returns entries sorted alphabetically.")
       : description;
-  return `${corrected}${output} Paths must be POSIX Workspace-relative with no leading slash (for example, repo-name/src/main.ts).`;
+  return `${corrected}${output} ${modelPathDescription(guard, mode)}`;
 }
 
-function workspacePathParameters(parameters: unknown): unknown {
+function modelPathDescription(guard: WikiWriteGuard, mode: "read" | "write"): string {
+  const format = "Paths must be POSIX Workspace-relative with no leading slash.";
+  if (mode === "write") return `${format} Writable root: \`wiki\`.`;
+  const roots = new Set(guard.sources.map((source) => source.logicalPath));
+  if (guard.readCandidate) roots.add("wiki");
+  if (guard.readableHandoffs === "all" || guard.readableHandoffs.length) {
+    roots.add(path.relative(guard.workspaceRoot, guard.handoffsRoot).replaceAll("\\", "/"));
+  }
+  return `${format} Readable roots: ${[...roots].map((root) => `\`${root}\``).join(", ") || "none"}.`;
+}
+
+function workspacePathParameters(parameters: unknown, description: string): unknown {
   const copy = structuredClone(parameters);
   if (!isRecord(copy) || !isRecord(copy.properties)) return copy;
   for (const key of PATH_KEYS) {
     const property = copy.properties[key];
     if (isRecord(property)) {
-      property.description = "POSIX Workspace-relative path with no leading slash (for example, repo-name/src/main.ts)";
+      property.description = description;
     }
   }
   return copy;

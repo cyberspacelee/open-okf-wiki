@@ -42,7 +42,9 @@ Evaluate every page and every applicable contract on five dimensions:
   enforced rule with an enforcement point, violation signal, and verification.
   Generic lifecycle prose reused across Concepts fails when the source does not
   support each stated transition or action; unresolved evidence is reported as
-  a gap rather than softened with placeholder prose.
+  a gap rather than softened with placeholder prose. Handoffs guide coverage but
+  cannot ground Candidate claims or citations; require reopened Source or Catalog
+  evidence.
 - **Ownership**: Workspace, repository, Domain, Concept, and topic knowledge has
   one canonical owner; other pages link instead of duplicating it.
 - **Actionability**: a developer can locate the public surface, predict failure

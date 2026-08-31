@@ -11,6 +11,7 @@ const FOOTNOTE_DEFINITION = /^ {0,3}\[\^([^\]]+)\]:/gm;
 const LEGACY_BODY_CITATION = /#L[1-9]\d*/;
 
 const SOURCE_RESOURCE_GRAMMAR = "Workspace-relative path optionally followed by #Lx[-Ly], or catalog:name/table";
+const RESERVED_SOURCE_ROOTS = new Set([".okf-wiki", "wiki"]);
 
 export interface SourceCitation {
   id: string;
@@ -57,6 +58,7 @@ export function formatWriterCitationContract(
     "```",
     "",
     "Each `sources` entry requires a unique stable `id` and a `resource`; `title` is optional. Every body `[^id]` has the same `sources[].id` and a later `[^id]: ...` footnote definition. Put source evidence in `sources`, and use ordinary Markdown links only for Wiki pages.",
+    "Run handoffs and `wiki/...` pages are planning or generated artifacts, never citation resources or footnote sources. Reopen the pinned Source or Catalog evidence behind a handoff before citing it.",
     "A file `resource` is a POSIX Workspace-relative path. A frontmatter-only inventory entry may use `path`; every entry referenced by a body footnote requires `path#L12` or `path#L12-L18`. Every cited file and complete claimed range must be read successfully.",
     sourceScope,
     "Use paths without a leading slash, `./`, `../`, empty segments, or backslashes.",
@@ -78,7 +80,8 @@ export function parseSourceResource(value: string): Omit<SourceCitation, "id"> |
   const resourcePath = match[1];
   if (!resourcePath || resourcePath.startsWith("/") || resourcePath.includes("//")) return undefined;
   const segments = resourcePath.split("/");
-  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return undefined;
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")
+    || RESERVED_SOURCE_ROOTS.has(segments[0]!)) return undefined;
   const startLine = match[2] ? Number(match[2]) : undefined;
   return startLine === undefined
     ? { path: resourcePath }

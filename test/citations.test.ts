@@ -27,6 +27,8 @@ test("parseSourceResource reads a Workspace-relative path with an optional line 
   assert.equal(parseSourceResource("../api/main.ts#L1"), undefined);
   assert.equal(parseSourceResource("api\\main.ts#L1"), undefined);
   assert.equal(parseSourceResource("api/main.ts#section"), undefined);
+  assert.equal(parseSourceResource(".okf-wiki/run/handoffs/survey.md#L1"), undefined);
+  assert.equal(parseSourceResource("wiki/overview.md#L1"), undefined);
 });
 
 test("parseSourceResource reads a Catalog table locator", () => {

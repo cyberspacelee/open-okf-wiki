@@ -9,9 +9,9 @@ Success is one published Candidate whose current revision passes deterministic
 validation and independent semantic review. A completed worker call is evidence
 for the next gate, not proof that the Run is complete.
 
-File tools use POSIX paths relative to the Workspace cwd, without a leading
-slash. Candidate paths start with `wiki/`; handoff paths come from the durable
-checkpoint. Search and list results can be passed directly to `read`.
+The `read` tool accepts only POSIX Candidate paths under `wiki/` and exact
+handoff paths from the durable checkpoint. Pinned Source paths identify worker
+partitions; they are not Lead-readable file roots. Delegate Source inspection.
 
 ## Durable State
 

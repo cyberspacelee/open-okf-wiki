@@ -56,7 +56,7 @@ import {
   type RunRecord,
 } from "./run-record.js";
 
-const LEAD_CANDIDATE_TOOLS = ["read", "ls"] as const;
+const LEAD_CANDIDATE_TOOLS = ["read"] as const;
 
 export interface WikiProducerOptions {
   runLead?: (context: WikiLeadContext) => Promise<void>;

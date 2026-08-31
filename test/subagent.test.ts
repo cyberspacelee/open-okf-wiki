@@ -374,6 +374,15 @@ test("subagent runtime bounds parallel sessions", async (t) => {
     new AbortController().signal,
   );
   assert.equal(peak, 2);
+
+  peak = 0;
+  await Promise.all(Array.from({ length: 5 }, (_, index) => runtime.run([{
+    agent: "survey",
+    task: `map separate source ${index}`,
+    boardTaskId: "survey",
+    partition: `separate-source-${index}`,
+  }], new AbortController().signal)));
+  assert.equal(peak, 2);
 });
 
 test("subagent runtime records queued work before a worker acquires a slot", async (t) => {
@@ -590,6 +599,44 @@ test("subagent batches allow parallel survey and disjoint writes", async (t) => 
   ], new AbortController().signal);
   assert.equal(writes.length, 2);
   assert.equal(writes.every((result) => !result.error), true);
+
+  let releaseSeparate;
+  let announceSeparate;
+  let sessionCount = 0;
+  const separateStarted = new Promise((resolve) => { announceSeparate = resolve; });
+  const separateHeld = new Promise((resolve) => { releaseSeparate = resolve; });
+  const separateWrite = await createSubagentRuntime({
+    workspaceRoot,
+    workspaceRealPath: workspaceRoot,
+    configPath: path.join(workspaceRoot, "workspace.yaml"),
+    defaultSourceIgnores: true,
+    excludes: [],
+    sources: [],
+    fingerprint: "test",
+  }, path.join(workspaceRoot, "separate-candidate"), {
+    async createSession(options) {
+      sessionCount += 1;
+      return submittingSession(options, WRITE_RECEIPT, sessionCount === 1 ? {
+        async prompt() { announceSeparate(); await separateHeld; },
+      } : {});
+    },
+  });
+  const firstWrite = separateWrite.run([
+    { agent: "write", task: "a", boardTaskId: "write", partition: "billing", writeMode: "subtree" },
+  ], new AbortController().signal);
+  await separateStarted;
+  const secondWrite = separateWrite.run([
+    { agent: "write", task: "b", boardTaskId: "write", partition: "checkout", writeMode: "subtree" },
+  ], new AbortController().signal);
+  const overlappingWrite = separateWrite.run([
+    { agent: "write", task: "c", boardTaskId: "write", partition: "billing/invoice", writeMode: "subtree" },
+  ], new AbortController().signal);
+  const concurrent = Promise.allSettled([firstWrite, secondWrite]);
+  const overlap = overlappingWrite.then(() => undefined, (error) => error);
+  releaseSeparate();
+  assert.deepEqual((await concurrent).map((result) => result.status), ["fulfilled", "fulfilled"]);
+  assert.match(String(await overlap), /overlapping write target/);
+
   await assert.rejects(() => runtime.run([
     { agent: "survey", task: "a", boardTaskId: "survey", partition: "a" },
     { agent: "review", task: "b", boardTaskId: "survey", partition: "b" },
