@@ -22,12 +22,35 @@ Use `status.sources` as the registered Source-name list.
 
 ## Resume
 
-Run `okf run status --json`. If no Run exists, initialize, register every
+Run `okf run status --json`. When it returns `run: null`, run
+`okf workspace show --json`. If that succeeds, register any missing Sources and
+start. If it reports an uninitialized Workspace, initialize, register every
 Source, then start without supplying an ID:
 
     okf workspace init --lang en --freshness-days 90
     okf source add link ../service --name service
     okf run start
+
+Use the matching registration form for another filesystem Source:
+
+    okf source add clone https://example.test/service.git --name service --ref main
+    okf source add files ../contracts --name contracts
+
+For OpenGauss, inspect the live schema, then register only the selected tables:
+
+    okf db tables --url-env DATABASE_URL --json
+    okf db describe orders --url-env DATABASE_URL --json
+    okf source add opengauss --name database --url-env DATABASE_URL --schema public --table orders
+
+After `run start`, inspect captured database evidence without reconnecting:
+
+    okf catalog show --json
+    okf catalog describe orders --source database --json
+
+When status reports a published or abandoned Run, `okf run start` begins a
+refresh from the already registered Sources. To discard a supported active or
+blocked Run, use `okf run abandon --json`; legacy state is rejected rather than
+migrated.
 
 Disk Artifacts are authoritative after restart or context compression:
 
@@ -43,14 +66,26 @@ Disk Artifacts are authoritative after restart or context compression:
 These are logical names inside the current Run. Always use the absolute paths
 returned in `status.artifacts`; never construct or pass the internal Run ID.
 
-## Coordinator loop
+## Artifact loop
 
-Repeat until `status` is `published` or `blocked`:
+Repeat until `status.status` is `published` or `blocked`:
 
-Treat each status phase as a disclosure boundary. During Plan load only
-`plan.md` and `contract.md`; load Composition, Page and bundle Review references
-only after status reaches their phase. Reviewers load their packet reference in
-their own context.
+Treat `status.phase` as a disclosure boundary and `status.next_actions` as the
+commands or repairs to execute:
+
+| Phase | Load and act |
+| --- | --- |
+| `plan` | `plan.md` and `contract.md`; investigate or repair the Plan |
+| `plan-review` | Run `review plan`; its reviewer loads the returned reference |
+| `write` | `composition.md` for Composition work, then `page.md` for drafts |
+| `composition-review` | Run `review composition`; its reviewer loads the returned reference |
+| `review` | Run `review prepare` or `review complete`; its reviewer loads the returned reference |
+| `repair` | The prior review and the named Plan, Composition or page Artifacts |
+| `publish` | Run `publication publish` |
+| `blocked` | Resolve the external dependency, then run `run resume` |
+| `done` | Stop, or run `run start` when a refresh was requested |
+
+Reviewers load the reference named in their packet in their own context.
 
 1. Run `okf run status --json` after restart and after an action that can change
    the derived phase; do not poll unchanged work.
@@ -118,9 +153,10 @@ the concurrency boundary; launching many evidence commands concurrently adds
 router pressure without producing an additional independent judgment.
 
 Evidence-note granularity does not determine Plan-unit granularity. One bounded
-note may support several independently routable units; apply the Task Routing
-Test in `references/plan.md` before writing the Plan instead of turning each
-worker question into one umbrella unit.
+note may support several independently routable units; apply the maintainer
+probes in `references/plan.md` before writing the Plan instead of turning each
+worker question into one umbrella unit. Composition later applies the Task
+Routing Test in `references/composition.md`.
 
 After merging the first evidence batch, treat every significant registered
 domain that is merely "not traced" as a residual investigation, not a Gap.
@@ -141,8 +177,9 @@ overrides. When `has_more` is true, continue with the returned `next_after` or
 
 Finish Plan normalization, including scope and evidence-seed trimming, before
 requesting review; any later Plan edit invalidates the digest-bound approval.
-When the Plan passes deterministic validation, status returns `review plan`.
-Run that exact action; do not substitute the later bundle action `review prepare`.
+When the Plan passes deterministic validation, `next_actions` returns `review
+plan`. Run that exact action; do not substitute the later bundle action `review
+prepare`.
 Its JSON stdout is the review packet, while its `artifact` field is the output
 path the reviewer must replace, not a packet file to read. Dispatch the packet
 verbatim to one independent reviewer; do not paraphrase the packet or retype its
@@ -184,6 +221,10 @@ Each writer receives the Plan, Composition, relevant evidence-note paths, the
 exact template under `assets/templates/<status.language>/`, its fixed output
 `work/drafts/<page-id>.md` and `status.language` verbatim. There is no language
 fallback; a missing locale template is a broken skill package.
+Map Page Types to templates as follows: `Overview` to `overview.md`,
+`Architecture` to `architecture.md`, `Domain` to `domain.md`, `Flow` to
+`flow.md`, `Lifecycle` to `lifecycle.md`, `DataModel` to `data-model.md` and
+`Table` to `table.md`.
 Resolve these paths once from `<skill>` and `status.artifacts`, then pass those
 exact strings to writers; do not reconstruct runtime paths.
 For every dispatch, copy the literal Composition `pages[].id` into the output
@@ -223,7 +264,8 @@ and only regressions introduced or unmasked by those repairs; it does not
 restart repository-wide discovery. Structural `split`, `merge` and `move`
 changes belong in Composition.
 
-After approval, status returns `publication publish`. Run it, then verify:
+After approval, `next_actions` returns `publication publish`. Run it, then
+verify:
 
     okf publication publish
     okf validate --published
@@ -233,4 +275,15 @@ Publication installs an immutable content-addressed generation and atomically
 switches the current pointer. Optional source-facing proposals run afterward:
 
     okf propose start --json
-    okf propose complete --json
+
+The coordinator owns this optional pass. After `propose start`, read the
+returned [references/propose.md](references/propose.md), write only inside its
+returned proposal directory, then run its `complete_command` (normally `okf
+propose complete --json`).
+
+Publication maintenance commands are explicit and optional:
+
+    okf publication current --json
+    okf publication verify --actor human:reviewer --page architecture.md --json
+    okf publication rollback --json
+    okf publication prune --keep 5 --json

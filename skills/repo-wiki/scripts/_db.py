@@ -4,6 +4,8 @@ import pathlib
 import re
 from urllib.parse import quote, urlsplit
 
+from _files import atomic_json
+
 
 class DbError(Exception):
     pass
@@ -249,15 +251,6 @@ def catalog_table_path(
     return catalog_dir(root, content_hash) / "tables" / f"{page_slug}.json"
 
 
-def _write_json(path: pathlib.Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-
-
 def index_from_payload(payload: dict) -> dict:
     return {
         "name": payload["name"],
@@ -395,8 +388,8 @@ def capture_catalog(root: pathlib.Path, source, *, tables=tables, describe=descr
     content_hash = hashlib.sha256(raw).hexdigest()
     directory = catalog_dir(root, content_hash)
     directory.mkdir(parents=True, exist_ok=True)
-    _write_json(directory / "catalog.json", payload)
-    _write_json(catalog_index_path(root, content_hash), index_from_payload(payload))
+    atomic_json(directory / "catalog.json", payload)
+    atomic_json(catalog_index_path(root, content_hash), index_from_payload(payload))
     for item in described:
-        _write_json(catalog_table_path(root, content_hash, item["page_slug"]), item)
+        atomic_json(catalog_table_path(root, content_hash, item["page_slug"]), item)
     return catalog_record(payload, content_hash)

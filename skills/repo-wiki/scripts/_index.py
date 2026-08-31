@@ -304,6 +304,7 @@ def build_index(
     pin: pathlib.Path,
     files: list[str],
 ) -> dict:
+    files = sorted(files)
     build_modules = _maven_modules(pin, files)
     source_sets = _source_sets(files)
     semantic = {

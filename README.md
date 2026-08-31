@@ -104,11 +104,11 @@ worktree — paths outside the Workspace are mounted automatically under
 materializes a Git URL in the same place. `workspace.json` lives at the hub
 root.
 Source names preserve letter case, while names that differ only by case are
-rejected for Windows portability. Link `.` when the Workspace directory itself
-is the intended repository:
+rejected for Windows portability. The Workspace is always a separate hub;
+register the intended repository from a named child or external path:
 
 ```text
-uv run $REPO_WIKI_SKILL/scripts/okf.py source add link . --name app
+uv run $REPO_WIKI_SKILL/scripts/okf.py source add link ../app --name app
 uv run $REPO_WIKI_SKILL/scripts/okf.py source add link ../services/API --name API
 uv run $REPO_WIKI_SKILL/scripts/okf.py source add clone https://github.com/example/web.git --name Web --ref main
 uv run $REPO_WIKI_SKILL/scripts/okf.py source list --json

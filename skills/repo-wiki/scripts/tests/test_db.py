@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import _db
+import _validate
 import pytest
 from _db import DbError, describe, load_env, resolve_url, tables
 
@@ -239,6 +240,8 @@ def test_captured_catalog_has_safe_slug_and_credential_free_resource(
         _db.describe_captured(tmp_path, [catalog], "Order Items")["comment"]
         == "line items"
     )
+    assert _validate._catalog_record_valid(tmp_path, catalog)
+    assert not _validate._catalog_record_valid(tmp_path, payload)
 
 
 def test_capture_fills_table_comment_when_describe_omits_it(tmp_path, monkeypatch):

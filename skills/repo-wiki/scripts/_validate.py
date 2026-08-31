@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Literal
 from urllib.parse import unquote, urlparse
 
+from _db import catalog_record
 from _diagram import validate as validate_diagrams
 from _files import directory_digest
 from _frontmatter import parse_file, render
@@ -169,23 +170,6 @@ def _catalog_resource(state: dict, resource: str) -> bool:
     return resource in allowed
 
 
-def _slim_tables(tables) -> list[dict] | None:
-    if not isinstance(tables, list):
-        return None
-    result = []
-    for table in tables:
-        if not isinstance(table, dict) or not isinstance(table.get("resource"), str):
-            return None
-        result.append(
-            {
-                "name": table.get("name"),
-                "page_slug": table.get("page_slug"),
-                "resource": table["resource"],
-            }
-        )
-    return result
-
-
 def _catalog_record_valid(root: pathlib.Path, entry) -> bool:
     if not isinstance(entry, dict):
         return False
@@ -209,15 +193,7 @@ def _catalog_record_valid(root: pathlib.Path, entry) -> bool:
     ).hexdigest()
     if digest != content_hash:
         return False
-    payload = {key: value for key, value in entry.items() if key != "content_hash"}
-    if payload == captured:
-        return True
-    return (
-        payload.get("name") == captured.get("name")
-        and payload.get("schema") == captured.get("schema")
-        and payload.get("resource") == captured.get("resource")
-        and _slim_tables(payload.get("tables")) == _slim_tables(captured.get("tables"))
-    )
+    return entry == catalog_record(captured, content_hash)
 
 
 def _check_range(
@@ -1300,7 +1276,7 @@ def validate_proposals(
         )
     begin = re.compile(r"<!--\s*okf-wiki:begin\b[^>]*-->")
     end = re.compile(r"<!--\s*okf-wiki:end\s*-->")
-    for proposal in path.glob("agents-block-*.md"):
+    for proposal in sorted(path.glob("agents-block-*.md")):
         text = proposal.read_text(encoding="utf-8")
         if len(begin.findall(text)) != 1 or len(end.findall(text)) != 1:
             issues.append(

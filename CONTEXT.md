@@ -48,9 +48,9 @@ The host cycle that reads status, performs the derived next work, repairs every
 validation or review issue and repeats until published or externally blocked.
 _Avoid_: Target DAG, phase cursor that permits premature exit
 
-**Living Artifact**:
-A fixed Markdown or JSON file overwritten as understanding improves. Plan,
-progress, Composition, drafts and review survive context compression directly.
+**Fixed Artifact**:
+A Markdown or JSON file at a stable path, overwritten as understanding improves.
+Plan, progress, Composition, drafts and review survive context compression directly.
 _Avoid_: Attempt Artifact, checkpoint history
 
 **Handoff**:
@@ -69,7 +69,7 @@ cite.
 _Avoid_: package task, inventory
 
 **Knowledge Plan**:
-The living cross-Source analysis defining stable Knowledge Units, scopes, seeds
+The evolving cross-Source analysis defining stable Knowledge Units, scopes, seeds
 and gaps without choosing Wiki pages or paths. It may be empty only when its
 gaps explain why no knowledge passes the Grep Test.
 _Avoid_: page tree, Source shard
@@ -89,6 +89,11 @@ The global information-architecture decision assigning every Knowledge Unit to
 one stable Page ID, representation and final path. An empty Plan has an empty
 Composition and produces no placeholder page.
 _Avoid_: Plan, parent DAG, writer schedule
+
+**Task Routing Test**:
+A page-boundary check requiring one concrete maintenance change or failure
+question to lead to one cohesive page.
+_Avoid_: one unit per page, smallest page count
 
 **Page ID**:
 A stable logical identity used for drafts and logical links before final paths
@@ -128,6 +133,11 @@ _Avoid_: authoritative Publication
 A routing layer for knowledge expensive to reconstruct, bounded by the Grep
 Test rather than file or directory coverage.
 _Avoid_: Source mirror, API reference
+
+**Grep Test**:
+The admission check that excludes knowledge reconstructable by grep plus a few
+source files in about a minute.
+_Avoid_: file coverage, documentation quota
 
 **Locator**:
 A plain Source-relative evidence path with an optional line range, bound to the

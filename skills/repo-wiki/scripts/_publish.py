@@ -356,7 +356,7 @@ def prune(root: pathlib.Path, keep: int = KEEP_GENERATIONS) -> dict:
             for item in generations.iterdir()
             if item.is_dir() and not item.name.startswith(".")
         ),
-        key=lambda item: item.stat().st_mtime,
+        key=_generation_order,
         reverse=True,
     )
     kept = []
@@ -366,6 +366,20 @@ def prune(root: pathlib.Path, keep: int = KEEP_GENERATIONS) -> dict:
             continue
         shutil.rmtree(item, ignore_errors=True)
     return {"kept": kept}
+
+
+def _generation_order(path: pathlib.Path) -> tuple[str, str, str]:
+    try:
+        manifest = json.loads(
+            (path / ".okf-manifest.json").read_text(encoding="utf-8")
+        )
+        return (
+            str(manifest.get("published_at", "")),
+            str(manifest.get("run_id", "")),
+            path.name,
+        )
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return "", "", path.name
 
 
 def publish(root: pathlib.Path) -> dict:

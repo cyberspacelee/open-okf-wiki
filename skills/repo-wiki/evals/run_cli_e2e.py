@@ -193,7 +193,7 @@ def evaluate(base: pathlib.Path) -> dict:
     plan_path = work / "plan.md"
     write(
         plan_path,
-        plan_path.read_text()
+        plan_path.read_text(encoding="utf-8")
         + "\n\n## Gaps\n\nThe bounded fixture has no failure behavior to document.\n",
     )
     plan_packet = run(ws, "review", "plan")
@@ -278,7 +278,7 @@ def evaluate(base: pathlib.Path) -> dict:
     composition_path = work / "composition.md"
     write(
         composition_path,
-        composition_path.read_text()
+        composition_path.read_text(encoding="utf-8")
         + "\nEach maintainer task has one explicit route.\n",
     )
     composition_packet = run(ws, "review", "composition")
@@ -358,7 +358,10 @@ def evaluate(base: pathlib.Path) -> dict:
     if changed["verdict"] != "changes_requested":
         raise RuntimeError("review repair loop did not remain active")
     overview = work / "drafts/overview.md"
-    write(overview, overview.read_text() + "\nRouting starts here.[^api]\n")
+    write(
+        overview,
+        overview.read_text(encoding="utf-8") + "\nRouting starts here.[^api]\n",
+    )
 
     packet = run(ws, "review", "prepare")
     previous = packet.get("previous_review", {})

@@ -26,7 +26,8 @@ The host follows one explicit loop until Publication or a real external block:
     status -> plan/write/review/repair -> status -> ... -> publish
 
 State stores captured revisions, catalogs, lifecycle status and exact approval
-digests. Status derives the phase from fixed files:
+digests under the `artifact-loop-late-bind` contract identifier; other contract
+identifiers are rejected. Status derives the phase from fixed files:
 
     work/plan.md
     work/progress.md

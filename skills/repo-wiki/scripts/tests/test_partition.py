@@ -50,6 +50,16 @@ def test_index_records_are_disjoint_and_outline_is_a_tree(tmp_path):
     assert "entry:" in rendered
 
 
+def test_index_is_independent_of_inventory_order(tmp_path):
+    files = ["a.py", "b.py", "c.py", "d.py"]
+    for rel in files:
+        write(tmp_path / rel, f"# {rel}\n")
+
+    assert _index.build_index("demo", tmp_path, files) == _index.build_index(
+        "demo", tmp_path, list(reversed(files))
+    )
+
+
 def test_maven_modules_and_source_sets_are_detected_without_running_build(tmp_path):
     write(
         tmp_path / "pom.xml",

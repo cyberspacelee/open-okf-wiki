@@ -264,25 +264,13 @@ def configure(
 
 
 def _active_run(root: pathlib.Path) -> bool:
-    pointer = root / ".okf-wiki" / "current-run.json"
-    if not pointer.exists():
-        return False
+    import _state
+
     try:
-        run_id = json.loads(pointer.read_text(encoding="utf-8"))["run_id"]
-        if not isinstance(run_id, str) or not re.fullmatch(r"r-\d{8}T\d{12}Z", run_id):
-            raise WorkspaceError(
-                "corrupt current-run pointer; delete .okf-wiki/current-run.json or restore it"
-            )
-        state = json.loads(
-            (root / ".okf-wiki" / "runs" / run_id / "state.json").read_text()
-        )
-        return state.get("status") not in ("published", "abandoned")
-    except WorkspaceError:
-        raise
-    except (KeyError, OSError, json.JSONDecodeError) as exc:
-        raise WorkspaceError(
-            f"corrupt current-run pointer; delete .okf-wiki/current-run.json or restore it ({exc})"
-        ) from exc
+        state = _state.read(root)
+    except _state.StateError as exc:
+        raise WorkspaceError(str(exc)) from exc
+    return state is not None and state["status"] not in ("published", "abandoned")
 
 
 def _mount_link(target: pathlib.Path, mount: pathlib.Path) -> None:

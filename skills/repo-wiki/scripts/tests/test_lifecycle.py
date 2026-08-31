@@ -1,4 +1,5 @@
 import json
+import os
 import pathlib
 import subprocess
 from datetime import datetime
@@ -8,7 +9,7 @@ import _state
 import _validate
 import _workspace
 import pytest
-from _files import compact_json_size
+from _files import compact_json_size, directory_digest
 from _frontmatter import render
 from _models import RunPolicy
 
@@ -46,7 +47,9 @@ def start(root: pathlib.Path) -> pathlib.Path:
     assert result["sources"] == ["src"]
     assert result["phase"] == "plan"
     run = _state.run_dir(root, _state.read(root)["run_id"])
-    assert "repo-wiki-progress:initial" in (run / "work/progress.md").read_text()
+    assert "repo-wiki-progress:initial" in (run / "work/progress.md").read_text(
+        encoding="utf-8"
+    )
     return run
 
 
@@ -137,7 +140,7 @@ def review(path: pathlib.Path, digest: str, verdict: str) -> None:
     issues = (
         [
             {**item, "status": "resolved"}
-            for item in json.loads(path.read_text()).get("issues", [])
+            for item in json.loads(path.read_text(encoding="utf-8")).get("issues", [])
         ]
         if path.is_file() and verdict == "approved"
         else []
@@ -165,7 +168,7 @@ def plan_review(path: pathlib.Path, digest: str, verdict: str) -> None:
     issues = (
         [
             {**item, "status": "resolved"}
-            for item in json.loads(path.read_text()).get("issues", [])
+            for item in json.loads(path.read_text(encoding="utf-8")).get("issues", [])
         ]
         if path.is_file() and verdict == "approved"
         else []
@@ -190,7 +193,7 @@ def composition_review(path: pathlib.Path, digest: str, verdict: str) -> None:
     issues = (
         [
             {**item, "status": "resolved"}
-            for item in json.loads(path.read_text()).get("issues", [])
+            for item in json.loads(path.read_text(encoding="utf-8")).get("issues", [])
         ]
         if path.is_file() and verdict == "approved"
         else []
@@ -216,7 +219,7 @@ def composition_review(path: pathlib.Path, digest: str, verdict: str) -> None:
 
 def approve_plan(root: pathlib.Path, run: pathlib.Path) -> None:
     progress = run / "work/progress.md"
-    if "repo-wiki-progress:initial" in progress.read_text():
+    if "repo-wiki-progress:initial" in progress.read_text(encoding="utf-8"):
         write(progress, "# Progress\n\nPlan complete; review is next.\n")
     packet = _state.plan_review_prepare(root)
     assert packet["ok"]
@@ -252,7 +255,8 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
     plan_path = run / "work/plan.md"
     write(
         plan_path,
-        plan_path.read_text() + "\nThe missing subsystem is now accounted for.\n",
+        plan_path.read_text(encoding="utf-8")
+        + "\nThe missing subsystem is now accounted for.\n",
     )
     repaired_plan_packet = _state.plan_review_prepare(root)
     assert repaired_plan_packet["subject_digest"] != plan_packet["subject_digest"]
@@ -275,7 +279,7 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
     composition_path = run / "work/composition.md"
     write(
         composition_path,
-        composition_path.read_text()
+        composition_path.read_text(encoding="utf-8")
         + "\nEach page now has an explicit maintainer route.\n",
     )
     repaired_composition_packet = _state.composition_review_prepare(root)
@@ -294,14 +298,20 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
     assert _state.status(root)["next_actions"] == ["review prepare"]
     packet = _state.review_prepare(root)
     assert packet["ok"]
-    assert "](/architecture.md)" in (run / "candidate/guides/answer.md").read_text()
+    assert "](/architecture.md)" in (
+        run / "candidate/guides/answer.md"
+    ).read_text(encoding="utf-8")
 
     review(run / "work/review.json", packet["subject_digest"], "changes_requested")
     result = _state.review_complete(root)
     assert result["verdict"] == "changes_requested"
     assert result["state"]["phase"] == "repair"
     answer = run / "work/drafts/answer.md"
-    write(answer, answer.read_text() + "\nFailure behavior is explicit.[^entry]\n")
+    write(
+        answer,
+        answer.read_text(encoding="utf-8")
+        + "\nFailure behavior is explicit.[^entry]\n",
+    )
     assert _state.status(root)["next_actions"] == ["review prepare"]
     second = _state.review_prepare(root)
     assert second["subject_digest"] != packet["subject_digest"]
@@ -310,6 +320,12 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
     review(run / "work/review.json", second["subject_digest"], "approved")
     completed = _state.review_complete(root)
     assert completed["state"]["status"] == "approved"
+
+    approved_plan = plan_path.read_text(encoding="utf-8")
+    write(plan_path, approved_plan + "\nTampered after approval.\n")
+    with pytest.raises(_publish.PublishError, match="working artifacts changed"):
+        _publish.publish(root)
+    write(plan_path, approved_plan)
 
     published = _publish.publish(root)
     assert published["pages"] == 2
@@ -322,6 +338,15 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
         if item.severity == "error"
     ]
     assert errors == []
+
+    proposal = _state.propose_start(root)
+    assert proposal["reference"].endswith("references/propose.md")
+    assert _state.propose_complete(root) == {"ok": True, "files": []}
+
+    verified = _publish.verify(root, "human:qa", ["guides/answer.md"])
+    assert verified["actor"] == "human:qa"
+    assert verified["generation"] != published["generation"]
+    assert _publish.rollback(root)["generation"] == published["generation"]
 
 
 def test_explained_empty_plan_publishes_without_placeholder_pages(tmp_path):
@@ -504,7 +529,7 @@ def test_evidence_byte_limits_preserve_json_and_continuation(tmp_path):
 def test_workspace_and_run_reject_missing_policy(tmp_path):
     root = workspace(tmp_path)
     config_path = root / "workspace.json"
-    config = json.loads(config_path.read_text())
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     config.pop("policy")
     config_path.write_text(json.dumps(config))
     with pytest.raises(_workspace.WorkspaceError, match="workspace policy"):
@@ -711,8 +736,110 @@ def test_block_resume_and_legacy_state_rejection(tmp_path):
     assert _state.block(root, "credentials required")["status"] == "blocked"
     assert _state.resume(root)["status"] == "active"
     path = run / "state.json"
-    state = json.loads(path.read_text())
+    state = json.loads(path.read_text(encoding="utf-8"))
     state["contract"] = "knowledge-composition-late-bind"
     write(path, json.dumps(state))
     with pytest.raises(_state.StateError, match="artifact-loop-late-bind"):
         _state.read(root)
+
+
+def test_run_abandon(tmp_path):
+    root = workspace(tmp_path)
+    start(root)
+    assert _state.abandon(root) == {"abandoned": True}
+    assert _state.status(root)["status"] == "abandoned"
+
+
+def test_source_registration_variants(tmp_path):
+    root = tmp_path / "workspace"
+    origin = tmp_path / "origin"
+    files = tmp_path / "contracts"
+    origin.mkdir()
+    files.mkdir()
+    write(files / "schema.txt", "answer: integer\n")
+    subprocess.run(["git", "init", "-q", str(origin)], check=True)
+    subprocess.run(
+        ["git", "-C", str(origin), "config", "user.email", "qa@example.test"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(origin), "config", "user.name", "QA"], check=True
+    )
+    write(origin / "app.py", "answer = 42\n")
+    subprocess.run(["git", "-C", str(origin), "add", "app.py"], check=True)
+    subprocess.run(["git", "-C", str(origin), "commit", "-qm", "initial"], check=True)
+
+    _workspace.init(root)
+    assert _workspace.add_git_clone(root, str(origin), "service").kind == "git"
+    assert _workspace.add_files_source(root, str(files), "contracts").kind == "files"
+    database = _workspace.add_opengauss_source(
+        root, "database", "DATABASE_URL", "public", ["orders"]
+    )
+    assert database.kind == "opengauss"
+    assert database.tables == ("orders",)
+
+
+def test_directory_digest_is_order_independent_and_content_bound(tmp_path):
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    write(left / "b.txt", "B")
+    write(left / "a.txt", "A")
+    write(right / "a.txt", "A")
+    write(right / "b.txt", "B")
+
+    assert directory_digest(left) == directory_digest(right)
+    write(right / "b.txt", "changed")
+    assert directory_digest(left) != directory_digest(right)
+
+
+def test_active_run_state_is_read_as_utf8(tmp_path, monkeypatch):
+    root = workspace(tmp_path, "zh")
+    start(root)
+    original = pathlib.Path.read_text
+
+    def require_utf8(path, *args, **kwargs):
+        if path.name == "state.json":
+            assert kwargs.get("encoding") == "utf-8"
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", require_utf8)
+    assert _workspace._active_run(root)
+
+
+def test_prune_uses_manifest_publication_order(tmp_path):
+    root = tmp_path / "workspace"
+    generations = root / ".okf-wiki/publication/generations"
+    for name, published_at, mtime in (
+        ("old", "2026-01-01T00:00:00+00:00", 3),
+        ("middle", "2026-01-02T00:00:00+00:00", 2),
+        ("new", "2026-01-03T00:00:00+00:00", 1),
+    ):
+        generation = generations / name
+        write(
+            generation / ".okf-manifest.json",
+            json.dumps({"published_at": published_at, "run_id": f"run-{name}"}),
+        )
+        os.utime(generation, (mtime, mtime))
+
+    assert _publish.prune(root, keep=1) == {"kept": ["new"]}
+
+
+def test_proposal_issues_are_sorted_by_path(tmp_path, monkeypatch):
+    proposals = tmp_path / "proposals"
+    write(proposals / "agents-block-b.md", "invalid\n")
+    write(proposals / "agents-block-a.md", "invalid\n")
+    state = {
+        "revisions": [
+            {"name": "a", "kind": "git"},
+            {"name": "b", "kind": "git"},
+        ]
+    }
+    unordered = [proposals / "agents-block-b.md", proposals / "agents-block-a.md"]
+    monkeypatch.setattr(pathlib.Path, "glob", lambda _path, _pattern: iter(unordered))
+
+    issues = _validate.validate_proposals(tmp_path, state, proposals)
+
+    assert [pathlib.Path(item.path).name for item in issues] == [
+        "agents-block-a.md",
+        "agents-block-b.md",
+    ]
