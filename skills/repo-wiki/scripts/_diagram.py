@@ -75,7 +75,9 @@ def _caption_refs(structure: Structure, fence: CodeFence) -> set[str]:
 
 
 def validate(
-    structure: Structure, planned: list[DiagramSpec]
+    structure: Structure,
+    planned: list[DiagramSpec],
+    source_citations: dict[str, set[str]] | None = None,
 ) -> list[tuple[str, str, int | None]]:
     issues: list[tuple[str, str, int | None]] = []
     fences = [fence for fence in structure.fences if fence.language == "mermaid"]
@@ -123,7 +125,8 @@ def validate(
                     fence.start_line,
                 )
             )
-        if not _caption_refs(structure, fence):
+        caption_refs = _caption_refs(structure, fence)
+        if not caption_refs:
             issues.append(
                 (
                     "diagram-evidence-missing",
@@ -131,6 +134,25 @@ def validate(
                     fence.end_line,
                 )
             )
+        elif source_citations is not None:
+            spec = next((item for item in planned if item.id == diagram_id), None)
+            missing = (
+                [
+                    source
+                    for source in spec.sources
+                    if not (source_citations.get(source, set()) & caption_refs)
+                ]
+                if spec
+                else []
+            )
+            if missing:
+                issues.append(
+                    (
+                        "diagram-evidence-missing",
+                        f"{diagram_id} caption must cite each planned Source: {missing}",
+                        fence.end_line,
+                    )
+                )
 
     for fence in fences:
         kind, error = _basic_structure(fence.content)

@@ -7,7 +7,12 @@ from _models import DiagramSpec
 def spec(kind: str) -> list[DiagramSpec]:
     return [
         DiagramSpec.model_validate(
-            {"id": "behavior", "kind": kind, "question": "What happens?"}
+            {
+                "id": "behavior",
+                "kind": kind,
+                "question": "What happens?",
+                "sources": ["src"],
+            }
         )
     ]
 
@@ -102,3 +107,32 @@ flowchart LR
     """
     codes = {code for code, _, _ in validate(extract(body), [])}
     assert codes == {"mermaid-fence-unclosed"}
+
+
+def test_cross_source_diagram_caption_cites_every_planned_source():
+    body = """```mermaid
+%% okf-id: behavior
+sequenceDiagram
+    API->>Worker: Request
+    accTitle: Cross-source behavior
+    accDescr: API sends a request to Worker.
+```
+
+The API initiates the request.[^api]
+
+[^api]: API source
+"""
+    planned = [
+        DiagramSpec.model_validate(
+            {
+                "id": "behavior",
+                "kind": "sequence",
+                "question": "How does the request cross Sources?",
+                "sources": ["API", "Worker"],
+            }
+        )
+    ]
+
+    issues = validate(extract(body), planned, {"API": {"api"}, "Worker": {"worker"}})
+
+    assert [code for code, _, _ in issues] == ["diagram-evidence-missing"]

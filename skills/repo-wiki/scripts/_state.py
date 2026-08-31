@@ -12,6 +12,7 @@ from _files import atomic_json, compact_json_size, directory_digest
 from _frontmatter import parse_file, parse_page, render
 from _models import (
     CompositionMap,
+    CompositionReviewReport,
     KnowledgePlan,
     PlanReviewReport,
     ReviewReport,
@@ -21,7 +22,7 @@ from _models import (
 from pydantic import ValidationError
 
 VERSION = 1
-CONTRACT = "artifact-loop-late-bind"
+CONTRACT = "artifact-loop-routing-closure"
 LOCK_TIMEOUT_SEC = 60
 MAX_STATUS_ISSUES = 10
 
@@ -376,10 +377,35 @@ def _status_payload(
         "issues": all_issues[:MAX_STATUS_ISSUES],
         "issue_counts": issue_counts,
         "issues_truncated": max(0, len(all_issues) - MAX_STATUS_ISSUES),
+        "artifact_counts": _artifact_counts(root, state),
         "next_actions": next_actions,
         "block_reason": state.get("block_reason"),
         "run_dir": str(run_dir(root, state["run_id"])),
     }
+
+
+def _artifact_counts(root: pathlib.Path, state: dict) -> dict:
+    work = work_dir(root, state)
+    result = {
+        "knowledge_units": None,
+        "pages": None,
+        "drafts_written": len(list((work / "drafts").glob("*.md"))),
+        "drafts_missing": None,
+    }
+    try:
+        plan = _markdown_model(work / "plan.md", KnowledgePlan)
+        result["knowledge_units"] = len(plan.units)
+    except (OSError, StateError, ValidationError):
+        pass
+    try:
+        composition = _markdown_model(work / "composition.md", CompositionMap)
+        expected = {page.id for page in composition.pages}
+        present = {path.stem for path in (work / "drafts").glob("*.md")}
+        result["pages"] = len(composition.pages)
+        result["drafts_missing"] = len(expected - present)
+    except (OSError, StateError, ValidationError):
+        pass
+    return result
 
 
 def status(root: pathlib.Path) -> dict:
@@ -418,7 +444,9 @@ def status(root: pathlib.Path) -> dict:
         )
 
     plan_review, plan_review_issues = _validate.validate_plan_review(
-        pathlib.Path(paths["plan_review"]), _plan_subject_digest(root, state)
+        pathlib.Path(paths["plan_review"]),
+        _plan_subject_digest(root, state),
+        {unit.id for unit in plan.units},
     )
     errors = _errors(plan_review_issues)
     if errors:
@@ -535,6 +563,7 @@ def _bind_candidate(
     plan: KnowledgePlan,
     composition: CompositionMap,
 ) -> None:
+    import _publish
     import _validate
 
     work = work_dir(root, state)
@@ -565,6 +594,9 @@ def _bind_candidate(
         destination.write_text(
             render(parsed.meta, body), encoding="utf-8", newline="\n"
         )
+    _publish._write_generated(
+        candidate, _publish.render_indexes(candidate, state["language"])
+    )
 
 
 def _review_subject_digest(root: pathlib.Path, state: dict) -> str:
@@ -624,7 +656,9 @@ def composition_review_prepare(root: pathlib.Path) -> dict:
     errors = _errors(issues)
     if plan is not None:
         plan_review, plan_review_issues = _validate.validate_plan_review(
-            work / "plan-review.json", _plan_subject_digest(root, state)
+            work / "plan-review.json",
+            _plan_subject_digest(root, state),
+            {unit.id for unit in plan.units},
         )
         errors.extend(_errors(plan_review_issues))
         if plan_review is not None and plan_review.verdict != "approved":
@@ -645,7 +679,7 @@ def composition_review_prepare(root: pathlib.Path) -> dict:
         return {"ok": False, "issues": errors, "state": status(root)}
 
     review_path = work / "composition-review.json"
-    previous_review = _previous_review(review_path, ReviewReport)
+    previous_review = _previous_review(review_path, CompositionReviewReport)
 
     packet = {
         "ok": True,
@@ -681,7 +715,9 @@ def review_prepare(root: pathlib.Path) -> dict:
     errors = _errors(issues)
     if plan is not None:
         plan_review, plan_review_issues = _validate.validate_plan_review(
-            work / "plan-review.json", _plan_subject_digest(root, state)
+            work / "plan-review.json",
+            _plan_subject_digest(root, state),
+            {unit.id for unit in plan.units},
         )
         errors.extend(_errors(plan_review_issues))
         if plan_review is not None and plan_review.verdict != "approved":
@@ -776,6 +812,8 @@ def _stamp_candidate(root: pathlib.Path, state: dict) -> None:
     now = datetime.now(timezone.utc)
     stale_after = (now + timedelta(days=state["freshness_days"])).date()
     for path in sorted(candidate_dir(root, state).rglob("*.md")):
+        if path.name in ("index.md", "log.md"):
+            continue
         parsed = parse_file(path)
         if parsed.errors:
             raise StateError(f"cannot stamp invalid candidate page: {path}")

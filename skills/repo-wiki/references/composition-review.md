@@ -13,8 +13,16 @@ Apply the Task Routing Test before page fan-out:
   when related units share one reader entry point, evidence neighborhood and
   maintenance session and are not independently useful;
 - reject mechanical one-unit-per-page mapping when those merge conditions hold;
-- every multi-unit page has a specific merge rationale in the Composition body;
+- every multi-unit page has a specific `merge_rationale` in Composition;
+- compare every page with its nearest neighbor and record `merge` or
+  `keep-separate`; when more than one page exists, every page ID must occur in
+  at least one merge probe;
 - titles, descriptions, tags and capability-oriented paths route maintainers;
+- multi-page Wikis nest ordinary pages below capability directories, never
+  page-type directories; specialized families use a second-level cluster when
+  otherwise mixed with shared infrastructure;
+- Domain pages own capability boundaries and invariants, Procedure pages own
+  internal algorithms/orchestration, and Flow pages own end-to-end handoffs;
 - an architecture map routes common task clusters and links to details instead
   of duplicating their ownership; it need not enumerate every leaf when routed
   capability pages expose those links;
@@ -42,15 +50,20 @@ once with strict JSON:
 {
   "subject_digest": "<packet subject_digest>",
   "verdict": "changes_requested",
+  "merge_probes": [{
+    "page_ids": ["request-retry", "request-compensation"],
+    "decision": "merge",
+    "rationale": "Both pages are opened for the same recovery session and reconstruct one causal chain."
+  }],
   "issues": [{
-    "id": "routing.request-lifecycle",
+    "id": "routing.request-recovery",
     "status": "open",
     "category": "routing",
-    "claim": "Request lifecycle combines independently maintained admission, persistence and recovery work.",
-    "resolution": "Split those change surfaces and preserve their handoff with logical links.",
+    "claim": "Retry and compensation are mechanically mapped to separate pages.",
+    "resolution": "Merge them into one request recovery page.",
     "area": "composition",
-    "page_ids": ["request-lifecycle"],
-    "operation": "split"
+    "page_ids": ["request-retry", "request-compensation"],
+    "operation": "merge"
   }]
 }
 ```
@@ -59,6 +72,8 @@ Categories are `domain-coverage`, `concept-boundary`, `grep-test`,
 `unsupported-claim`, `invented-rationale`, `padded-gap`, `routing`, `coverage`,
 `language` and `representation`. Operations are `repair`, `split`, `merge` and
 `move`; every issue uses `area: "composition"`. Issue IDs are stable lowercase
-slugs. An approved report has no open issues and retains resolved entries. Do
+slugs. An empty or one-page Composition uses `merge_probes: []`. A `merge`
+probe requires the exact matching open merge issue; an approved report has no
+open issues and retains resolved entries. Do
 not run status, bundle review, Publication or export. Return only the report
 path, verdict and open issue count.

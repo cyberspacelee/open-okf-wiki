@@ -55,9 +55,7 @@ def resolve_url(root: pathlib.Path, env_ref: str) -> str:
         url = env_dict[var_name]
 
     if not url.startswith(_URL_SCHEMES):
-        raise DbError(
-            "URL must start with postgres://, postgresql:// or opengauss://"
-        )
+        raise DbError("URL must start with postgres://, postgresql:// or opengauss://")
 
     return url
 
@@ -237,18 +235,23 @@ def _canonical_database(url: str, schema: str) -> str:
     return f"opengauss://{host}{port}/{database}/{quote(schema, safe='')}"
 
 
-def catalog_dir(root: pathlib.Path, content_hash: str) -> pathlib.Path:
-    return root / ".okf-wiki" / "catalogs" / content_hash
+def catalog_storage_key(source_name: str, content_hash: str) -> str:
+    slug = re.sub(r"[^a-z0-9-]+", "-", source_name.lower()).strip("-")
+    return f"{slug[:24].rstrip('-') or 'catalog'}-{content_hash[:16]}"
 
 
-def catalog_index_path(root: pathlib.Path, content_hash: str) -> pathlib.Path:
-    return catalog_dir(root, content_hash) / "index.json"
+def catalog_dir(root: pathlib.Path, storage_key: str) -> pathlib.Path:
+    return root / ".okf-wiki" / "catalogs" / storage_key
+
+
+def catalog_index_path(root: pathlib.Path, storage_key: str) -> pathlib.Path:
+    return catalog_dir(root, storage_key) / "index.json"
 
 
 def catalog_table_path(
-    root: pathlib.Path, content_hash: str, page_slug: str
+    root: pathlib.Path, storage_key: str, page_slug: str
 ) -> pathlib.Path:
-    return catalog_dir(root, content_hash) / "tables" / f"{page_slug}.json"
+    return catalog_dir(root, storage_key) / "tables" / f"{page_slug}.json"
 
 
 def index_from_payload(payload: dict) -> dict:
@@ -270,13 +273,14 @@ def index_from_payload(payload: dict) -> dict:
     }
 
 
-def catalog_record(payload: dict, content_hash: str) -> dict:
+def catalog_record(payload: dict, content_hash: str, storage_key: str) -> dict:
     """Slim catalog identity stored in run state and the publication manifest."""
     return {
         "name": payload["name"],
         "schema": payload["schema"],
         "resource": payload["resource"],
         "content_hash": content_hash,
+        "storage_key": storage_key,
         "tables": [
             {
                 "name": table["name"],
@@ -288,32 +292,32 @@ def catalog_record(payload: dict, content_hash: str) -> dict:
     }
 
 
-def load_catalog(root: pathlib.Path, content_hash: str) -> dict:
-    path = catalog_dir(root, content_hash) / "catalog.json"
+def load_catalog(root: pathlib.Path, storage_key: str) -> dict:
+    path = catalog_dir(root, storage_key) / "catalog.json"
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise DbError(f"captured catalog {content_hash} is missing or invalid") from exc
+        raise DbError(f"captured catalog {storage_key} is missing or invalid") from exc
 
 
-def load_index(root: pathlib.Path, content_hash: str) -> dict:
-    path = catalog_index_path(root, content_hash)
+def load_index(root: pathlib.Path, storage_key: str) -> dict:
+    path = catalog_index_path(root, storage_key)
     if path.is_file():
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pass
-    return index_from_payload(load_catalog(root, content_hash))
+    return index_from_payload(load_catalog(root, storage_key))
 
 
-def load_table(root: pathlib.Path, content_hash: str, page_slug: str) -> dict:
-    path = catalog_table_path(root, content_hash, page_slug)
+def load_table(root: pathlib.Path, storage_key: str, page_slug: str) -> dict:
+    path = catalog_table_path(root, storage_key, page_slug)
     if path.is_file():
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pass
-    payload = load_catalog(root, content_hash)
+    payload = load_catalog(root, storage_key)
     for table in payload.get("tables", []):
         if table.get("page_slug") == page_slug or table.get("name") == page_slug:
             return table
@@ -327,7 +331,7 @@ def show_captured(
     for record in catalogs:
         if source and record.get("name") != source:
             continue
-        result.append(load_index(root, record["content_hash"]))
+        result.append(load_index(root, record["storage_key"]))
     return result
 
 
@@ -344,7 +348,7 @@ def describe_captured(
         for item in record.get("tables", []):
             if item.get("name") == table or item.get("page_slug") == table:
                 matches.append(
-                    load_table(root, record["content_hash"], item["page_slug"])
+                    load_table(root, record["storage_key"], item["page_slug"])
                 )
     if not matches:
         raise DbError(f"Table '{table}' not found in captured catalog")
@@ -353,7 +357,9 @@ def describe_captured(
     return matches[0]
 
 
-def capture_catalog(root: pathlib.Path, source, *, tables=tables, describe=describe) -> dict:
+def capture_catalog(
+    root: pathlib.Path, source, *, tables=tables, describe=describe
+) -> dict:
     url = resolve_url(root, source.url_env or "DATABASE_URL")
     schema = source.schema or "public"
     available = tables(url, schema)
@@ -386,10 +392,27 @@ def capture_catalog(root: pathlib.Path, source, *, tables=tables, describe=descr
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode()
     content_hash = hashlib.sha256(raw).hexdigest()
-    directory = catalog_dir(root, content_hash)
+    storage_key = catalog_storage_key(source.name, content_hash)
+    directory = catalog_dir(root, storage_key)
+    capture = directory / "catalog.json"
+    if capture.is_file():
+        try:
+            existing = json.loads(capture.read_text(encoding="utf-8"))
+            existing_hash = hashlib.sha256(
+                json.dumps(
+                    existing,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+        except (OSError, json.JSONDecodeError):
+            existing_hash = None
+        if existing_hash != content_hash:
+            raise DbError(f"catalog storage key collision: {storage_key}")
     directory.mkdir(parents=True, exist_ok=True)
     atomic_json(directory / "catalog.json", payload)
-    atomic_json(catalog_index_path(root, content_hash), index_from_payload(payload))
+    atomic_json(catalog_index_path(root, storage_key), index_from_payload(payload))
     for item in described:
-        atomic_json(catalog_table_path(root, content_hash, item["page_slug"]), item)
-    return catalog_record(payload, content_hash)
+        atomic_json(catalog_table_path(root, storage_key, item["page_slug"]), item)
+    return catalog_record(payload, content_hash, storage_key)

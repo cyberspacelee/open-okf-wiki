@@ -62,29 +62,87 @@ def source(path: pathlib.Path, label: str) -> pathlib.Path:
 
 
 def unit(unit_id: str, source_names: list[str], kind: str) -> dict:
+    roles = (
+        ["producer", "consumer", *(["contract"] * (len(source_names) - 2))]
+        if kind == "integration"
+        else ["owner"] * len(source_names)
+    )
     return {
         "id": unit_id,
         "kind": kind,
         "question": f"How does {unit_id} work across the captured sources?",
-        "scopes": [{"source": name, "paths": ["."]} for name in source_names],
+        "scopes": [
+            {"source": name, "role": role, "paths": ["."]}
+            for name, role in zip(source_names, roles, strict=True)
+        ],
         "evidence_seeds": [
             f"{name}/src/main/java/example/App.java#L1-L2" for name in source_names
         ],
     }
 
 
-def page(refs: list[tuple[str, str]], logical_link: str) -> str:
+def page(refs: list[tuple[str, str]], logical_link: str, page_type: str) -> str:
     sources = [{"id": source_id, "resource": resource} for source_id, resource in refs]
     citations = " ".join(f"[^{source_id}]" for source_id, _ in refs)
     definitions = "\n".join(
         f"[^{source_id}]: Frozen Source entry point." for source_id, _ in refs
     )
-    return markdown(
-        {"coverage": "full", "sources": sources},
-        "## Responsibility\n\n"
-        f"The boundary is anchored by pinned entry points. {citations}\n\n"
-        f"## Related concepts\n\n{logical_link}\n\n{definitions}",
-    )
+    if page_type == "Overview":
+        body = (
+            "## Scope and boundaries\n\n"
+            f"Pinned entry points bound this Wiki. {citations}\n\n"
+            "## Task entry points\n\n"
+            "| Task | Start here |\n| --- | --- |\n"
+            f"| Change a boundary | {logical_link} |\n\n{definitions}"
+        )
+    elif page_type == "Procedure":
+        body = (
+            "## Responsibility and boundaries\n\n"
+            f"The workspace routing procedure owns ordered entry selection. {citations}\n\n"
+            "## Inputs and outputs\n\n"
+            "A maintenance question enters and one capability route is produced.\n\n"
+            "## Execution and algorithm\n\n"
+            f"Classify the question, select its capability, then follow {logical_link}\n\n"
+            "## Rules and failure modes\n\n"
+            "| Rule | Enforcement point | Observable failure |\n"
+            "| --- | --- | --- |\n"
+            "| Select one route. | Routing procedure | Ambiguous destination |\n\n"
+            "## Change points\n\nChange the routing procedure and its tests.\n\n"
+            f"{definitions}"
+        )
+    elif page_type == "Flow":
+        body = (
+            "## Trigger and outcome\n\n"
+            f"An API boundary request reaches WebUI. {citations}\n\n"
+            "## Operational flow\n\n"
+            "```mermaid\n"
+            "%% okf-id: source-handoff\n"
+            "sequenceDiagram\n"
+            "    accTitle: Source handoff\n"
+            "    accDescr: API sends the boundary request to WebUI.\n"
+            "    API->>WebUI: Boundary request\n"
+            "```\n\n"
+            f"The handoff requires both captured participants. {citations}\n\n"
+            "## Alternatives and recovery\n\n"
+            "| Failure | Recovery | Terminal outcome |\n"
+            "| --- | --- | --- |\n"
+            "| Participant missing | Restore the boundary | Request rejected |\n\n"
+            "## Change points\n\nChange both participants and their contract tests.\n\n"
+            f"{logical_link}\n\n{definitions}"
+        )
+    else:
+        body = (
+            "## Responsibility and public surface\n\n"
+            f"Pinned entry points define this boundary. {citations}\n\n"
+            "## Invariants and rules\n\n"
+            "| Rule | Enforcement point | Observable failure |\n"
+            "| --- | --- | --- |\n"
+            "| Both sides remain explicit. | Source boundary | Missing handoff |\n\n"
+            f"## Concepts\n\n{logical_link}\n\n"
+            "## Change points\n\nChange both boundary participants and tests.\n\n"
+            f"{definitions}"
+        )
+    return markdown({"coverage": "full", "sources": sources}, body)
 
 
 def evaluate(base: pathlib.Path) -> dict:
@@ -153,7 +211,9 @@ def evaluate(base: pathlib.Path) -> dict:
 
     work = pathlib.Path(started["run_dir"]) / "work"
     write(work / "progress.md", "# Progress\n\nPlan complete; pages remain.\n")
-    write(work / "evidence/api-entry.md", f"# API entry\n\nEvidence: `{locator}`.\n")
+    write(
+        work / "evidence/API/api-entry.md", f"# API entry\n\nEvidence: `{locator}`.\n"
+    )
     write(
         work / "plan.md",
         markdown(
@@ -161,6 +221,7 @@ def evaluate(base: pathlib.Path) -> dict:
                 "kind": "knowledge-plan",
                 "units": [
                     unit("workspace-routing", ["API"], "capability"),
+                    unit("workspace-algorithm", ["API"], "flow"),
                     unit("source-boundaries", ["API", "WebUI"], "integration"),
                 ],
                 "gaps": [],
@@ -176,6 +237,18 @@ def evaluate(base: pathlib.Path) -> dict:
             {
                 "subject_digest": plan_packet["subject_digest"],
                 "verdict": "changes_requested",
+                "merge_probes": [
+                    {
+                        "unit_ids": ["workspace-routing", "source-boundaries"],
+                        "decision": "keep-separate",
+                        "rationale": "Workspace routing and boundary maintenance are independent questions.",
+                    },
+                    {
+                        "unit_ids": ["workspace-routing", "workspace-algorithm"],
+                        "decision": "keep-separate",
+                        "rationale": "Entry navigation and the routing algorithm answer different maintenance questions.",
+                    },
+                ],
                 "issues": [
                     {
                         "id": "domain.failure-handling",
@@ -207,6 +280,18 @@ def evaluate(base: pathlib.Path) -> dict:
             {
                 "subject_digest": plan_packet["subject_digest"],
                 "verdict": "approved",
+                "merge_probes": [
+                    {
+                        "unit_ids": ["workspace-routing", "source-boundaries"],
+                        "decision": "keep-separate",
+                        "rationale": "Workspace routing and boundary maintenance are independent questions.",
+                    },
+                    {
+                        "unit_ids": ["workspace-routing", "workspace-algorithm"],
+                        "decision": "keep-separate",
+                        "rationale": "Entry navigation and the routing algorithm answer different maintenance questions.",
+                    },
+                ],
                 "issues": [
                     {
                         "id": "domain.failure-handling",
@@ -227,13 +312,20 @@ def evaluate(base: pathlib.Path) -> dict:
                 "pages": [
                     {
                         "id": "architecture",
-                        "path": "architecture.md",
-                        "type": "Domain",
+                        "path": "system/architecture.md",
+                        "type": "Flow",
                         "title": "Architecture",
                         "description": "Open before changing Source boundaries.",
                         "tags": ["architecture"],
                         "units": ["source-boundaries"],
-                        "diagrams": [],
+                        "diagrams": [
+                            {
+                                "id": "source-handoff",
+                                "kind": "sequence",
+                                "question": "How does the boundary cross Sources?",
+                                "sources": ["API", "WebUI"],
+                            }
+                        ],
                     },
                     {
                         "id": "overview",
@@ -243,6 +335,16 @@ def evaluate(base: pathlib.Path) -> dict:
                         "description": "Open first to route work.",
                         "tags": ["overview"],
                         "units": ["workspace-routing"],
+                        "diagrams": [],
+                    },
+                    {
+                        "id": "procedure",
+                        "path": "routing/workspace-procedure.md",
+                        "type": "Procedure",
+                        "title": "Workspace routing procedure",
+                        "description": "Open before changing the routing algorithm.",
+                        "tags": ["routing"],
+                        "units": ["workspace-algorithm"],
                         "diagrams": [],
                     },
                 ],
@@ -258,6 +360,18 @@ def evaluate(base: pathlib.Path) -> dict:
             {
                 "subject_digest": composition_packet["subject_digest"],
                 "verdict": "changes_requested",
+                "merge_probes": [
+                    {
+                        "page_ids": ["architecture", "overview"],
+                        "decision": "keep-separate",
+                        "rationale": "The overview routes work while the architecture page owns boundary details.",
+                    },
+                    {
+                        "page_ids": ["overview", "procedure"],
+                        "decision": "keep-separate",
+                        "rationale": "The overview routes readers while the procedure explains the routing algorithm.",
+                    },
+                ],
                 "issues": [
                     {
                         "id": "routing.page-routes",
@@ -293,6 +407,18 @@ def evaluate(base: pathlib.Path) -> dict:
             {
                 "subject_digest": composition_packet["subject_digest"],
                 "verdict": "approved",
+                "merge_probes": [
+                    {
+                        "page_ids": ["architecture", "overview"],
+                        "decision": "keep-separate",
+                        "rationale": "The overview routes work while the architecture page owns boundary details.",
+                    },
+                    {
+                        "page_ids": ["overview", "procedure"],
+                        "decision": "keep-separate",
+                        "rationale": "The overview routes readers while the procedure explains the routing algorithm.",
+                    },
+                ],
                 "issues": [
                     {
                         "id": "routing.page-routes",
@@ -315,11 +441,19 @@ def evaluate(base: pathlib.Path) -> dict:
     web_ref = "WebUI/src/main/java/example/App.java#L1-L2"
     write(
         work / "drafts/architecture.md",
-        page([("api", api_ref), ("web", web_ref)], "See [overview][overview]."),
+        page(
+            [("api", api_ref), ("web", web_ref)],
+            "See [overview][overview].",
+            "Flow",
+        ),
     )
     write(
         work / "drafts/overview.md",
-        page([("api", api_ref)], "See [architecture][architecture]."),
+        page([("api", api_ref)], "See [architecture][architecture].", "Overview"),
+    )
+    write(
+        work / "drafts/procedure.md",
+        page([("api", api_ref)], "[overview][overview].", "Procedure"),
     )
 
     overview = work / "drafts/overview.md"
@@ -344,6 +478,13 @@ def evaluate(base: pathlib.Path) -> dict:
         work / "composition-review.json"
     ):
         raise RuntimeError("bundle review packet omitted Composition approval")
+    candidate = pathlib.Path(packet["inputs"]["candidate"])
+    if (
+        not (candidate / "index.md").is_file()
+        or not (candidate / "system/index.md").is_file()
+        or not (candidate / "routing/index.md").is_file()
+    ):
+        raise RuntimeError("Candidate navigation indexes were not generated")
     write(
         pathlib.Path(packet["artifact"]),
         json.dumps(
@@ -410,7 +551,7 @@ def evaluate(base: pathlib.Path) -> dict:
     if validation["errors"] or validation.get("complete") is not True:
         raise RuntimeError(f"published validation failed: {validation}")
     bound = pathlib.Path(published["path"]) / "overview.md"
-    if "](/architecture.md)" not in bound.read_text(encoding="utf-8"):
+    if "](/system/architecture.md)" not in bound.read_text(encoding="utf-8"):
         raise RuntimeError("logical page ID was not bound")
 
     configured = run(

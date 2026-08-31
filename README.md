@@ -30,7 +30,7 @@ versioned bundle, not a development link: reinstall it after upgrading this
 repository and commit its `skills-lock.json` entry. Verify that the harness
 resolves `repo-wiki` to the intended path when discovery scopes overlap.
 Before starting a Run on another machine, update the installed skill. A current
-Run reports contract `artifact-loop-late-bind`; another contract identifies a
+Run reports contract `artifact-loop-routing-closure`; another contract identifies a
 stale bundle or legacy Run. Preserve that Workspace for forensics and start from
 a new hub after reinstalling rather than resuming or migrating it.
 
@@ -185,8 +185,9 @@ design behaves consistently on Windows, Linux and macOS without symlinks.
   captions are gated.
 - generated, verified, status and stale_after make lifecycle and trust
   machine-readable.
-- Drafts and logical links use stable page IDs; physical paths are bound from
-  the Composition Map only when the complete Candidate is prepared.
+- Drafts and logical links use stable page IDs; physical paths and generated
+  Navigation Indexes are bound from the Composition Map when the complete
+  Candidate is prepared for review.
 - One living Plan and progress file persist analysis and next actions across
   context compression. There are no Attempt or checkpoint histories.
 - One immutable Run Policy bounds compact JSON evidence output, active and total
@@ -196,10 +197,13 @@ design behaves consistently on Windows, Linux and macOS without symlinks.
   packet points to the fixed prior review Artifact.
 - An explained empty Plan publishes no placeholder concept pages.
 - Root index.md contains only okf_version 0.2; nested indexes and log.md have
-  no frontmatter.
+  no frontmatter. Candidate and Publication both contain the deterministic
+  navigation tree.
 - OpenGauss catalog access is read-only and selected-table only; canonical
   resources contain no credentials. Run state stores catalog identity;
-  column bodies and comments live under `.okf-wiki/catalogs/<hash>/`.
+  column bodies and comments live under
+  `.okf-wiki/catalogs/<source>-<short-hash>/`; the manifest retains and verifies
+  the full content hash.
 - Source-facing AGENTS, CONTEXT and ADR changes remain proposals requiring
   human ratification.
 

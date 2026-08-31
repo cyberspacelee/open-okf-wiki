@@ -33,6 +33,7 @@ PageType = Literal[
     "Overview",
     "Architecture",
     "Domain",
+    "Procedure",
     "Flow",
     "Lifecycle",
     "DataModel",
@@ -125,7 +126,9 @@ class Verification(BaseModel):
 
 
 class EvidenceSource(BaseModel):
-    id: NonEmpty | None = None
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: StableId
     resource: NonEmpty
     title: NonEmpty | None = None
     author: NonEmpty | None = None
@@ -139,6 +142,14 @@ class DiagramSpec(BaseModel):
     id: DiagramId
     kind: DiagramKind
     question: ShortText
+    sources: list[ShortText] = Field(min_length=1, max_length=16)
+
+    @field_validator("sources")
+    @classmethod
+    def unique_sources(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("diagram sources must be unique")
+        return values
 
 
 def _check_diagram_contract(page_type: str, diagrams: list[DiagramSpec]) -> None:
@@ -160,7 +171,7 @@ def _check_diagram_contract(page_type: str, diagrams: list[DiagramSpec]) -> None
 
 
 class ConceptFrontmatter(BaseModel):
-    model_config = ConfigDict(extra="allow", strict=True)
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     id: StableId
     type: PageType
@@ -188,6 +199,13 @@ class ConceptFrontmatter(BaseModel):
         return self
 
 
+class DraftFrontmatter(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    coverage: Literal["full", "partial"]
+    sources: list[EvidenceSource] = Field(max_length=64)
+
+
 def _portable_page_path(value: str) -> str:
     if ".." in value.split("/") or "//" in value:
         raise ValueError("path must be a normalized bundle-relative path")
@@ -204,6 +222,7 @@ class PageScope(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     source: ShortText
+    role: Literal["owner", "producer", "contract", "consumer", "feedback"]
     paths: list[ScopePath] = Field(min_length=1, max_length=32)
 
     @field_validator("paths")
@@ -243,7 +262,35 @@ class KnowledgeUnit(BaseModel):
     ]
     question: ClaimText
     scopes: list[PageScope] = Field(min_length=1, max_length=16)
-    evidence_seeds: list[ScopePath] = Field(min_length=1, max_length=3)
+    evidence_seeds: list[ScopePath] = Field(min_length=1, max_length=16)
+
+    @model_validator(mode="after")
+    def integration_and_scopes_are_unambiguous(self):
+        sources = [scope.source for scope in self.scopes]
+        if len(sources) != len(set(sources)):
+            raise ValueError("each source must appear in exactly one scope per unit")
+        if self.kind == "integration":
+            roles = {scope.role for scope in self.scopes}
+            if len(sources) < 2 or not {"producer", "consumer"} <= roles:
+                raise ValueError(
+                    "integration units require producer and consumer scopes from at least two sources"
+                )
+        return self
+
+
+class UnitMergeProbe(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    unit_ids: list[StableId] = Field(min_length=2, max_length=8)
+    decision: Literal["merge", "keep-separate"]
+    rationale: ClaimText
+
+    @field_validator("unit_ids")
+    @classmethod
+    def unique_unit_ids(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("merge probe unit ids must be unique")
+        return values
 
 
 class KnowledgePlan(BaseModel):
@@ -276,9 +323,20 @@ class PlanReviewIssue(BaseModel):
         "cross-source-contract",
         "grep-test",
         "gap",
+        "routing",
     ]
     claim: ClaimText
     resolution: ClaimText
+    unit_ids: list[StableId] = Field(default_factory=list, max_length=16)
+    operation: Literal["repair", "split", "merge"] = "repair"
+
+    @model_validator(mode="after")
+    def structural_changes_name_units(self):
+        if self.operation == "split" and len(self.unit_ids) != 1:
+            raise ValueError("split issues require exactly one unit id")
+        if self.operation == "merge" and len(self.unit_ids) < 2:
+            raise ValueError("merge issues require at least two unit ids")
+        return self
 
 
 class PlanReviewReport(BaseModel):
@@ -286,6 +344,7 @@ class PlanReviewReport(BaseModel):
 
     subject_digest: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     verdict: Literal["approved", "changes_requested"]
+    merge_probes: list[UnitMergeProbe] = Field(max_length=64)
     issues: list[PlanReviewIssue] = Field(default_factory=list, max_length=64)
 
     @model_validator(mode="after")
@@ -298,6 +357,18 @@ class PlanReviewReport(BaseModel):
             raise ValueError("approved plan review must not contain open issues")
         if self.verdict == "changes_requested" and not open_issues:
             raise ValueError("changes_requested plan review must contain open issues")
+        open_merges = {
+            tuple(sorted(item.unit_ids))
+            for item in open_issues
+            if item.operation == "merge"
+        }
+        requested_merges = {
+            tuple(sorted(probe.unit_ids))
+            for probe in self.merge_probes
+            if probe.decision == "merge"
+        }
+        if requested_merges != open_merges:
+            raise ValueError("merge probes and open Plan merge issues must match")
         return self
 
 
@@ -311,6 +382,7 @@ class CompositionPage(BaseModel):
     description: ClaimText
     tags: list[ShortText] = Field(default_factory=list, max_length=16)
     units: list[StableId] = Field(min_length=1, max_length=32)
+    merge_rationale: ClaimText | None = None
     diagrams: list[DiagramSpec] = Field(max_length=4)
 
     @field_validator("path", mode="after")
@@ -321,7 +393,26 @@ class CompositionPage(BaseModel):
     @model_validator(mode="after")
     def diagrams_match_page_type(self):
         _check_diagram_contract(self.type, self.diagrams)
+        if len(self.units) > 1 and self.merge_rationale is None:
+            raise ValueError("multi-unit pages require a merge rationale")
+        if len(self.units) == 1 and self.merge_rationale is not None:
+            raise ValueError("single-unit pages must not declare a merge rationale")
         return self
+
+
+class PageMergeProbe(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    page_ids: list[StableId] = Field(min_length=2, max_length=8)
+    decision: Literal["merge", "keep-separate"]
+    rationale: ClaimText
+
+    @field_validator("page_ids")
+    @classmethod
+    def unique_page_ids(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("merge probe page ids must be unique")
+        return values
 
 
 class CompositionMap(BaseModel):
@@ -369,6 +460,10 @@ class ReviewIssue(BaseModel):
     def structural_changes_belong_to_composition(self):
         if self.operation != "repair" and self.area != "composition":
             raise ValueError("split, merge and move issues belong to composition")
+        if self.operation in {"split", "move"} and not self.page_ids:
+            raise ValueError("split and move issues require at least one page id")
+        if self.operation == "merge" and len(self.page_ids) < 2:
+            raise ValueError("merge issues require at least two page ids")
         if self.area == "page" and not self.page_ids:
             raise ValueError("page issues require at least one page id")
         return self
@@ -391,6 +486,28 @@ class ReviewReport(BaseModel):
             raise ValueError("approved review must not contain open issues")
         if self.verdict == "changes_requested" and not open_issues:
             raise ValueError("changes_requested review must contain open issues")
+        return self
+
+
+class CompositionReviewReport(ReviewReport):
+    merge_probes: list[PageMergeProbe] = Field(max_length=64)
+
+    @model_validator(mode="after")
+    def merge_probes_match_open_issues(self):
+        open_merges = {
+            tuple(sorted(item.page_ids))
+            for item in self.issues
+            if item.status == "open" and item.operation == "merge"
+        }
+        requested_merges = {
+            tuple(sorted(probe.page_ids))
+            for probe in self.merge_probes
+            if probe.decision == "merge"
+        }
+        if requested_merges != open_merges:
+            raise ValueError(
+                "merge probes and open Composition merge issues must match"
+            )
         return self
 
 

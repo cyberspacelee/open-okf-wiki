@@ -22,8 +22,15 @@ Judge the Wiki globally:
 - knowledge-unit coverage and honest gaps;
 - Grep Test, page boundaries, duplicate concepts and routing quality;
 - page type, representation, hierarchy implied by paths and cross-links;
+- root and directory Navigation Indexes route every composed page through the
+  intended capability hierarchy with no orphan or page-type directory;
 - citation support, invented rationale, scope bleed and terminology;
 - diagram semantics, accessibility and renderability.
+
+Treat repeated shared behavior as a routing defect: identify its canonical
+owner page and require dependent pages to link it. Do not accept repeated lock,
+idempotency, status-priority or after-commit prose merely because each copy has
+a valid citation.
 
 Write strict JSON to the packet's fixed `artifact` path:
 
@@ -46,7 +53,8 @@ Write strict JSON to the packet's fixed `artifact` path:
 
 Areas are `plan`, `composition` and `page`. Page issues name at least one
 `page_id`. Operations are `repair`, `split`, `merge` and `move`; structural
-operations always use the composition area. Categories are
+operations always use the composition area. Split and move issues name at
+least one affected Page ID; merge issues name at least two. Categories are
 `domain-coverage`, `concept-boundary`, `grep-test`, `unsupported-claim`,
 `invented-rationale`, `padded-gap`, `routing`, `coverage`, `language` and
 `representation`.

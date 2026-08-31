@@ -23,6 +23,24 @@ sources:
 ---
 ```
 
+This schema is strict. `coverage` is the literal `full` or `partial`, never a
+coverage explanation. `sources` is an array of `{id, resource}` objects; source
+IDs are unique lowercase slugs and join the same body footnote references and
+definitions exactly. These examples are invalid:
+
+```yaml
+coverage: >
+  Most of the workflow is covered.
+sources: [API/src/main/java/example/Request.java]
+```
+
+```yaml
+coverage: full
+sources:
+  - id: "Request Entry"
+    resource: API/src/main/java/example/Request.java
+```
+
 The kernel supplies ID, type, title, description, tags, diagrams, language and
 generated metadata from Composition when it builds the Candidate. Review later
 supplies trust metadata.
@@ -45,3 +63,14 @@ existing draft with one targeted update; `coverage: full` must not contain that
 section. Git file metadata may be enriched automatically; do not invent missing
 metadata for file or Catalog locators. Do not delete and add the same path in
 one patch. Return only the draft path and gap count.
+Each diagram's adjacent conclusion cites every Source listed by its Diagram
+Spec; a page-level citation elsewhere does not support the diagram.
+
+Retain every heading supplied by the selected localized template and replace
+its instruction text with evidence-backed content. A template section that asks
+for a compact table must contain a Markdown table, not a bullet list. Domain
+pages contain actual capability invariants; Procedure pages carry ordered
+stages, grouping and formulas; Flow trigger/outcome sections contain business
+conditions and effects, never entity field inventories. Define shared locks,
+idempotency or after-commit behavior once on its owning page and link it from
+dependent pages.

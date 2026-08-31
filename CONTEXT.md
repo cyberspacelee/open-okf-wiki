@@ -28,6 +28,11 @@ A content-addressed description of explicitly selected database tables captured
 for a Run.
 _Avoid_: database dump, Git Revision
 
+**Navigation Index**:
+A generated `index.md` view of the Candidate or Publication page hierarchy.
+It routes readers and is distinct from the structural Source Index.
+_Avoid_: Index, manually authored overview
+
 **Run**:
 One resumable generation through planning, writing, bundle review and
 Publication. Its internal storage ID is never supplied by the agent.
@@ -81,7 +86,8 @@ _Avoid_: package, page, execution task
 
 **Evidence Note**:
 Optional bounded Markdown from a focused worker. Its findings are merged into
-Plan or pages; it is never provenance or scheduler state.
+Plan or pages; it is normally limited to one Source, except for an explicitly
+cross-Source handoff question, and is never provenance or scheduler state.
 _Avoid_: dossier Target, competing Plan
 
 **Composition Map**:
@@ -95,6 +101,12 @@ A page-boundary check requiring one concrete maintenance change or failure
 question to lead to one cohesive page.
 _Avoid_: one unit per page, smallest page count
 
+**Merge Probe**:
+A review record comparing nearby Knowledge Units or pages and deciding whether
+they remain independently useful. Every routed item participates in one when
+more than one item exists.
+_Avoid_: issue count, page-count target
+
 **Page ID**:
 A stable logical identity used for drafts and logical links before final paths
 are bound.
@@ -102,7 +114,8 @@ _Avoid_: Markdown path, Target identity
 
 **Page Type**:
 The closed semantic class selected by the reader question: Overview,
-Architecture, Domain, Flow, Lifecycle, DataModel or Table.
+Architecture, Domain, Procedure, Flow, Lifecycle, DataModel or Table. Procedure
+owns an internal algorithm or orchestration; Flow owns an end-to-end handoff.
 _Avoid_: arbitrary template name
 
 **Diagram Spec**:

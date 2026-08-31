@@ -23,10 +23,17 @@ Continuously overwrite `work/plan.md`. For long work, keep
 investigations, current findings, rejected hypotheses, gaps and next actions.
 Evidence notes belong under `work/evidence/`; copy conclusions into the Plan
 instead of making the notes mandatory dependencies.
+Partition a note by Source by default: one bounded question inside one Source.
+Only a handoff question may span Sources; name every participant in its opening
+paragraph and use one Source-labeled section per participant. Before merging a
+note, map every load-bearing locator neighborhood into the receiving unit's
+scopes. A note's visibility never expands a unit's scope implicitly.
 
 Replace the initial Progress marker before requesting Plan review. Update this
 single file after each evidence batch and each review repair; do not create
 checkpoint or attempt files.
+Do not copy unit, page or draft counts into Progress. `run status` derives those
+under `artifact_counts`; Progress records findings, gaps and next actions only.
 
 After the top-level outlines, identify independent evidence questions. When
 there are two or more, dispatch focused workers before the planner performs
@@ -55,6 +62,7 @@ units:
     question: How does a request enter failure and recover?
     scopes:
       - source: API
+        role: owner
         paths: [api-core/src/main/java/example/request]
     evidence_seeds:
       - API/api-core/src/main/java/example/request/Request.java#L20-L48
@@ -63,10 +71,21 @@ gaps: []
 ```
 
 Kinds are `capability`, `lifecycle`, `flow`, `data-model`, `integration` and
-`operations`. IDs are stable lowercase semantic keys. Each unit has one to
-three seeds actually opened inside its scopes. The body explains the global
+`operations`. IDs are stable lowercase semantic keys. Each scoped Source has at
+least one seed actually opened inside its paths. The body explains the global
 model, lifecycle and cross-Source relationships, evidence-backed conclusions,
 rejected hypotheses and unresolved gaps.
+
+Put all paths for one Source in one scope record. Roles are `owner`, `producer`,
+`contract`, `consumer` and `feedback`. A cross-Source handoff is an
+`integration` unit with producer and consumer scopes from at least two Sources;
+include both implementation neighborhoods, not only the message or request
+declaration. Add a contract or feedback scope when that evidence lives in a
+separate Source. The State Gate rejects ambiguous duplicate Source scopes,
+missing producer/consumer roles and any scoped Source without a seed.
+For a database Source, use `.` only for the whole captured catalog or use a
+selected table name/page slug. A seed or citation from another table remains
+outside scope even when it belongs to the same database Source.
 
 A unit owns one independently routable change surface or causal question. Split
 an umbrella question that merely enumerates domains with independent owners or
@@ -80,6 +99,12 @@ scope roots, have independent failure modes, or one can change without the
 other, split the unit. A chronological handoff does not by itself make input
 admission, state mutation, background delivery and recovery one change surface;
 keep their relationship in a focused bridge unit or gap.
+
+Also run the reverse probe across nearby units: which pair starts from the same
+reader question, evidence neighborhood and maintenance session, and would not
+remain useful independently? Merge duplicate change surfaces in the Plan. Keep
+separate coverage obligations when they may still compose into one reader page;
+Composition owns that later page merge.
 
 Plan defines what knowledge requires coverage. Page IDs, types, titles, paths,
 diagrams and hierarchy belong to Composition. Keep at most 64 coherent units;

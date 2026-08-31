@@ -1,6 +1,6 @@
 ---
 name: repo-wiki
-description: Generate or refresh a thin, evidence-anchored repository Wiki and human-reviewed onboarding proposals. Use for codebase Wikis, architecture maps, onboarding documentation, AGENTS.md or CONTEXT.md proposals, and resuming an existing Wiki run.
+description: Generate or refresh a thin, evidence-anchored repository Wiki and human-reviewed onboarding proposals. Use for codebase Wikis, repository-wide architecture documentation, onboarding documentation, AGENTS.md or CONTEXT.md proposals, and resuming an existing Wiki run; do not use for a standalone architecture diagram.
 ---
 
 # Repo Wiki
@@ -134,6 +134,8 @@ Read [references/plan.md](references/plan.md) and
 the cross-Source model and continuously overwrites `work/plan.md`. Replace the
 initial `work/progress.md` note before Plan review and keep it current before
 context compression and after merging worker results.
+Do not copy unit, page or draft counts into Progress; read the derived
+`status.artifact_counts` instead.
 
 Dispatch focused evidence subagents for independent Source investigations,
 call paths, database facts or unresolved hypotheses. They write bounded notes
@@ -157,6 +159,9 @@ note may support several independently routable units; apply the maintainer
 probes in `references/plan.md` before writing the Plan instead of turning each
 worker question into one umbrella unit. Composition later applies the Task
 Routing Test in `references/composition.md`.
+Default each note to one Source and one bounded question. A cross-Source handoff
+note is the exception and separates findings by Source; its locators still must
+be translated into participant-complete Plan scopes.
 
 After merging the first evidence batch, treat every significant registered
 domain that is merely "not traced" as a residual investigation, not a Gap.
@@ -223,8 +228,8 @@ exact template under `assets/templates/<status.language>/`, its fixed output
 fallback; a missing locale template is a broken skill package.
 Map Page Types to templates as follows: `Overview` to `overview.md`,
 `Architecture` to `architecture.md`, `Domain` to `domain.md`, `Flow` to
-`flow.md`, `Lifecycle` to `lifecycle.md`, `DataModel` to `data-model.md` and
-`Table` to `table.md`.
+`flow.md`, `Procedure` to `procedure.md`, `Lifecycle` to `lifecycle.md`,
+`DataModel` to `data-model.md` and `Table` to `table.md`.
 Resolve these paths once from `<skill>` and `status.artifacts`, then pass those
 exact strings to writers; do not reconstruct runtime paths.
 For every dispatch, copy the literal Composition `pages[].id` into the output
@@ -241,7 +246,8 @@ binds known IDs to final paths; unknown IDs fail review preparation.
 ## Review and publish
 
 Run `okf review prepare --json`. It validates all work, binds the exact
-Candidate and returns one fixed review packet. Dispatch that complete packet
+Candidate, generates its root and directory Navigation Indexes and returns one
+fixed review packet. Dispatch that complete packet
 verbatim to a fresh, independent reviewer; do not copy its digest into separate
 prose. The producing context must not review its own work. The reviewer reads
 [references/review.md](references/review.md) and writes `work/review.json`.

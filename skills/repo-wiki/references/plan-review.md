@@ -19,6 +19,13 @@ First perform the routing sweep before semantic recall:
   preserve the relationship in a focused bridge unit or gap;
 - evidence-note boundaries do not justify unit boundaries. One evidence note
   can and often should feed several independently routable units.
+- for every unit, choose the nearest neighboring unit by overlapping scope,
+  causal handoff, evidence neighborhood or reader task; record a merge probe;
+- decide `merge` when both records are the same change surface and neither is
+  independently useful, otherwise record `keep-separate` with a concrete reason;
+- when more than one unit exists, every unit ID must occur in at least one merge
+  probe. Do not invent a merge quota and do not approve a `merge` decision
+  without a matching open merge issue.
 
 Complete the routing sweep across every unit and report all independently
 supportable issues; never stop after the first failure. Do not let adding more
@@ -42,6 +49,9 @@ semantic-recall criterion that remains assessable before page fan-out:
 - lifecycles include failure, retry, cancellation and recovery paths where
   present;
 - events, queues, extension points and cross-Source contracts are represented;
+- every scoped Source has one seed inside its paths; integration units name
+  producer and consumer roles from at least two Sources, plus a separate
+  contract or feedback participant when the frozen evidence requires it;
 - a causal lifecycle split across units has one question or explicit gap that
   names its handoff and feedback path; separate noun coverage is insufficient;
 - after a split or merge repair, repeat that causal check on the affected
@@ -63,18 +73,27 @@ Artifact once with strict JSON:
 {
   "subject_digest": "<packet subject_digest>",
   "verdict": "changes_requested",
+  "merge_probes": [{
+    "unit_ids": ["usage-rating", "usage-metering"],
+    "decision": "merge",
+    "rationale": "Both units start from the same usage change and share one evidence neighborhood."
+  }],
   "issues": [{
-    "id": "domain.usage-metering",
+    "id": "routing.usage-duplication",
     "status": "open",
-    "category": "domain-coverage",
-    "claim": "Usage and metering are visible modules but absent from units and gaps.",
-    "resolution": "Investigate the flow and add a unit or an evidence-backed gap."
+    "category": "routing",
+    "claim": "Usage rating and metering duplicate one maintenance surface.",
+    "resolution": "Merge them into one Knowledge Unit.",
+    "unit_ids": ["usage-rating", "usage-metering"],
+    "operation": "merge"
   }]
 }
 ```
 
 Categories are `domain-coverage`, `source-role`, `lifecycle`, `failure-path`,
-`cross-source-contract`, `grep-test` and `gap`. Issue IDs are stable lowercase
+`cross-source-contract`, `grep-test`, `gap` and `routing`. Operations are
+`repair`, `split` and `merge`; structural issues name their affected `unit_ids`.
+An empty or one-unit Plan uses `merge_probes: []`. Issue IDs are stable lowercase
 slugs. An approved report has no open issues and retains resolved entries. Do
 not run coordinator commands such as status, `review complete`, Publication or
 export. Return only the report path, verdict and open issue count.

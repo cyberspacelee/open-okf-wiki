@@ -200,9 +200,7 @@ def test_captured_catalog_has_safe_slug_and_credential_free_resource(
             schema="Public Data",
             tables=("Order Items",),
         ),
-        tables=lambda url, schema: [
-            {"name": "Order Items", "comment": "line items"}
-        ],
+        tables=lambda url, schema: [{"name": "Order Items", "comment": "line items"}],
         describe=lambda url, table, schema: {
             "name": table,
             "comment": "line items",
@@ -227,13 +225,15 @@ def test_captured_catalog_has_safe_slug_and_credential_free_resource(
     assert table["resource"].endswith("/Order%20Items")
     assert "columns" not in table
     assert "comment" not in table
-    payload = _db.load_catalog(tmp_path, catalog["content_hash"])
+    assert catalog["storage_key"].startswith("appdb-")
+    assert len(catalog["storage_key"]) < len(catalog["content_hash"])
+    payload = _db.load_catalog(tmp_path, catalog["storage_key"])
     assert payload["tables"][0]["comment"] == "line items"
     assert payload["tables"][0]["columns"][0]["comment"] == "primary key"
-    index = _db.load_index(tmp_path, catalog["content_hash"])
+    index = _db.load_index(tmp_path, catalog["storage_key"])
     assert index["tables"][0]["comment"] == "line items"
     assert "columns" not in index["tables"][0]
-    shard = _db.load_table(tmp_path, catalog["content_hash"], table["page_slug"])
+    shard = _db.load_table(tmp_path, catalog["storage_key"], table["page_slug"])
     assert shard["columns"][0]["comment"] == "primary key"
     assert _db.show_captured(tmp_path, [catalog]) == [index]
     assert (
@@ -262,5 +262,5 @@ def test_capture_fills_table_comment_when_describe_omits_it(tmp_path, monkeypatc
             "foreign_keys": [],
         },
     )
-    payload = _db.load_catalog(tmp_path, catalog["content_hash"])
+    payload = _db.load_catalog(tmp_path, catalog["storage_key"])
     assert payload["tables"][0]["comment"] == "from tables()"

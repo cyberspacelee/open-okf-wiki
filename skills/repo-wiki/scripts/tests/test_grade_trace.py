@@ -5,7 +5,7 @@ import sys
 EVALS = pathlib.Path(__file__).parents[2] / "evals"
 sys.path.insert(0, str(EVALS))
 
-from grade_run import concurrency_metadata_valid, trace_data
+from grade_run import concurrency_metadata_valid, scope_has_seed, trace_data
 
 
 def event(tool: str, receivers=(), states=None, prompt="", sender=None) -> str:
@@ -103,4 +103,44 @@ def test_concurrency_metadata_is_host_brand_neutral():
             "effective_max_active_children": 4,
         },
         requested_cap=4,
+    )
+
+
+def test_scope_seed_accepts_source_and_catalog_resources():
+    catalogs = [
+        {
+            "name": "database",
+            "resource": "opengauss://db/public",
+            "tables": [
+                {
+                    "resource": "opengauss://db/public/orders",
+                    "name": "orders",
+                    "page_slug": "orders",
+                },
+                {
+                    "resource": "opengauss://db/public/customers",
+                    "name": "customers",
+                    "page_slug": "customers",
+                },
+            ],
+        }
+    ]
+
+    assert scope_has_seed(
+        {"source": "service"}, ["service/src/App.java#L1-L2"], catalogs
+    )
+    assert scope_has_seed(
+        {"source": "database", "paths": ["orders"]},
+        ["opengauss://db/public/orders"],
+        catalogs,
+    )
+    assert not scope_has_seed(
+        {"source": "database", "paths": ["orders"]},
+        ["opengauss://db/public/customers"],
+        catalogs,
+    )
+    assert scope_has_seed(
+        {"source": "database", "paths": ["."]},
+        ["opengauss://db/public"],
+        catalogs,
     )

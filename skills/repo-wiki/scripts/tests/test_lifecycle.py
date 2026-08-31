@@ -10,7 +10,7 @@ import _validate
 import _workspace
 import pytest
 from _files import compact_json_size, directory_digest
-from _frontmatter import render
+from _frontmatter import parse_file, render
 from _models import RunPolicy
 
 
@@ -42,7 +42,7 @@ def workspace(
 
 def start(root: pathlib.Path) -> pathlib.Path:
     result = _state.start_run(root)
-    assert result["contract"] == "artifact-loop-late-bind"
+    assert result["contract"] == "artifact-loop-routing-closure"
     assert result["language"] in ("en", "zh")
     assert result["sources"] == ["src"]
     assert result["phase"] == "plan"
@@ -58,7 +58,7 @@ def unit(unit_id: str, source_path: str, kind: str) -> dict:
         "id": unit_id,
         "kind": kind,
         "question": f"How does {unit_id} work?",
-        "scopes": [{"source": "src", "paths": [source_path]}],
+        "scopes": [{"source": "src", "role": "owner", "paths": [source_path]}],
         "evidence_seeds": [f"src/{source_path}#L1-L2"],
     }
 
@@ -69,7 +69,7 @@ def plan() -> str:
             "kind": "knowledge-plan",
             "units": [
                 unit("answer", "app.py", "flow"),
-                unit("architecture", "architecture.py", "integration"),
+                unit("architecture", "architecture.py", "capability"),
             ],
             "gaps": [],
         },
@@ -94,7 +94,7 @@ def composition() -> str:
                 },
                 {
                     "id": "architecture",
-                    "path": "architecture.md",
+                    "path": "system/service-boundary.md",
                     "type": "Domain",
                     "title": "Service boundary",
                     "description": "Open before changing service boundaries.",
@@ -115,11 +115,30 @@ def draft(resource: str, related_id: str, related_title: str) -> str:
             "coverage": "full",
             "sources": [{"id": "entry", "resource": resource}],
         },
-        "## Responsibility\n\n"
+        "## Responsibility and public surface\n\n"
         "The captured entry point defines this responsibility.[^entry]\n\n"
-        f"## Related concepts\n\nSee [{related_title}][{related_id}].\n\n"
+        "## Invariants and rules\n\n"
+        "| Rule | Enforcement point | Observable failure |\n"
+        "| --- | --- | --- |\n"
+        "| The entry point remains authoritative. | Captured function | Call failure |\n\n"
+        f"## Concepts\n\nSee [{related_title}][{related_id}].\n\n"
+        "## Change points\n\nChange the captured entry point and its tests.[^entry]\n\n"
         "[^entry]: Frozen source entry point.\n",
     )
+
+
+def merge_probes(path: pathlib.Path, field: str) -> list[dict]:
+    ids = [item["id"] for item in parse_file(path).meta[field]]
+    if len(ids) < 2:
+        return []
+    return [
+        {
+            f"{field[:-1]}_ids": [ids[index], ids[index + 1]],
+            "decision": "keep-separate",
+            "rationale": "The neighboring records have independent change surfaces.",
+        }
+        for index in range(len(ids) - 1)
+    ]
 
 
 def write_work(run: pathlib.Path) -> None:
@@ -185,7 +204,14 @@ def plan_review(path: pathlib.Path, digest: str, verdict: str) -> None:
         ]
     write(
         path,
-        json.dumps({"subject_digest": digest, "verdict": verdict, "issues": issues}),
+        json.dumps(
+            {
+                "subject_digest": digest,
+                "verdict": verdict,
+                "merge_probes": merge_probes(path.with_name("plan.md"), "units"),
+                "issues": issues,
+            }
+        ),
     )
 
 
@@ -213,7 +239,14 @@ def composition_review(path: pathlib.Path, digest: str, verdict: str) -> None:
         ]
     write(
         path,
-        json.dumps({"subject_digest": digest, "verdict": verdict, "issues": issues}),
+        json.dumps(
+            {
+                "subject_digest": digest,
+                "verdict": verdict,
+                "merge_probes": merge_probes(path.with_name("composition.md"), "pages"),
+                "issues": issues,
+            }
+        ),
     )
 
 
@@ -298,9 +331,11 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
     assert _state.status(root)["next_actions"] == ["review prepare"]
     packet = _state.review_prepare(root)
     assert packet["ok"]
-    assert "](/architecture.md)" in (
+    assert "](/system/service-boundary.md)" in (
         run / "candidate/guides/answer.md"
     ).read_text(encoding="utf-8")
+    assert (run / "candidate/index.md").is_file()
+    assert (run / "candidate/guides/index.md").is_file()
 
     review(run / "work/review.json", packet["subject_digest"], "changes_requested")
     result = _state.review_complete(root)
@@ -414,6 +449,7 @@ def test_status_derives_plan_composition_and_draft_repairs(tmp_path):
             {
                 "subject_digest": packet["subject_digest"],
                 "verdict": "changes_requested",
+                "merge_probes": merge_probes(run / "work/composition.md", "pages"),
                 "issues": [
                     {
                         "id": "routing.invalid-area",
@@ -436,6 +472,33 @@ def test_status_derives_plan_composition_and_draft_repairs(tmp_path):
     status = _state.status(root)
     assert status["phase"] == "write"
     assert {item["code"] for item in status["issues"]} == {"page-draft-missing"}
+    assert status["artifact_counts"] == {
+        "knowledge_units": 2,
+        "pages": 2,
+        "drafts_written": 0,
+        "drafts_missing": 2,
+    }
+
+
+def test_plan_rejects_a_scoped_source_without_its_own_seed(tmp_path):
+    root = workspace(tmp_path)
+    run = start(root)
+    broken = unit("answer", "app.py", "capability")
+    broken["evidence_seeds"] = ["missing/app.py#L1-L2"]
+    write(
+        run / "work/plan.md",
+        render(
+            {"kind": "knowledge-plan", "units": [broken], "gaps": []},
+            "# Plan\n\nThe unit has an invalid seed.\n",
+        ),
+    )
+
+    status = _state.status(root)
+
+    assert {item["code"] for item in status["issues"]} == {
+        "evidence-unresolved",
+        "scope-source-unseeded",
+    }
 
 
 def test_status_summarizes_large_issue_sets(tmp_path):
@@ -541,8 +604,7 @@ def test_git_blob_rejects_directory_tree(tmp_path):
     source = _workspace.load(root).sources["src"]
 
     assert (
-        _workspace.git_blob(source, state["revisions"][0]["commit"], "package")
-        is None
+        _workspace.git_blob(source, state["revisions"][0]["commit"], "package") is None
     )
 
 
@@ -670,7 +732,13 @@ def test_chinese_partial_page_uses_localized_gap_heading(tmp_path):
                 "coverage": "partial",
                 "sources": [{"id": "entry", "resource": "src/app.py#L1-L2"}],
             },
-            "## 职责\n\n入口定义答案行为。[^entry]\n\n"
+            "## 职责与公开边界\n\n入口定义答案行为。[^entry]\n\n"
+            "## 不变量与规则\n\n"
+            "| 规则 | 执行位置 | 可观察失败 |\n"
+            "| --- | --- | --- |\n"
+            "| 入口保持唯一。 | 应用函数 | 调用失败 |\n\n"
+            "## 领域概念\n\n答案是该能力的输出。\n\n"
+            "## 变更入口\n\n修改入口及其测试。[^entry]\n\n"
             "## 缺口\n\n异常路径尚未捕获。\n\n"
             "[^entry]: 冻结的源码入口。\n",
         ),
@@ -726,7 +794,7 @@ def test_chinese_page_rejects_english_template_heading(tmp_path):
         ),
     )
     issues = _validate.validate_page(root, state, page)
-    assert [item.code for item in issues] == ["template-heading-leak"]
+    assert "template-heading-leak" in {item.code for item in issues}
 
 
 def test_candidate_validation_collects_independent_errors_after_bad_plan(tmp_path):
@@ -778,7 +846,7 @@ def test_block_resume_and_legacy_state_rejection(tmp_path):
     state = json.loads(path.read_text(encoding="utf-8"))
     state["contract"] = "knowledge-composition-late-bind"
     write(path, json.dumps(state))
-    with pytest.raises(_state.StateError, match="artifact-loop-late-bind"):
+    with pytest.raises(_state.StateError, match="artifact-loop-routing-closure"):
         _state.read(root)
 
 
@@ -801,9 +869,7 @@ def test_source_registration_variants(tmp_path):
         ["git", "-C", str(origin), "config", "user.email", "qa@example.test"],
         check=True,
     )
-    subprocess.run(
-        ["git", "-C", str(origin), "config", "user.name", "QA"], check=True
-    )
+    subprocess.run(["git", "-C", str(origin), "config", "user.name", "QA"], check=True)
     write(origin / "app.py", "answer = 42\n")
     subprocess.run(["git", "-C", str(origin), "add", "app.py"], check=True)
     subprocess.run(["git", "-C", str(origin), "commit", "-qm", "initial"], check=True)

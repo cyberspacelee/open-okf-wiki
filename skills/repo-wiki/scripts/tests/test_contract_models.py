@@ -1,10 +1,14 @@
+import json
 import pathlib
 
+import _validate
 import pytest
 from _frontmatter import parse_file
 from _models import (
     CompositionMap,
     CompositionPage,
+    CompositionReviewReport,
+    DraftFrontmatter,
     KnowledgePlan,
     PageScope,
     PlanReviewReport,
@@ -15,7 +19,11 @@ from pydantic import ValidationError
 
 
 def scope(paths=None) -> dict:
-    return {"source": "src", "paths": ["app.py"] if paths is None else paths}
+    return {
+        "source": "src",
+        "role": "owner",
+        "paths": ["app.py"] if paths is None else paths,
+    }
 
 
 def unit(unit_id="answer-lifecycle", **overrides) -> dict:
@@ -116,7 +124,12 @@ def test_empty_plan_requires_an_explanation_and_empty_composition_is_valid():
 
 def test_plan_review_binds_semantic_recall_before_composition():
     report = PlanReviewReport.model_validate(
-        {"subject_digest": "a" * 64, "verdict": "approved", "issues": []}
+        {
+            "subject_digest": "a" * 64,
+            "verdict": "approved",
+            "merge_probes": [],
+            "issues": [],
+        }
     )
     assert report.verdict == "approved"
     with pytest.raises(ValidationError, match="must contain open issues"):
@@ -124,6 +137,7 @@ def test_plan_review_binds_semantic_recall_before_composition():
             {
                 "subject_digest": "a" * 64,
                 "verdict": "changes_requested",
+                "merge_probes": [],
                 "issues": [],
             }
         )
@@ -132,6 +146,7 @@ def test_plan_review_binds_semantic_recall_before_composition():
         {
             "subject_digest": "a" * 64,
             "verdict": "approved",
+            "merge_probes": [],
             "issues": [
                 {
                     "id": "domain.missing",
@@ -149,6 +164,7 @@ def test_plan_review_binds_semantic_recall_before_composition():
             {
                 "subject_digest": "a" * 64,
                 "verdict": "changes_requested",
+                "merge_probes": [],
                 "issues": [
                     {
                         "category": "domain-coverage",
@@ -195,6 +211,188 @@ def test_composition_rejects_duplicate_ids_paths_and_invalid_representation():
         )
     with pytest.raises(ValidationError, match="require a flowchart"):
         CompositionPage.model_validate(page(type="Architecture"))
+    with pytest.raises(ValidationError, match="merge rationale"):
+        CompositionPage.model_validate(
+            page(units=["answer-lifecycle", "answer-failure"])
+        )
+
+
+def test_composition_validation_requires_capability_hierarchy():
+    plan = KnowledgePlan.model_validate(
+        {
+            "kind": "knowledge-plan",
+            "units": [unit(), unit("answer-failure")],
+            "gaps": [],
+        }
+    )
+    composition = CompositionMap.model_validate(
+        {
+            "kind": "composition-map",
+            "pages": [
+                page(path="answer.md"),
+                page(
+                    "failure",
+                    path="accounting/flow/failure.md",
+                    units=["answer-failure"],
+                ),
+            ],
+            "gaps": [],
+        }
+    )
+    codes = {
+        item.code
+        for item in _validate._validate_composition(
+            plan, composition, pathlib.Path("composition.md")
+        )
+    }
+    assert codes == {"capability-path-required", "page-type-directory"}
+
+
+def test_composition_diagram_sources_are_inherited_from_unit_scopes():
+    plan = KnowledgePlan.model_validate(
+        {"kind": "knowledge-plan", "units": [unit()], "gaps": []}
+    )
+    composition = CompositionMap.model_validate(
+        {
+            "kind": "composition-map",
+            "pages": [
+                page(
+                    type="Architecture",
+                    diagrams=[
+                        {
+                            "id": "boundary",
+                            "kind": "flowchart",
+                            "question": "Where is the boundary?",
+                            "sources": ["missing"],
+                        }
+                    ],
+                )
+            ],
+            "gaps": [],
+        }
+    )
+
+    issues = _validate._validate_composition(
+        plan, composition, pathlib.Path("composition.md")
+    )
+
+    assert [item.code for item in issues] == ["diagram-source-outside-scope"]
+
+
+def test_plan_review_merge_probes_cover_every_unit(tmp_path):
+    path = tmp_path / "plan-review.json"
+    path.write_text(
+        json.dumps(
+            {
+                "subject_digest": "a" * 64,
+                "verdict": "approved",
+                "merge_probes": [
+                    {
+                        "unit_ids": ["answer", "details"],
+                        "decision": "keep-separate",
+                        "rationale": "They have independent change surfaces.",
+                    }
+                ],
+                "issues": [],
+            }
+        )
+    )
+    _, issues = _validate.validate_plan_review(
+        path, "a" * 64, {"answer", "details", "failure"}
+    )
+    assert [item.code for item in issues] == ["merge-probe-incomplete"]
+
+
+def test_integration_scopes_require_roles_and_each_source_once():
+    producer = {"source": "api", "role": "producer", "paths": ["src"]}
+    consumer = {"source": "worker", "role": "consumer", "paths": ["src"]}
+    integration = unit(
+        kind="integration",
+        scopes=[producer, consumer],
+        evidence_seeds=["api/src/App.py", "worker/src/Worker.py"],
+    )
+    assert (
+        KnowledgePlan.model_validate(
+            {"kind": "knowledge-plan", "units": [integration], "gaps": []}
+        )
+        .units[0]
+        .kind
+        == "integration"
+    )
+    with pytest.raises(ValidationError, match="producer and consumer"):
+        KnowledgePlan.model_validate(
+            {
+                "kind": "knowledge-plan",
+                "units": [unit(kind="integration")],
+                "gaps": [],
+            }
+        )
+    with pytest.raises(ValidationError, match="exactly one scope"):
+        KnowledgePlan.model_validate(
+            {
+                "kind": "knowledge-plan",
+                "units": [unit(scopes=[scope(), scope(["src"])])],
+                "gaps": [],
+            }
+        )
+
+
+def test_draft_frontmatter_is_strict_and_typed():
+    assert (
+        DraftFrontmatter.model_validate(
+            {
+                "coverage": "full",
+                "sources": [{"id": "entry", "resource": "src/app.py"}],
+            },
+            strict=True,
+        ).coverage
+        == "full"
+    )
+    for invalid in (
+        {"coverage": "full"},
+        {"coverage": "Most behavior is covered", "sources": []},
+        {"coverage": "full", "sources": ["src/app.py"]},
+        {
+            "coverage": "full",
+            "sources": [{"id": "Entry Point", "resource": "src/app.py"}],
+        },
+        {"coverage": "full", "sources": [], "title": "writer-owned"},
+    ):
+        with pytest.raises(ValidationError):
+            DraftFrontmatter.model_validate(invalid, strict=True)
+
+
+def test_composition_review_requires_probe_issue_alignment():
+    report = CompositionReviewReport.model_validate(
+        {
+            "subject_digest": "a" * 64,
+            "verdict": "approved",
+            "merge_probes": [
+                {
+                    "page_ids": ["answer", "details"],
+                    "decision": "keep-separate",
+                    "rationale": "The pages have independent change surfaces.",
+                }
+            ],
+            "issues": [],
+        }
+    )
+    assert report.merge_probes[0].decision == "keep-separate"
+    with pytest.raises(ValidationError, match="must match"):
+        CompositionReviewReport.model_validate(
+            {
+                "subject_digest": "a" * 64,
+                "verdict": "approved",
+                "merge_probes": [
+                    {
+                        "page_ids": ["answer", "details"],
+                        "decision": "merge",
+                        "rationale": "They duplicate one reader route.",
+                    }
+                ],
+                "issues": [],
+            }
+        )
 
 
 def test_bundle_review_routes_content_and_structural_repairs():
@@ -234,3 +432,60 @@ def test_bundle_review_routes_content_and_structural_repairs():
                 ],
             }
         )
+    for operation, page_ids, message in (
+        ("split", [], "split and move issues require"),
+        ("move", [], "split and move issues require"),
+        ("merge", ["answer"], "merge issues require"),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            ReviewReport.model_validate(
+                {
+                    "subject_digest": "a" * 64,
+                    "verdict": "changes_requested",
+                    "issues": [
+                        {
+                            "id": f"routing.{operation}",
+                            "status": "open",
+                            "category": "routing",
+                            "claim": "The route needs structural repair.",
+                            "resolution": "Repair the Composition.",
+                            "area": "composition",
+                            "page_ids": page_ids,
+                            "operation": operation,
+                        }
+                    ],
+                }
+            )
+
+
+def test_catalog_resources_stay_inside_selected_table_scope():
+    state = {
+        "catalogs": [
+            {
+                "name": "database",
+                "resource": "opengauss://db/public",
+                "tables": [
+                    {
+                        "name": "orders",
+                        "page_slug": "orders",
+                        "resource": "opengauss://db/public/orders",
+                    },
+                    {
+                        "name": "customers",
+                        "page_slug": "customers",
+                        "resource": "opengauss://db/public/customers",
+                    },
+                ],
+            }
+        ]
+    }
+    roots = {"database": ["orders"]}
+
+    assert _validate._catalog_in_scope(state, "opengauss://db/public/orders", roots)
+    assert not _validate._catalog_in_scope(
+        state, "opengauss://db/public/customers", roots
+    )
+    assert not _validate._catalog_in_scope(state, "opengauss://db/public", roots)
+    assert _validate._catalog_in_scope(
+        state, "opengauss://db/public/customers", {"database": ["."]}
+    )

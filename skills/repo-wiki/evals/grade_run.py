@@ -86,6 +86,27 @@ def has_open_issues(report: dict) -> bool:
     return any(item.get("status") == "open" for item in report.get("issues", []))
 
 
+def scope_has_seed(scope: dict, seeds: list[str], catalogs: list[dict]) -> bool:
+    source = scope.get("source")
+    paths = set(scope.get("paths", []))
+    for seed in seeds:
+        if str(seed).startswith(f"{source}/"):
+            return True
+        for catalog in catalogs:
+            if catalog.get("name") != source:
+                continue
+            if seed == catalog.get("resource") and "." in paths:
+                return True
+            for table in catalog.get("tables", []):
+                if seed == table.get("resource") and (
+                    "." in paths
+                    or table.get("name") in paths
+                    or table.get("page_slug") in paths
+                ):
+                    return True
+    return False
+
+
 def load(path: pathlib.Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -245,7 +266,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
 
     check(
         "Run uses the artifact-loop contract without scheduler state",
-        state.get("contract") == "artifact-loop-late-bind"
+        state.get("contract") == "artifact-loop-routing-closure"
         and manifest.get("policy") == state.get("policy")
         and manifest.get("skill_bundle_digest") == state.get("skill_bundle_digest")
         and not any(
@@ -258,6 +279,22 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
 
     plan = frontmatter(work / "plan.md")
     units = plan.get("units", [])
+    scope_closed = all(
+        all(
+            scope.get("role")
+            in {"owner", "producer", "contract", "consumer", "feedback"}
+            and scope_has_seed(
+                scope, unit.get("evidence_seeds", []), state.get("catalogs", [])
+            )
+            for scope in unit.get("scopes", [])
+        )
+        and (
+            unit.get("kind") != "integration"
+            or {scope.get("role") for scope in unit.get("scopes", [])}
+            >= {"producer", "consumer"}
+        )
+        for unit in units
+    )
     check(
         "one living Knowledge Plan owns semantic units without page bindings",
         plan.get("kind") == "knowledge-plan"
@@ -266,15 +303,22 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         and all(
             "id" in unit and "path" not in unit and "owner" not in unit
             for unit in units
-        ),
+        )
+        and scope_closed,
         f"units={len(units)}",
     )
     plan_review_path = work / "plan-review.json"
     plan_review = load(plan_review_path) if plan_review_path.is_file() else {}
+    probed_units = {
+        unit_id
+        for probe in plan_review.get("merge_probes", [])
+        for unit_id in probe.get("unit_ids", [])
+    }
     check(
         "independent Plan review approved semantic recall before Composition",
         plan_review.get("verdict") == "approved"
         and not has_open_issues(plan_review)
+        and (len(units) < 2 or probed_units == {unit["id"] for unit in units})
         and plan_review.get("subject_digest")
         == plan_subject_digest(work / "plan.md", state),
         f"verdict={plan_review.get('verdict')}",
@@ -329,10 +373,16 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     composition_review = (
         load(composition_review_path) if composition_review_path.is_file() else {}
     )
+    probed_pages = {
+        page_id
+        for probe in composition_review.get("merge_probes", [])
+        for page_id in probe.get("page_ids", [])
+    }
     check(
         "independent Composition review approves task routing before page fan-out",
         composition_review.get("verdict") == "approved"
         and not has_open_issues(composition_review)
+        and (len(pages) < 2 or probed_pages == set(pages))
         and composition_review.get("subject_digest")
         == composition_subject_digest(
             work / "plan.md",
@@ -348,6 +398,16 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         "fixed page drafts match stable Composition page IDs",
         drafts == set(pages),
         f"drafts={sorted(drafts)}, pages={sorted(pages)}",
+    )
+    candidate = run_dir / "candidate"
+    check(
+        "reviewed Candidate contains deterministic navigation indexes",
+        (candidate / "index.md").is_file()
+        and all(
+            (candidate / path.parent / "index.md").is_file()
+            for path in (pathlib.PurePosixPath(page["path"]) for page in pages.values())
+        ),
+        str(candidate),
     )
 
     review = load(work / "review.json")
@@ -414,7 +474,14 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
             for name, patterns in KILLBILL_INTENTS.items()
         }
         missing_routes = [name for name, owners in intent_owners.items() if not owners]
-        generic_roots = {"domain", "flow", "integration", "lifecycle", "table"}
+        generic_roots = {
+            "domain",
+            "flow",
+            "integration",
+            "lifecycle",
+            "procedure",
+            "table",
+        }
         generic_paths = [
             page["path"]
             for page in pages.values()
