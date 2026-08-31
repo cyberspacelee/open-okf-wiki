@@ -46,7 +46,13 @@ def copy_runtime(base: pathlib.Path) -> pathlib.Path:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("base", type=pathlib.Path)
-    parser.add_argument("host", choices=("claude", "codex"), nargs="?", default="codex")
+    parser.add_argument(
+        "host_adapter",
+        choices=("claude", "codex"),
+        nargs="?",
+        default="codex",
+        help="live-eval adapter; this does not restrict skill runtime hosts or models",
+    )
     parser.add_argument("--scenario", choices=("killbill",), default="killbill")
     parser.add_argument("--model")
     args = parser.parse_args()
@@ -73,7 +79,7 @@ def main() -> int:
     initial_runtime_digest = runtime_digest(runtime_skill)
     policy = json.loads((ws / "workspace.json").read_text(encoding="utf-8"))["policy"]
     requested_cap = policy["agents"]["max_active_children"]
-    if args.host == "codex":
+    if args.host_adapter == "codex":
         codex_config = ws / ".codex/config.toml"
         codex_config.parent.mkdir()
         codex_config.write_text(
@@ -82,10 +88,11 @@ def main() -> int:
             newline="\n",
         )
         concurrency_enforcement = "host-native"
-        effective_cap = requested_cap
+        host_cap = requested_cap
     else:
-        concurrency_enforcement = "prompt-only"
-        effective_cap = None
+        concurrency_enforcement = "coordinator"
+        host_cap = None
+    effective_cap = requested_cap if host_cap is None else min(requested_cap, host_cap)
     uv_cache = ws / ".eval-uv-cache"
     uv_cache.mkdir()
     host_env = {**os.environ, "UV_CACHE_DIR": str(uv_cache)}
@@ -107,7 +114,7 @@ def main() -> int:
         "every registered Source, then export it to wiki/. Do not modify the skill."
     )
     log = ws / "host-run.log"
-    if args.host == "codex":
+    if args.host_adapter == "codex":
         command = [
             "codex",
             "exec",
@@ -145,7 +152,7 @@ def main() -> int:
         "started_at": started.isoformat(),
         "elapsed_seconds": round(time.monotonic() - before, 3),
         "scenario": args.scenario,
-        "host": args.host,
+        "host_adapter": args.host_adapter,
         "model": args.model,
         "host_exit_code": host_result.returncode,
         "runtime_skill": str(runtime_skill),
@@ -153,7 +160,8 @@ def main() -> int:
         "runtime_skill_unchanged": initial_runtime_digest == final_runtime_digest,
         "run_policy": policy,
         "concurrency_enforcement": concurrency_enforcement,
-        "host_effective_max_active_children": effective_cap,
+        "host_max_active_children": host_cap,
+        "effective_max_active_children": effective_cap,
         "uv_cache": str(uv_cache),
     }
     (ws / "live-eval.json").write_text(

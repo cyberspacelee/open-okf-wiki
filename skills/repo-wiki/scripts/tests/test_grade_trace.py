@@ -5,7 +5,7 @@ import sys
 EVALS = pathlib.Path(__file__).parents[2] / "evals"
 sys.path.insert(0, str(EVALS))
 
-from grade_run import trace_data
+from grade_run import concurrency_metadata_valid, trace_data
 
 
 def event(tool: str, receivers=(), states=None, prompt="", sender=None) -> str:
@@ -74,3 +74,33 @@ def test_trace_data_detects_child_spawn_depth(tmp_path):
 
     *_, stats = trace_data(trace)
     assert stats["max_depth"] == 2
+
+
+def test_concurrency_metadata_is_host_brand_neutral():
+    assert concurrency_metadata_valid(
+        {
+            "host_adapter": "pi",
+            "concurrency_enforcement": "host-native",
+            "host_max_active_children": 4,
+            "effective_max_active_children": 3,
+        },
+        requested_cap=3,
+    )
+    assert concurrency_metadata_valid(
+        {
+            "host_adapter": "grok",
+            "concurrency_enforcement": "coordinator",
+            "host_max_active_children": None,
+            "effective_max_active_children": 4,
+        },
+        requested_cap=4,
+    )
+    assert not concurrency_metadata_valid(
+        {
+            "host_adapter": "any",
+            "concurrency_enforcement": "host-native",
+            "host_max_active_children": 2,
+            "effective_max_active_children": 4,
+        },
+        requested_cap=4,
+    )

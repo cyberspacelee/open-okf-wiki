@@ -203,6 +203,30 @@ def trace_data(path: pathlib.Path) -> tuple[int, list[dict], list[str], dict]:
     return parsed, commands, spawn_prompts, stats
 
 
+def concurrency_metadata_valid(metadata: dict, requested_cap: int) -> bool:
+    enforcement = metadata.get("concurrency_enforcement")
+    host_cap = metadata.get("host_max_active_children")
+    effective_cap = metadata.get("effective_max_active_children")
+    if (
+        not isinstance(effective_cap, int)
+        or isinstance(effective_cap, bool)
+        or effective_cap <= 0
+    ):
+        return False
+    if enforcement == "host-native":
+        return (
+            isinstance(host_cap, int)
+            and not isinstance(host_cap, bool)
+            and host_cap > 0
+            and effective_cap == min(requested_cap, host_cap)
+        )
+    return (
+        enforcement == "coordinator"
+        and host_cap is None
+        and effective_cap == requested_cap
+    )
+
+
 def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     results = []
 
@@ -487,14 +511,13 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     requested_cap = state["policy"]["agents"]["max_active_children"]
     check(
         "live adapter records concurrency enforcement",
-        (
-            metadata.get("concurrency_enforcement") == "host-native"
-            and metadata.get("host_effective_max_active_children") == requested_cap
-        )
-        if metadata.get("host") == "codex"
-        else metadata.get("concurrency_enforcement") == "prompt-only",
-        f"host={metadata.get('host')}, enforcement={metadata.get('concurrency_enforcement')}, "
-        f"effective={metadata.get('host_effective_max_active_children')}, requested={requested_cap}",
+        metadata.get("run_policy") == state["policy"]
+        and concurrency_metadata_valid(metadata, requested_cap),
+        f"adapter={metadata.get('host_adapter')}, "
+        f"enforcement={metadata.get('concurrency_enforcement')}, "
+        f"host_cap={metadata.get('host_max_active_children')}, "
+        f"effective={metadata.get('effective_max_active_children')}, "
+        f"requested={requested_cap}",
     )
     validation = subprocess.run(
         [

@@ -225,8 +225,15 @@ adapter 必须把 `max_active_children=4` 映射到原生限制：
 
 - Responses Multi-agent：`multi_agent.max_concurrent_subagents=4`；
 - Codex：`agents.max_concurrent_threads_per_session=4`；
-- 其他 host：使用等价 session/run cap；没有硬限制能力时必须在 eval metadata 中标记
-  `enforcement=prompt-only`，不能宣称有保证。
+- Pi：官方示例 subagent extension 自身使用 `MAX_CONCURRENCY=4`，但这是 extension
+  实现上限，不是 repo-wiki 可写入的通用 host 配置；
+- Grok Build：原生 `spawn_subagent` 默认启用，但当前公开配置没有数值并发上限；
+- 其他 host：有等价 session/run cap 时映射；没有时由 coordinator 强制 portable
+  rolling window，并在 eval metadata 中标记 `enforcement=coordinator`，不能宣称是
+  host-native hard cap。
+
+来源：[Pi reference subagent extension](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/examples/extensions/subagent/index.ts)、
+[Grok Build subagents](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/16-subagents.md)。
 
 `SKILL.md` 保留一个短、明确的调度规则：维护 pending queue 与 active handles；先填满
 4 个 slot；任一 handle terminal 后立即 dispatch 下一个；phase 切换前关闭不会复用的
@@ -281,12 +288,12 @@ bundle digest 写入 `live-eval.json`。如果 adapter 无法设置或确认 har
 4. **包原子性**：SKILL、references、scripts、assets 作为一个 bundle 安装；Run start
    记录 bundle digest 和 kernel contract，后续命令检测 active Run 的 bundle digest 未变。
    这防止同一 Run 中 `SKILL.md` 与脚本来自不同 revision。
-5. **分发版本化**：本地开发优先使用 Codex 支持的 symlink，避免 `--copy` 静默陈旧；
+5. **分发版本化**：本地开发优先使用 host 支持的 symlink，避免 `--copy` 静默陈旧；
    必须 copy 时提交并检查 installer lock/digest。正式分发使用明确的 plugin/skill version，
    不依赖无版本 copied directory。
-6. **消除多 scope 歧义**：preflight 枚举 repo/user/admin scope 中名为 `repo-wiki` 的 skill，
-   要求恰好一个 active path；发现重复即停止并报告各绝对路径。因为 Codex 官方行为是
-   “同名不合并”，不能假设较新的 copy 自动覆盖旧 copy。
+6. **消除多 scope 歧义**：preflight 确认 host 实际解析的 `repo-wiki` 绝对路径。各 host
+   的同名规则不同：有的保留多个定义，有的按 scope 优先级覆盖，不能假设较新的 copy
+   自动胜出。
 7. **保持拒绝**：parser 继续对旧 flags 退出非零，不添加 hidden aliases、deprecated
    warnings 或 dual schema。遇到该错误时 host 应重新读取当前 `SKILL.md`/status，而不是
    猜测参数。
@@ -296,8 +303,8 @@ bundle digest 写入 `live-eval.json`。如果 adapter 无法设置或确认 har
 1. 先清理旧命令并加入 command-contract/static deny tests，消除继续污染新 eval 的来源。
 2. 引入严格 Workspace execution schema、Run snapshot、status disclosure 和完整
    search/read continuation contract；完成 deterministic tests 与 CLI e2e。
-3. 在 live host adapters 设置原生 cap=4，改 `SKILL.md` 为配置驱动 rolling window，并
-   让所有阶段复用同一窗口。
+3. 在支持数值 hard cap 的 live adapter 中映射 cap=4；其他 adapter 明确记录 coordinator
+   enforcement。改 `SKILL.md` 为配置驱动 rolling window，并让所有阶段复用同一窗口。
 4. 扩展 structured trace grader 计算 high-water/depth/total/rolling，再跑代表性大仓库
    live eval；用 evidence recall、total output bytes、tokens、latency、spawn count 和
    retry count 共同校准 safety ceilings。
@@ -311,4 +318,3 @@ bundle digest 写入 `live-eval.json`。如果 adapter 无法设置或确认 har
 - 只在 `SKILL.md` 写“最多 4 个”而不设置 host-native cap。
 - 用“日志里没出现 concurrency error”代替 active peak 验证。
 - 固定批次 barrier；它会浪费先完成 worker 释放的容量。
-

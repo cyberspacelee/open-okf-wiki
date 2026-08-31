@@ -19,16 +19,25 @@ From the repository that should receive the Wiki, install the skill at project
 scope. This example assumes the two repositories are siblings:
 
 ```text
-npx skills@latest add ../open-okf-wiki/skills/repo-wiki --skill repo-wiki --agent codex -y
+npx skills@latest add ../open-okf-wiki/skills/repo-wiki --skill repo-wiki -y
 ```
 
-Use `--agent claude-code` for Claude Code, or omit `--agent` to let the
-installer detect supported agents. Add `--copy` where symlink privileges are
-unavailable. A copied install is a versioned bundle, not a development link:
-reinstall it after upgrading this repository and commit its `skills-lock.json`
-entry. Do not keep a second same-named skill in another Codex scope. The Codex
-command above installs to `.agents/skills/repo-wiki`; replace that path in the
-examples below if your agent uses another project skill directory.
+The installer detects supported agents; use `--agent <name>` only to target one.
+Codex and Pi discover project skills under `.agents/skills/`; Pi also supports
+`.pi/skills/`, while Grok Build uses `.grok/skills/` or a configured skill path.
+Add `--copy` where symlink privileges are unavailable. A copied install is a
+versioned bundle, not a development link: reinstall it after upgrading this
+repository and commit its `skills-lock.json` entry. Verify that the harness
+resolves `repo-wiki` to the intended path when discovery scopes overlap.
+
+The runtime bundle and kernel are host- and model-neutral. Set the actual
+installed directory once for the commands below:
+
+```bash
+REPO_WIKI_SKILL=.agents/skills/repo-wiki  # Codex or Pi
+# REPO_WIKI_SKILL=.pi/skills/repo-wiki    # Pi native scope
+# REPO_WIKI_SKILL=.grok/skills/repo-wiki  # Grok Build
+```
 
 A Run pins each Git Source at its HEAD commit. Live worktrees may be dirty or
 move afterwards; workers read the Pin. Commit the installed skill and lock
@@ -51,15 +60,15 @@ Run from the directory that should own the Wiki. Initialization creates an
 empty Workspace; it never assumes that the current directory is a Source:
 
 ```text
-uv run .agents/skills/repo-wiki/scripts/okf.py workspace init --lang zh --freshness-days 90
-uv run .agents/skills/repo-wiki/scripts/okf.py workspace show --json
+uv run $REPO_WIKI_SKILL/scripts/okf.py workspace init --lang zh --freshness-days 90
+uv run $REPO_WIKI_SKILL/scripts/okf.py workspace show --json
 ```
 
 The Workspace policy is complete and strict. These defaults bound every
 evidence response and all host-agent phases:
 
 ```text
-uv run .agents/skills/repo-wiki/scripts/okf.py workspace init --lang zh \
+uv run $REPO_WIKI_SKILL/scripts/okf.py workspace init --lang zh \
   --max-active-children 4 --max-children-per-run 128 \
   --search-max-results 20 --search-max-output-bytes 8192 \
   --read-default-lines 40 --read-max-lines 200 \
@@ -67,8 +76,17 @@ uv run .agents/skills/repo-wiki/scripts/okf.py workspace init --lang zh \
 ```
 
 Change policy only between Runs with `workspace configure`; `run start`
-snapshots it and records the installed skill bundle digest. For Codex, map the
-same active-child value to the project-level native hard cap:
+snapshots it and records the installed skill bundle digest. The portable policy
+is always the scheduling target. A harness-native cap is an additional guard,
+not part of the kernel:
+
+| Harness | Skill discovery | Concurrency enforcement |
+| --- | --- | --- |
+| Codex | `.agents/skills/` | Map the Run value to the project/session native cap below. |
+| [Pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md) | `.agents/skills/` or `.pi/skills/` | Its optional [reference subagent extension](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/examples/extensions/subagent/index.ts) currently caps parallel tasks at four; lower Run values remain coordinator-enforced. |
+| [Grok Build](https://docs.x.ai/build/features/skills-plugins-marketplaces) | `.grok/skills/` or configured paths | [Subagents are native](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/16-subagents.md), but no numeric hard cap is documented; the coordinator enforces the Run value. |
+
+Codex native-cap example:
 
 ```toml
 # .codex/config.toml
@@ -90,10 +108,10 @@ rejected for Windows portability. Link `.` when the Workspace directory itself
 is the intended repository:
 
 ```text
-uv run .agents/skills/repo-wiki/scripts/okf.py source add link . --name app
-uv run .agents/skills/repo-wiki/scripts/okf.py source add link ../services/API --name API
-uv run .agents/skills/repo-wiki/scripts/okf.py source add clone https://github.com/example/web.git --name Web --ref main
-uv run .agents/skills/repo-wiki/scripts/okf.py source list --json
+uv run $REPO_WIKI_SKILL/scripts/okf.py source add link . --name app
+uv run $REPO_WIKI_SKILL/scripts/okf.py source add link ../services/API --name API
+uv run $REPO_WIKI_SKILL/scripts/okf.py source add clone https://github.com/example/web.git --name Web --ref main
+uv run $REPO_WIKI_SKILL/scripts/okf.py source list --json
 ```
 
 The producer never copies a Git source into a private snapshot: linked
@@ -113,9 +131,9 @@ APP_DATABASE_URL=opengauss://user:password@host:5432/database
 Inspect the live schema before selecting tables:
 
 ```text
-uv run .agents/skills/repo-wiki/scripts/okf.py db tables --url-env APP_DATABASE_URL --json
-uv run .agents/skills/repo-wiki/scripts/okf.py db describe orders --url-env APP_DATABASE_URL --json
-uv run .agents/skills/repo-wiki/scripts/okf.py source add opengauss --name appdb --url-env APP_DATABASE_URL --schema public --table orders --table customers
+uv run $REPO_WIKI_SKILL/scripts/okf.py db tables --url-env APP_DATABASE_URL --json
+uv run $REPO_WIKI_SKILL/scripts/okf.py db describe orders --url-env APP_DATABASE_URL --json
+uv run $REPO_WIKI_SKILL/scripts/okf.py source add opengauss --name appdb --url-env APP_DATABASE_URL --schema public --table orders --table customers
 ```
 
 After `run start`, `catalog show` / `catalog describe` read the captured
@@ -127,8 +145,8 @@ Start the Run, then ask the coding agent to use the `repo-wiki` skill and resume
 from status. Run IDs are internal and require no user-supplied session:
 
 ```text
-uv run .agents/skills/repo-wiki/scripts/okf.py run start
-uv run .agents/skills/repo-wiki/scripts/okf.py run status --json
+uv run $REPO_WIKI_SKILL/scripts/okf.py run start
+uv run $REPO_WIKI_SKILL/scripts/okf.py run status --json
 ```
 
 The host agent runs one explicit loop until Publication or a real external
@@ -141,9 +159,9 @@ Candidate. Validation and review defects return to the loop.
 After a distinct reviewer approves the candidate:
 
 ```text
-uv run .agents/skills/repo-wiki/scripts/okf.py publication publish
-uv run .agents/skills/repo-wiki/scripts/okf.py publication export --to wiki
-uv run .agents/skills/repo-wiki/scripts/okf.py validate --published
+uv run $REPO_WIKI_SKILL/scripts/okf.py publication publish
+uv run $REPO_WIKI_SKILL/scripts/okf.py publication export --to wiki
+uv run $REPO_WIKI_SKILL/scripts/okf.py validate --published
 ```
 
 The authoritative publication is
@@ -189,7 +207,9 @@ Cross-platform deterministic QA:
     uv run skills/repo-wiki/evals/run_cli_e2e.py
 
 The live agent eval and grader are under skills/repo-wiki/evals. They inspect
-the current generation, not a legacy mutable wiki directory.
+the current generation, not a legacy mutable wiki directory. The shipped live
+eval adapters cover Codex and Claude; that adapter list is test tooling scope,
+not a restriction on skill runtime hosts or models.
 
 ## Layout
 

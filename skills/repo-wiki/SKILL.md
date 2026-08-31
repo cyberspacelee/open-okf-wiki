@@ -66,8 +66,10 @@ the same path in one patch operation.
 Read `status.policy.agents` at the start of the loop. Only the coordinator may
 spawn children. Across evidence, page, repair and review work, keep one global
 rolling window no larger than `max_active_children`; a host adapter may impose a
-smaller native cap. Fill the window, then dispatch the next pending item as soon
-as any child becomes terminal; do not wait for the slowest member of a batch.
+smaller native cap. Base dispatch only on these numeric limits: use the smaller
+value when both exist, or the Run value when the host exposes no numeric cap.
+Fill the window, then dispatch the next pending item as soon as any child becomes
+terminal; do not wait for the slowest member of a batch.
 Count unique children across the Run and never exceed `max_children_per_run`.
 Record that count in `work/progress.md` after every successful first dispatch;
 reactivating a handle does not increase it. When the fuse is reached, merge

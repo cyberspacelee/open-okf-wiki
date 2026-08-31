@@ -16,7 +16,7 @@ Subagent concurrency was only prose in the skill. The live grader searched for
 host error strings, so a successful burst of many children could pass. The same
 risk applied to evidence research, page writing and repair fan-out.
 
-Copied skills and multiple same-named Codex scopes also allowed current
+Copied skills and overlapping host discovery scopes also allowed current
 instructions to be paired with an older kernel command surface.
 
 ## Decision
@@ -36,20 +36,24 @@ The agent policy defaults to four concurrently active children, spawn depth
 one, and 128 unique children per Run. It applies globally to evidence, planning
 review, page writing, repairs and bundle review. The coordinator maintains a
 rolling window; children do not spawn. Host adapters map the requested active
-limit to a native session cap. The kernel discloses policy but remains free of
-worker leases and scheduler identity.
+limit to a native session cap when the host exposes one. Otherwise the
+coordinator enforces the same window and eval metadata records that weaker
+guarantee explicitly. The kernel discloses policy but remains free of worker
+leases, host names, model names and scheduler identity.
 
-Live evaluation records requested and host-effective caps. Its grader rebuilds
-successful spawn, terminal completion, active high-water, depth, total fan-out
-and rolling refill from structured trace events.
+Live evaluation records the adapter, enforcement mode, requested, native and
+effective caps. Its grader rebuilds successful spawn, terminal completion,
+active high-water, depth, total fan-out and rolling refill from structured
+trace events.
 
 ## Consequences
 
 Evidence behavior is reproducible within a Run and smaller budgets remain
-navigable. Native host caps protect the API even when a prompt is ignored, while
-trace grading proves observed behavior instead of inferring it from absent
-errors. The coordinator must count unique children and reuse handles for
-follow-up work.
+navigable. Native host caps protect the API where available; on other harnesses
+the portable coordinator window remains explicit rather than being mislabeled
+as a hard guarantee. Trace grading proves observed behavior instead of inferring
+it from absent errors. The coordinator must count unique children and reuse
+handles for follow-up work.
 
 Local development should use one linked skill source. Copied installations must
 be reinstalled as an atomic bundle and tracked by their installer lock; a Run

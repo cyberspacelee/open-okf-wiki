@@ -106,11 +106,12 @@ Output byte minima are 4 KiB, `default_lines` must not exceed `max_lines`, and
 spawn depth is exactly one.
 
 The agent policy defaults to four active children, spawn depth one and 128
-unique children per Run. The host maps the active-child value to its native
-session cap and uses one rolling window across every phase. The kernel exposes
-the immutable policy and records it in the Publication; it does not schedule
-agents. Structured live-eval traces verify active high-water, depth, total
-fan-out and rolling refill.
+unique children per Run. When the host exposes a numeric native cap, the
+effective limit is the smaller value; otherwise the coordinator enforces the
+Run value. One rolling window spans every phase. The kernel exposes the
+immutable policy and records it in the Publication; it does not schedule agents.
+Structured live-eval traces verify active high-water, depth, total fan-out and
+rolling refill.
 
 The kernel proves revisions, captured paths, locator syntax and ranges, Plan and
 Composition schemas, Plan-review and bundle-review digests, exact unit coverage,
