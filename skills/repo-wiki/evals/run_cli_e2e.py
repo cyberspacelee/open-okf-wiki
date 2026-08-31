@@ -322,6 +322,17 @@ def evaluate(base: pathlib.Path) -> dict:
         page([("api", api_ref)], "See [architecture][architecture]."),
     )
 
+    overview = work / "drafts/overview.md"
+    full_page = overview.read_text(encoding="utf-8")
+    write(overview, full_page + "\n## Gaps\n\nA scoped behavior remains unverified.\n")
+    rejected = invoke(ws, "review", "prepare", check=False)
+    rejected_data = json.loads(rejected.stdout)
+    if rejected.returncode != 1 or [
+        item["code"] for item in rejected_data.get("issues", [])
+    ] != ["gaps-unexpected"]:
+        raise RuntimeError("full coverage accepted a Gaps section")
+    write(overview, full_page)
+
     if run(ws, "run", "status")["next_actions"] != ["review prepare"]:
         raise RuntimeError("complete drafts did not advance to review")
     packet = run(ws, "review", "prepare")
@@ -357,7 +368,6 @@ def evaluate(base: pathlib.Path) -> dict:
     changed = run(ws, "review", "complete")
     if changed["verdict"] != "changes_requested":
         raise RuntimeError("review repair loop did not remain active")
-    overview = work / "drafts/overview.md"
     write(
         overview,
         overview.read_text(encoding="utf-8") + "\nRouting starts here.[^api]\n",

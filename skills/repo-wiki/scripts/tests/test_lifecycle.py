@@ -526,6 +526,26 @@ def test_evidence_byte_limits_preserve_json_and_continuation(tmp_path):
     assert compact_json_size(read) <= 4096
 
 
+def test_git_blob_rejects_directory_tree(tmp_path):
+    root = workspace(tmp_path)
+    source_path = root / "source"
+    write(source_path / "package/module.py", "value = 42\n")
+    subprocess.run(
+        ["git", "-C", str(source_path), "add", "package/module.py"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(source_path), "commit", "-qm", "add package"], check=True
+    )
+    start(root)
+    state = _state.read(root)
+    source = _workspace.load(root).sources["src"]
+
+    assert (
+        _workspace.git_blob(source, state["revisions"][0]["commit"], "package")
+        is None
+    )
+
+
 def test_workspace_and_run_reject_missing_policy(tmp_path):
     root = workspace(tmp_path)
     config_path = root / "workspace.json"
@@ -657,6 +677,25 @@ def test_chinese_partial_page_uses_localized_gap_heading(tmp_path):
     )
     approve_composition(root, run)
     assert _state.status(root)["next_actions"] == ["review prepare"]
+
+
+def test_full_coverage_rejects_gap_section(tmp_path):
+    root = workspace(tmp_path)
+    run = start(root)
+    write_work(run)
+    approve_plan(root, run)
+    approve_composition(root, run)
+    draft_path = run / "work/drafts/answer.md"
+    write(
+        draft_path,
+        draft_path.read_text(encoding="utf-8")
+        + "\n## Gaps\n\nA scoped behavior remains unverified.\n",
+    )
+
+    result = _state.review_prepare(root)
+
+    assert result["ok"] is False
+    assert [item["code"] for item in result["issues"]] == ["gaps-unexpected"]
 
 
 def test_chinese_page_rejects_english_template_heading(tmp_path):

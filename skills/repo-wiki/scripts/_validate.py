@@ -876,9 +876,9 @@ def validate_page(
         issues.append(
             issue("error", "placeholder-remaining", str(path), placeholder, line)
         )
+    gap_title = "缺口" if frontmatter.language == "zh" else "Gaps"
+    gaps = [section for section in structure.sections if section.title == gap_title]
     if frontmatter.coverage == "partial":
-        gap_title = "缺口" if frontmatter.language == "zh" else "Gaps"
-        gaps = [section for section in structure.sections if section.title == gap_title]
         if not gaps or not gaps[0].content:
             issues.append(
                 issue(
@@ -888,6 +888,16 @@ def validate_page(
                     f"partial coverage requires a non-empty {gap_title} section",
                 )
             )
+    elif frontmatter.coverage == "full" and gaps:
+        issues.append(
+            issue(
+                "error",
+                "gaps-unexpected",
+                str(path),
+                f"full coverage must not include a {gap_title} section",
+                gaps[0].start_line,
+            )
+        )
     for line, raw in enumerate(parsed.body.splitlines(), 1):
         if CAUSAL.search(raw) and not _INLINE_REF.search(raw):
             issues.append(

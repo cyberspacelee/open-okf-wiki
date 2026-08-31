@@ -656,7 +656,14 @@ def git_blob(source: Source, commit: str, rel: str) -> bytes | None:
     ):
         return None
     result = subprocess.run(
-        ["git", "-C", str(source.path), "show", f"{commit}:{pure.as_posix()}"],
+        [
+            "git",
+            "-C",
+            str(source.path),
+            "cat-file",
+            "blob",
+            f"{commit}:{pure.as_posix()}",
+        ],
         capture_output=True,
         check=False,
     )

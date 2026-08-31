@@ -29,6 +29,10 @@ Add `--copy` where symlink privileges are unavailable. A copied install is a
 versioned bundle, not a development link: reinstall it after upgrading this
 repository and commit its `skills-lock.json` entry. Verify that the harness
 resolves `repo-wiki` to the intended path when discovery scopes overlap.
+Before starting a Run on another machine, update the installed skill. A current
+Run reports contract `artifact-loop-late-bind`; another contract identifies a
+stale bundle or legacy Run. Preserve that Workspace for forensics and start from
+a new hub after reinstalling rather than resuming or migrating it.
 
 The runtime bundle and kernel are host- and model-neutral. Set the actual
 installed directory once for the commands below:

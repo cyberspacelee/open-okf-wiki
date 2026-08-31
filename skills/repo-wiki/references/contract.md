@@ -68,8 +68,10 @@ citations outside the fence and follow it with a cited conclusion.
 Every load-bearing claim uses a footnote ID that appears exactly once in
 frontmatter `sources`, body references and a footnote definition. Partial
 coverage requires a non-empty `Gaps` section for English or `缺口` section for
-Chinese, naming missing evidence and searched scope. Causal rationale must be
-cited.
+Chinese, naming missing evidence and searched scope; full coverage forbids that
+section. `author` and `last_modified` are optional best-effort metadata for Git
+file locators and are omitted when unavailable, including for Catalog locators.
+Causal rationale must be cited.
 
 Before binding, logical page links use `[label][page-id]` without definitions.
 After binding, links are ordinary bundle-root-relative or page-relative links.

@@ -41,5 +41,7 @@ labels. Keep locators outside diagrams.
 Every locator must fall inside an inherited scope. A page spanning Sources
 cites each participant. When evidence is incomplete, use `coverage: partial`
 and a non-empty `## Gaps` section for `en` or `## 缺口` for `zh`. Repair an
-existing draft with one targeted update; do not delete and add the same path in
+existing draft with one targeted update; `coverage: full` must not contain that
+section. Git file metadata may be enriched automatically; do not invent missing
+metadata for file or Catalog locators. Do not delete and add the same path in
 one patch. Return only the draft path and gap count.
