@@ -18,6 +18,7 @@ from _models import (
     KnowledgePlan,
     PlanReviewReport,
     ReviewReport,
+    RunPolicy,
     model_errors,
 )
 from pydantic import ValidationError
@@ -1195,6 +1196,24 @@ def validate_publication(root: pathlib.Path, path: pathlib.Path) -> ValidationRe
         )
         skipped.append("manifest-binding")
         return validation_result(issues, skipped)
+    try:
+        policy = RunPolicy.model_validate(manifest.get("policy"), strict=True)
+    except ValidationError as exc:
+        issues.extend(
+            issue("error", "manifest-policy-invalid", str(manifest_path), message)
+            for message in model_errors(exc)
+        )
+        skipped.append("manifest-binding")
+        return validation_result(issues, skipped)
+    if not re.fullmatch(r"[0-9a-f]{64}", manifest.get("skill_bundle_digest", "")):
+        issues.append(
+            issue(
+                "error",
+                "manifest-skill-digest-invalid",
+                str(manifest_path),
+                "skill bundle digest is missing or invalid",
+            )
+        )
     if manifest.get("digest") != directory_digest(
         path, exclude_names={".okf-manifest.json"}
     ):
@@ -1241,6 +1260,7 @@ def validate_publication(root: pathlib.Path, path: pathlib.Path) -> ValidationRe
         "revisions": revisions,
         "catalogs": catalogs,
         "language": _workspace.load(root).language,
+        "policy": policy.model_dump(mode="json"),
     }
     concepts = sorted(
         page for page in path.rglob("*.md") if page.name not in ("index.md", "log.md")

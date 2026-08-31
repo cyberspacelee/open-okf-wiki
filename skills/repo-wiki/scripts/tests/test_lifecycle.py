@@ -8,7 +8,9 @@ import _state
 import _validate
 import _workspace
 import pytest
+from _files import compact_json_size
 from _frontmatter import render
+from _models import RunPolicy
 
 
 def write(path: pathlib.Path, text: str) -> None:
@@ -16,7 +18,9 @@ def write(path: pathlib.Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
-def workspace(tmp_path: pathlib.Path, language: str = "en") -> pathlib.Path:
+def workspace(
+    tmp_path: pathlib.Path, language: str = "en", policy: dict | None = None
+) -> pathlib.Path:
     root = tmp_path / "workspace"
     source = root / "source"
     source.mkdir(parents=True)
@@ -30,7 +34,7 @@ def workspace(tmp_path: pathlib.Path, language: str = "en") -> pathlib.Path:
     write(source / "architecture.py", "class Service:\n    pass\n")
     subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(source), "commit", "-qm", "initial"], check=True)
-    _workspace.init(root, language, 30)
+    _workspace.init(root, language, 30, policy)
     _workspace.add_git_link(root, str(source), "src")
     return root
 
@@ -233,7 +237,7 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
     assert (run / "index/src.md").is_file()
 
     search = _state.evidence_search(root, "src", "return 42")
-    assert search["results"][0]["locator"] == "src/app.py#L2"
+    assert search["items"][0]["locator"] == "src/app.py#L2"
     assert "return 42" in _state.evidence_read(root, "src/app.py#L1-L2")["text"]
 
     write_work(run)
@@ -429,6 +433,108 @@ def test_status_summarizes_large_issue_sets(tmp_path):
     assert len(status["issues"]) == 10
     assert status["issue_counts"] == {"draft-invalid": 11, "link-invalid": 1}
     assert status["issues_truncated"] == 2
+
+
+def test_run_policy_is_snapshotted_and_controls_evidence(tmp_path):
+    policy = RunPolicy.defaults().model_dump(mode="json")
+    policy["agents"]["max_active_children"] = 2
+    policy["evidence"]["search"]["max_results"] = 1
+    policy["evidence"]["read"]["default_lines"] = 1
+    policy["evidence"]["read"]["max_lines"] = 1
+    root = workspace(tmp_path, policy=policy)
+    source = root / "source"
+    write(source / "app.py", "match one\nmatch two\nmatch three\n")
+    subprocess.run(["git", "-C", str(source), "add", "app.py"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "commit", "-qm", "add evidence rows"],
+        check=True,
+    )
+
+    start(root)
+    assert _state.status(root)["policy"] == policy
+    search = _state.evidence_search(root, "src", "match")
+    assert len(search["items"]) == 1
+    assert search["limit_reached"] is True
+    continued = _state.evidence_search(root, "src", "match", after=search["next_after"])
+    assert continued["items"][0]["locator"] == "src/app.py#L2"
+    read = _state.evidence_read(root, "src/app.py#L1-L3")
+    assert read["end"] == 1
+    assert read["limit_reached"] is True
+    assert read["next_locator"] == "src/app.py#L2-L2"
+
+    with pytest.raises(_workspace.WorkspaceError, match="active run"):
+        _workspace.configure(root, policy_updates={"max_active_children": 4})
+
+
+def test_evidence_byte_limits_preserve_json_and_continuation(tmp_path):
+    policy = RunPolicy.defaults().model_dump(mode="json")
+    policy["evidence"]["search"].update(max_results=100, max_output_bytes=4096)
+    policy["evidence"]["read"].update(
+        default_lines=100, max_lines=100, max_output_bytes=4096
+    )
+    root = workspace(tmp_path, policy=policy)
+    source = root / "source"
+    write(
+        source / "wide.txt",
+        "".join(f'match {index} "\\" 中文' * 50 + "\n" for index in range(12)),
+    )
+    subprocess.run(["git", "-C", str(source), "add", "wide.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "commit", "-qm", "add wide evidence"],
+        check=True,
+    )
+    start(root)
+
+    first = _state.evidence_search(root, "src", "match")
+    second = _state.evidence_search(root, "src", "match", after=first["next_after"])
+    assert first["limit_reached"] and first["has_more"]
+    assert compact_json_size(first) <= 4096
+    assert compact_json_size(second) <= 4096
+    assert {item["locator"] for item in first["items"]}.isdisjoint(
+        item["locator"] for item in second["items"]
+    )
+
+    read = _state.evidence_read(root, "src/wide.txt#L1-L12")
+    assert read["limit_reached"] and read["has_more"]
+    assert read["next_locator"]
+    assert read["clipped_lines"]
+    assert compact_json_size(read) <= 4096
+
+
+def test_workspace_and_run_reject_missing_policy(tmp_path):
+    root = workspace(tmp_path)
+    config_path = root / "workspace.json"
+    config = json.loads(config_path.read_text())
+    config.pop("policy")
+    config_path.write_text(json.dumps(config))
+    with pytest.raises(_workspace.WorkspaceError, match="workspace policy"):
+        _workspace.load(root)
+
+    config["policy"] = RunPolicy.defaults().model_dump(mode="json")
+    config_path.write_text(json.dumps(config))
+    start(root)
+    state = _state.read(root)
+    state.pop("policy")
+    state_path = _state.run_dir(root, state["run_id"]) / "state.json"
+    state_path.write_text(json.dumps(state))
+    with pytest.raises(_state.StateError, match="run policy"):
+        _state.read(root)
+
+
+def test_active_run_rejects_a_changed_skill_bundle(tmp_path):
+    root = workspace(tmp_path)
+    start(root)
+    state = _state.read(root)
+    state["skill_bundle_digest"] = "0" * 64
+    state_path = _state.run_dir(root, state["run_id"]) / "state.json"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(_state.StateError, match="skill bundle changed"):
+        _state.read(root)
+
+    state["status"] = "published"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    assert _state.read(root)["status"] == "published"
 
 
 def test_one_unit_plan_can_publish_one_page(tmp_path):

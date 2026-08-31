@@ -1,7 +1,7 @@
 # Knowledge Plan Review
 
 Review the exact Knowledge Plan named by the `review plan` packet in an
-independent context. Use bounded `okf evidence outline/search/read` commands
+independent context. Use bounded evidence navigation commands
 from the packet workdir; the packet's Source names are routing hints. Do not
 read run internals, write Composition or choose pages.
 The packet is the command's JSON output; `artifact` names this report's output

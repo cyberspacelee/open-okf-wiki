@@ -99,12 +99,11 @@ agent onboarding 价值。但最终质量仍不合格：领域召回不完整，
 
 首次 Plan worker 只拿到 attempt/artifact 后，使用 `find` 和 `rg --files` 扫描
 `.okf-wiki` 来恢复 packet。后续即使 prompt 包含完整 packet，worker 仍执行 50 条直接
-状态检查。`task start` 的 stdout 是瞬时数据，attempt 目录没有规范化的 packet 文件；
+状态检查。旧 dispatcher 的 stdout 是瞬时数据，attempt 目录没有规范化的 packet 文件；
 worker restart 和外部 host 无法通过稳定路径恢复同一 dispatch。
 
-修复：`task start` 必须把完整 packet 持久化到 attempt 目录，并返回 `packet_path`；
-增加只读的 `task packet <target>` 重放入口。worker 只消费 packet、明确列出的 inputs
-和 Target CLI，不读取 `state.json`、Candidate 目录或其他 attempt。
+当时建议把完整 packet 持久化以供重放；ADR 0019 后来删除了整个 Target/Attempt
+dispatcher，改由固定 living Artifacts 和 derived status 恢复工作。
 
 ### P0：`task read` packet 语法不足，造成系统性失败
 

@@ -52,7 +52,9 @@ def source(path: pathlib.Path, label: str) -> pathlib.Path:
     write(path / "pom.xml", "<project/>\n")
     write(
         path / "src/main/java/example/App.java",
-        f'package example;\npublic class App {{ static String name = "{label}"; }}\n',
+        "package example;\n"
+        f'public class App {{ public static String name = "{label}"; }}\n'
+        "public interface Named {}\n",
     )
     subprocess.run(["git", "-C", str(path), "add", "."], check=True)
     subprocess.run(["git", "-C", str(path), "commit", "-qm", "initial"], check=True)
@@ -90,7 +92,23 @@ def evaluate(base: pathlib.Path) -> dict:
     ws.mkdir()
     api = source(base / "API", "api")
     web = source(base / "WebUI", "web")
-    run(ws, "workspace", "init", "--lang", "en", "--freshness-days", "30")
+    run(
+        ws,
+        "workspace",
+        "init",
+        "--lang",
+        "en",
+        "--freshness-days",
+        "30",
+        "--max-active-children",
+        "4",
+        "--search-max-results",
+        "1",
+        "--read-default-lines",
+        "1",
+        "--read-max-lines",
+        "1",
+    )
     run(ws, "source", "add", "link", str(api), "--name", "API")
     run(ws, "source", "add", "link", str(web), "--name", "WebUI")
 
@@ -98,13 +116,39 @@ def evaluate(base: pathlib.Path) -> dict:
     if (
         started["phase"] != "plan"
         or started["language"] != "en"
+        or started["policy"]["agents"]["max_active_children"] != 4
+        or started["policy"]["evidence"]["search"]["max_results"] != 1
+        or started["policy"]["evidence"]["read"]["max_lines"] != 1
         or started["sources"] != ["API", "WebUI"]
         or started["next_actions"] != ["repair work/plan.md"]
     ):
         raise RuntimeError(f"Run did not enter Plan: {started}")
-    search = run(ws, "evidence", "search", "public class", "--source", "API")
-    locator = search.get("results", [{}])[0].get("locator")
-    if not locator or not run(ws, "evidence", "read", locator).get("text"):
+    search = run(ws, "evidence", "search", "public", "--source", "API")
+    locator = search.get("items", [{}])[0].get("locator")
+    continued = run(
+        ws,
+        "evidence",
+        "search",
+        "public",
+        "--source",
+        "API",
+        "--after",
+        search.get("next_after", ""),
+    )
+    bounded_read = run(
+        ws,
+        "evidence",
+        "read",
+        "API/src/main/java/example/App.java#L1-L3",
+    )
+    if (
+        not locator
+        or search.get("limit_reached") is not True
+        or continued.get("items", [{}])[0].get("locator") == locator
+        or bounded_read.get("end") != 1
+        or bounded_read.get("limit_reached") is not True
+        or not bounded_read.get("next_locator")
+    ):
         raise RuntimeError("bounded evidence search/read failed")
 
     work = pathlib.Path(started["run_dir"]) / "work"
@@ -356,7 +400,23 @@ def evaluate(base: pathlib.Path) -> dict:
     if "](/architecture.md)" not in bound.read_text(encoding="utf-8"):
         raise RuntimeError("logical page ID was not bound")
 
+    configured = run(
+        ws,
+        "workspace",
+        "configure",
+        "--max-active-children",
+        "2",
+        "--search-max-results",
+        "2",
+    )
+    if (
+        configured["policy"]["agents"]["max_active_children"] != 2
+        or configured["policy"]["evidence"]["search"]["max_results"] != 2
+    ):
+        raise RuntimeError("workspace policy configuration was not persisted")
     second = run(ws, "run", "start")
+    if second["policy"] != configured["policy"]:
+        raise RuntimeError("new Run did not snapshot the configured policy")
     return {
         "workspace": str(ws),
         "published_generation": published["generation"],

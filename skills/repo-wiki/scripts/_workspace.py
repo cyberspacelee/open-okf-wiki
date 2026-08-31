@@ -9,6 +9,8 @@ from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
 
 from _files import atomic_json, directory_digest
+from _models import RunPolicy, model_errors
+from pydantic import ValidationError
 
 VERSION = 1
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
@@ -48,6 +50,7 @@ class Workspace:
     root: pathlib.Path
     language: str
     freshness_days: int
+    policy: RunPolicy
     sources: dict[str, Source]
 
 
@@ -74,8 +77,48 @@ def _is_git_repo(path: pathlib.Path) -> bool:
     return _git(path, "rev-parse", "--is-inside-work-tree", check=False).returncode == 0
 
 
+def _policy(value: object) -> RunPolicy:
+    try:
+        return RunPolicy.model_validate(value, strict=True)
+    except ValidationError as exc:
+        raise WorkspaceError(
+            f"invalid workspace policy: {'; '.join(model_errors(exc))}"
+        ) from exc
+
+
+def policy_from_flat(
+    values: dict[str, int | None], base: RunPolicy | None = None
+) -> RunPolicy:
+    policy = (base or RunPolicy.defaults()).model_dump(mode="json")
+    targets = {
+        "max_active_children": ("agents", "max_active_children"),
+        "max_children_per_run": ("agents", "max_children_per_run"),
+        "search_max_results": ("evidence", "search", "max_results"),
+        "search_max_output_bytes": (
+            "evidence",
+            "search",
+            "max_output_bytes",
+        ),
+        "read_default_lines": ("evidence", "read", "default_lines"),
+        "read_max_lines": ("evidence", "read", "max_lines"),
+        "read_max_output_bytes": ("evidence", "read", "max_output_bytes"),
+    }
+    for name, value in values.items():
+        if value is None:
+            continue
+        target = policy
+        *parents, field = targets[name]
+        for parent in parents:
+            target = target[parent]
+        target[field] = value
+    return _policy(policy)
+
+
 def init(
-    root: pathlib.Path, language: str = "en", freshness_days: int = 90
+    root: pathlib.Path,
+    language: str = "en",
+    freshness_days: int = 90,
+    policy: RunPolicy | dict | None = None,
 ) -> Workspace:
     path = _config_path(root)
     if path.exists():
@@ -84,12 +127,14 @@ def init(
         raise WorkspaceError("language must be 'en' or 'zh'")
     if freshness_days < 1:
         raise WorkspaceError("freshness-days must be positive")
+    policy = RunPolicy.defaults() if policy is None else _policy(policy)
     atomic_json(
         path,
         {
             "version": VERSION,
             "language": language,
             "freshness_days": freshness_days,
+            "policy": policy.model_dump(mode="json"),
             "sources": [],
         },
     )
@@ -123,6 +168,7 @@ def load(root: pathlib.Path) -> Workspace:
     freshness_days = data.get("freshness_days")
     if not isinstance(freshness_days, int) or freshness_days < 1:
         raise WorkspaceError("workspace freshness_days must be a positive integer")
+    policy = _policy(data.get("policy"))
     entries = data.get("sources")
     if not isinstance(entries, list):
         raise WorkspaceError("workspace sources must be a list")
@@ -181,8 +227,40 @@ def load(root: pathlib.Path) -> Workspace:
         root=root,
         language=data.get("language", "en"),
         freshness_days=freshness_days,
+        policy=policy,
         sources=sources,
     )
+
+
+def configure(
+    root: pathlib.Path,
+    *,
+    language: str | None = None,
+    freshness_days: int | None = None,
+    policy_updates: dict[str, int] | None = None,
+) -> Workspace:
+    data = _read(root)
+    if _active_run(root):
+        raise WorkspaceError(
+            "workspace configuration cannot change during an active run"
+        )
+    current = load(root)
+    language = current.language if language is None else language
+    freshness_days = (
+        current.freshness_days if freshness_days is None else freshness_days
+    )
+    if language not in ("en", "zh"):
+        raise WorkspaceError("language must be 'en' or 'zh'")
+    if freshness_days < 1:
+        raise WorkspaceError("freshness-days must be positive")
+    policy = policy_from_flat(policy_updates or {}, current.policy)
+    data.update(
+        language=language,
+        freshness_days=freshness_days,
+        policy=policy.model_dump(mode="json"),
+    )
+    atomic_json(_config_path(root), data)
+    return load(root)
 
 
 def _active_run(root: pathlib.Path) -> bool:
@@ -191,9 +269,7 @@ def _active_run(root: pathlib.Path) -> bool:
         return False
     try:
         run_id = json.loads(pointer.read_text(encoding="utf-8"))["run_id"]
-        if not isinstance(run_id, str) or not re.fullmatch(
-            r"r-\d{8}-[0-9a-f]{6}", run_id
-        ):
+        if not isinstance(run_id, str) or not re.fullmatch(r"r-\d{8}T\d{12}Z", run_id):
             raise WorkspaceError(
                 "corrupt current-run pointer; delete .okf-wiki/current-run.json or restore it"
             )

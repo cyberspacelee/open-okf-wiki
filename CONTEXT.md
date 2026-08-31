@@ -33,6 +33,16 @@ One resumable generation through planning, writing, bundle review and
 Publication. Its internal storage ID is never supplied by the agent.
 _Avoid_: conversation, agent session, Target queue
 
+**Run Policy**:
+The immutable evidence and agent-resource limits captured from Workspace
+configuration when a Run starts and published with its result.
+_Avoid_: environment tuning, worker override, scheduler state
+
+**Rolling Window**:
+The host scheduling rule that refills one freed child slot immediately while
+respecting one Run-wide active-child limit.
+_Avoid_: fixed batch barrier, unbounded fan-out
+
 **Artifact Loop**:
 The host cycle that reads status, performs the derived next work, repairs every
 validation or review issue and repeats until published or externally blocked.

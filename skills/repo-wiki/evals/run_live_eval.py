@@ -71,6 +71,21 @@ def main() -> int:
     ws = pathlib.Path(setup.stdout.strip().splitlines()[-1])
     runtime_skill = copy_runtime(args.base.resolve())
     initial_runtime_digest = runtime_digest(runtime_skill)
+    policy = json.loads((ws / "workspace.json").read_text(encoding="utf-8"))["policy"]
+    requested_cap = policy["agents"]["max_active_children"]
+    if args.host == "codex":
+        codex_config = ws / ".codex/config.toml"
+        codex_config.parent.mkdir()
+        codex_config.write_text(
+            f"[agents]\nmax_concurrent_threads_per_session = {requested_cap}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        concurrency_enforcement = "host-native"
+        effective_cap = requested_cap
+    else:
+        concurrency_enforcement = "prompt-only"
+        effective_cap = None
     uv_cache = ws / ".eval-uv-cache"
     uv_cache.mkdir()
     host_env = {**os.environ, "UV_CACHE_DIR": str(uv_cache)}
@@ -136,6 +151,9 @@ def main() -> int:
         "runtime_skill": str(runtime_skill),
         "runtime_skill_digest": initial_runtime_digest,
         "runtime_skill_unchanged": initial_runtime_digest == final_runtime_digest,
+        "run_policy": policy,
+        "concurrency_enforcement": concurrency_enforcement,
+        "host_effective_max_active_children": effective_cap,
         "uv_cache": str(uv_cache),
     }
     (ws / "live-eval.json").write_text(

@@ -1,16 +1,17 @@
 # Coordinator context conservation with disk-first orchestration
 
+Status: superseded by ADR 0019
+
 The coordinating session never reads source, draft, candidate or Wiki bodies.
 Workers do content work and return bounded handoffs that name disk artifacts;
 the coordinator consumes only compact status, task dispatch packets, handoffs
 and validator issues. If the host cannot provide workers, the Run stops instead
 of falling back to serial coordinator work.
 
-Task truth lives in `.okf-wiki/runs/<id>/state.json`. `run status` restores the
-current phase and `task start --json` returns the complete path-only dispatch
-packet, so compaction does not require replaying prior prose. Completion passes
-through the State Gate, which validates artifacts instead of trusting worker
-self-report.
+The former Target dispatcher stored task truth under the Run directory and
+returned path-only packets so compaction did not require replaying prior prose.
+ADR 0019 replaced that scheduler state with derived status and fixed living
+Artifacts while retaining deterministic validation.
 
 Tooling: Python 3.12+, PEP 723 inline metadata and `uv run`. PyYAML parses
 bounded YAML and rejects aliases/duplicate keys; Pydantic validates external

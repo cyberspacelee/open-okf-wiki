@@ -15,6 +15,15 @@ import pathlib
 import sys
 
 MAX_ISSUES = 50
+POLICY_FIELDS = (
+    "max_active_children",
+    "max_children_per_run",
+    "search_max_results",
+    "search_max_output_bytes",
+    "read_default_lines",
+    "read_max_lines",
+    "read_max_output_bytes",
+)
 
 
 def workspace_root() -> pathlib.Path:
@@ -67,30 +76,112 @@ def cmd_workspace(args) -> int:
     import _workspace
 
     if args.action == "init":
-        workspace = _workspace.init(workspace_root(), args.lang, args.freshness_days)
-        emit(
-            {
-                "workspace": str(workspace.root),
-                "language": workspace.language,
-                "freshness_days": workspace.freshness_days,
-                "sources": sorted(workspace.sources),
-            },
-            args.json,
+        flat_policy = {field: getattr(args, field) for field in POLICY_FIELDS}
+        workspace = _workspace.init(
+            workspace_root(),
+            args.lang,
+            args.freshness_days,
+            _workspace.policy_from_flat(flat_policy),
+        )
+    elif args.action == "configure":
+        policy_updates = {
+            field: getattr(args, field)
+            for field in POLICY_FIELDS
+            if getattr(args, field) is not None
+        }
+        if args.lang is None and args.freshness_days is None and not policy_updates:
+            raise _workspace.WorkspaceError(
+                "workspace configure requires at least one setting"
+            )
+        workspace = _workspace.configure(
+            workspace_root(),
+            language=args.lang,
+            freshness_days=args.freshness_days,
+            policy_updates=policy_updates,
         )
     else:
         workspace = _workspace.load(workspace_root())
-        emit(
-            {
-                "version": _workspace.VERSION,
-                "language": workspace.language,
-                "freshness_days": workspace.freshness_days,
-                "sources": {
-                    name: source.to_dict() for name, source in workspace.sources.items()
-                },
+    emit(
+        {
+            "version": _workspace.VERSION,
+            "workspace": str(workspace.root),
+            "language": workspace.language,
+            "freshness_days": workspace.freshness_days,
+            "policy": workspace.policy.model_dump(mode="json"),
+            "sources": {
+                name: source.to_dict() for name, source in workspace.sources.items()
             },
-            args.json,
-        )
+        },
+        args.json,
+    )
     return 0
+
+
+def add_policy_arguments(parser: argparse.ArgumentParser, *, defaults: bool) -> None:
+    from _models import RunPolicy
+
+    policy = RunPolicy.defaults()
+    values = _workspace_flat_policy(policy) if defaults else {}
+    parser.add_argument(
+        "--max-active-children",
+        dest="max_active_children",
+        type=int,
+        default=values.get("max_active_children"),
+        help="maximum concurrently active repo-wiki subagents",
+    )
+    parser.add_argument(
+        "--max-children-per-run",
+        type=int,
+        default=values.get("max_children_per_run"),
+        help="maximum unique subagents spawned by one run",
+    )
+    parser.add_argument(
+        "--search-max-results",
+        dest="search_max_results",
+        type=int,
+        default=values.get("search_max_results"),
+        help="maximum matches returned by one evidence search",
+    )
+    parser.add_argument(
+        "--search-max-output-bytes",
+        dest="search_max_output_bytes",
+        type=int,
+        default=values.get("search_max_output_bytes"),
+        help="maximum UTF-8 bytes returned by one evidence search",
+    )
+    parser.add_argument(
+        "--read-default-lines",
+        dest="read_default_lines",
+        type=int,
+        default=values.get("read_default_lines"),
+        help="default evidence read window when no end line is supplied",
+    )
+    parser.add_argument(
+        "--read-max-lines",
+        dest="read_max_lines",
+        type=int,
+        default=values.get("read_max_lines"),
+        help="maximum lines returned by one evidence read",
+    )
+    parser.add_argument(
+        "--read-max-output-bytes",
+        dest="read_max_output_bytes",
+        type=int,
+        default=values.get("read_max_output_bytes"),
+        help="maximum UTF-8 bytes returned by one evidence read",
+    )
+
+
+def _workspace_flat_policy(policy) -> dict[str, int]:
+    return {
+        "max_active_children": policy.agents.max_active_children,
+        "max_children_per_run": policy.agents.max_children_per_run,
+        "search_max_results": policy.evidence.search.max_results,
+        "search_max_output_bytes": policy.evidence.search.max_output_bytes,
+        "read_default_lines": policy.evidence.read.default_lines,
+        "read_max_lines": policy.evidence.read.max_lines,
+        "read_max_output_bytes": policy.evidence.read.max_output_bytes,
+    }
 
 
 def cmd_source(args) -> int:
@@ -142,6 +233,7 @@ def cmd_run(args) -> int:
 
 def cmd_evidence(args) -> int:
     import _state
+    from _files import compact_json
 
     root = workspace_root()
     if args.action == "outline":
@@ -157,10 +249,11 @@ def cmd_evidence(args) -> int:
             source=args.source,
             query=args.pattern,
             path=args.path,
+            after=args.after,
         )
     else:
         result = _state.evidence_read(root, args.locator)
-    emit(result, args.json)
+    sys.stdout.write(compact_json(result))
     return 0
 
 
@@ -308,6 +401,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=90,
         help="days before published pages become stale",
     )
+    add_policy_arguments(init, defaults=True)
+    configure = leaf(
+        workspace_actions.add_parser(
+            "configure", help="update settings used by the next Run"
+        )
+    )
+    configure.add_argument("--lang", choices=("en", "zh"))
+    configure.add_argument("--freshness-days", type=int)
+    add_policy_arguments(configure, defaults=False)
     leaf(workspace_actions.add_parser("show", help="show workspace configuration"))
 
     source = commands.add_parser("source", help="register or list run inputs")
@@ -388,6 +490,7 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("pattern", help="literal text, at most 256 characters")
     search.add_argument("--source", required=True, help="source name")
     search.add_argument("--path", default=".", help="relative scope path")
+    search.add_argument("--after", help="continue after a locator from the prior page")
     read = leaf(
         evidence_actions.add_parser(
             "read", help="read one bounded locator from a frozen Source"

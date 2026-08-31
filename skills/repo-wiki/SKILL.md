@@ -63,13 +63,19 @@ their own context.
 Replace a fixed Artifact with one write or update. Do not delete and recreate
 the same path in one patch operation.
 
-Keep at most three child agents active at once. For a larger fan-out, fill the
-three slots, then dispatch the next item as soon as any slot returns; do not wait
-for the slowest member of a batch. Before a new phase, close completed child
-handles that will not receive follow-up work; retain only handles still needed
-for targeted repair or review.
-The same three-agent limit applies when reactivating handles for repairs or
-follow-up: send at most three, wait for a slot, then reactivate the remainder.
+Read `status.policy.agents` at the start of the loop. Only the coordinator may
+spawn children. Across evidence, page, repair and review work, keep one global
+rolling window no larger than `max_active_children`; a host adapter may impose a
+smaller native cap. Fill the window, then dispatch the next pending item as soon
+as any child becomes terminal; do not wait for the slowest member of a batch.
+Count unique children across the Run and never exceed `max_children_per_run`.
+Record that count in `work/progress.md` after every successful first dispatch;
+reactivating a handle does not increase it. When the fuse is reached, merge
+residual questions into existing child follow-ups or block with the remaining
+work recorded in `work/progress.md`.
+Before a new phase, close completed child handles that will not receive
+follow-up work; retain only handles still needed for targeted repair or review.
+The same window applies when reactivating handles for repairs or follow-up.
 Record each successful dispatch and its fixed output immediately. If a batch is
 partially rejected, retry only the undispatched outputs; never respawn work
 whose handle was already returned.
@@ -105,7 +111,7 @@ top-level outline per Source, dispatch two or more independent questions before
 deeper evidence navigation when those questions exist; the coordinator does
 not perform their searches itself.
 
-Inside one worker, keep `okf evidence` commands sequential. Agent fan-out is
+Inside one worker, keep evidence commands sequential. Agent fan-out is
 the concurrency boundary; launching many evidence commands concurrently adds
 router pressure without producing an additional independent judgment.
 
@@ -126,6 +132,10 @@ Navigate frozen evidence with:
     okf evidence outline . --source service --json
     okf evidence search "literal" --source service --path src --json
     okf evidence read service/src/App.java#L20-L80 --json
+
+Search and read limits come from `status.policy.evidence`, not per-call
+overrides. When `has_more` is true, continue with the returned `next_after` or
+`next_locator`; never restart the same bounded search from the beginning.
 
 Finish Plan normalization, including scope and evidence-seed trimming, before
 requesting review; any later Plan edit invalidates the digest-bound approval.

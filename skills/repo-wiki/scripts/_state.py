@@ -8,17 +8,21 @@ import shutil
 import time
 from datetime import datetime, timedelta, timezone
 
-from _files import atomic_json, directory_digest
+from _files import atomic_json, compact_json_size, directory_digest
 from _frontmatter import parse_file, parse_page, render
-from _models import CompositionMap, KnowledgePlan, PlanReviewReport, ReviewReport
+from _models import (
+    CompositionMap,
+    KnowledgePlan,
+    PlanReviewReport,
+    ReviewReport,
+    RunPolicy,
+    model_errors,
+)
+from pydantic import ValidationError
 
-VERSION = 3
+VERSION = 1
 CONTRACT = "artifact-loop-late-bind"
 LOCK_TIMEOUT_SEC = 60
-MAX_SEARCH_RESULTS = 20
-MAX_SEARCH_BYTES = 8 * 1024
-MAX_READ_LINES = 200
-MAX_READ_BYTES = 64 * 1024
 MAX_STATUS_ISSUES = 10
 
 
@@ -36,6 +40,22 @@ def _pointer(root: pathlib.Path) -> pathlib.Path:
 
 def run_dir(root: pathlib.Path, run_id: str) -> pathlib.Path:
     return _meta(root) / "runs" / run_id
+
+
+def _skill_bundle_digest() -> str:
+    skill = pathlib.Path(__file__).resolve().parent.parent
+    files = [skill / "SKILL.md"]
+    files.extend(sorted((skill / "references").glob("*")))
+    files.extend(sorted((skill / "scripts").glob("*.py")))
+    files.extend(sorted((skill / "assets").rglob("*")))
+    digest = hashlib.sha256()
+    for path in files:
+        if not path.is_file():
+            continue
+        digest.update(path.relative_to(skill).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def work_dir(root: pathlib.Path, state: dict) -> pathlib.Path:
@@ -135,6 +155,26 @@ def read(root: pathlib.Path) -> dict | None:
         or "tasks" in state
     ):
         raise StateError(f"legacy or unsupported run state; {CONTRACT} is required")
+    try:
+        RunPolicy.model_validate(state.get("policy"), strict=True)
+    except ValidationError as exc:
+        raise StateError(
+            f"legacy or unsupported run policy: {'; '.join(model_errors(exc))}"
+        ) from exc
+    bundle_digest = state.get("skill_bundle_digest", "")
+    if not isinstance(bundle_digest, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", bundle_digest
+    ):
+        raise StateError("legacy or unsupported skill bundle digest")
+    if (
+        state.get("status")
+        not in (
+            "published",
+            "abandoned",
+        )
+        and bundle_digest != _skill_bundle_digest()
+    ):
+        raise StateError("skill bundle changed during the run; abandon and start again")
     return state
 
 
@@ -204,6 +244,8 @@ def start_run(root: pathlib.Path) -> dict:
         "updated_at": started,
         "language": workspace.language,
         "freshness_days": workspace.freshness_days,
+        "policy": workspace.policy.model_dump(mode="json"),
+        "skill_bundle_digest": _skill_bundle_digest(),
         "revisions": revisions,
         "catalogs": catalogs,
     }
@@ -327,6 +369,7 @@ def _status_payload(
         "phase": phase,
         "contract": CONTRACT,
         "language": state["language"],
+        "policy": state["policy"],
         "sources": [item["name"] for item in state["revisions"]]
         + [item["name"] for item in state["catalogs"]],
         "artifacts": _artifact_paths(root, state),
@@ -838,11 +881,17 @@ def evidence_outline(
 
 
 def evidence_search(
-    root: pathlib.Path, source: str, query: str, path: str = "."
+    root: pathlib.Path,
+    source: str,
+    query: str,
+    path: str = ".",
+    after: str | None = None,
 ) -> dict:
     import _workspace
+    from _validate import parse_resource
 
-    _, pin, files = _navigation_context(root, source)
+    state, pin, files = _navigation_context(root, source)
+    policy = RunPolicy.model_validate(state["policy"], strict=True).evidence.search
     path = _normalized_path(path)
     if not query or len(query) > 256:
         raise StateError("query must contain 1..256 characters")
@@ -851,31 +900,74 @@ def evidence_search(
         for rel in files
         if path == "." or rel == path or rel.startswith(path.rstrip("/") + "/")
     ]
-    results = []
-    used = 0
-    for rel in selected:
+    cursor: tuple[int, int] | None = None
+    if after is not None:
+        parsed = parse_resource(after)
+        if parsed is None:
+            raise StateError("search --after requires a canonical line locator")
+        cursor_source, cursor_path, cursor_line, cursor_end = parsed
+        if (
+            cursor_source != source
+            or cursor_path not in selected
+            or cursor_line is None
+            or cursor_end not in (None, cursor_line)
+        ):
+            raise StateError(
+                "search --after must be inside the selected source and path"
+            )
+        cursor = (selected.index(cursor_path), cursor_line)
+
+    def response(results: list[dict], *, limit_reached: bool, has_more: bool) -> dict:
+        return {
+            "items": results,
+            "returned": len(results),
+            "limit": {
+                "max_items": policy.max_results,
+                "max_output_bytes": policy.max_output_bytes,
+            },
+            "limit_reached": limit_reached,
+            "has_more": has_more,
+            "next_after": results[-1]["locator"] if has_more and results else None,
+        }
+
+    results: list[dict] = []
+    for file_index, rel in enumerate(selected):
         disk = _workspace.resolve_pin_file(pin, rel)
         if disk is None:
             continue
         try:
             with disk.open(encoding="utf-8") as handle:
                 for line_no, line in enumerate(handle, 1):
+                    if cursor is not None and (file_index, line_no) <= cursor:
+                        continue
                     if query not in line:
                         continue
                     text = line.rstrip("\r\n")[:500]
-                    size = len((rel + text).encode("utf-8"))
+                    if len(results) >= policy.max_results:
+                        return response(results, limit_reached=True, has_more=True)
+                    candidate = [
+                        *results,
+                        {
+                            "locator": f"{source}/{rel}#L{line_no}",
+                            "text": text,
+                            "text_clipped": len(line.rstrip("\r\n")) > 500,
+                        },
+                    ]
                     if (
-                        len(results) >= MAX_SEARCH_RESULTS
-                        or used + size > MAX_SEARCH_BYTES
+                        compact_json_size(
+                            response(candidate, limit_reached=True, has_more=True)
+                        )
+                        > policy.max_output_bytes
                     ):
-                        return {"results": results, "truncated": True}
-                    results.append(
-                        {"locator": f"{source}/{rel}#L{line_no}", "text": text}
-                    )
-                    used += size
+                        if not results:
+                            raise StateError(
+                                "search byte policy cannot fit one complete result"
+                            )
+                        return response(results, limit_reached=True, has_more=True)
+                    results = candidate
         except (OSError, UnicodeDecodeError):
             continue
-    return {"results": results, "truncated": False}
+    return response(results, limit_reached=False, has_more=False)
 
 
 def evidence_read(root: pathlib.Path, locator: str) -> dict:
@@ -886,13 +978,15 @@ def evidence_read(root: pathlib.Path, locator: str) -> dict:
     if parsed is None:
         raise StateError("read requires a canonical source/path#Lx-Ly locator")
     source, path, start, end = parsed
-    _, pin, files = _navigation_context(root, source)
+    state, pin, files = _navigation_context(root, source)
+    policy = RunPolicy.model_validate(state["policy"], strict=True).evidence.read
     if path not in files:
         raise StateError(f"file is outside the captured Source: {path}")
     start = start or 1
     if end is not None and end < start:
         raise StateError("end must not precede start")
-    end = min(start + MAX_READ_LINES - 1, end if end is not None else start + 39)
+    requested_end = end if end is not None else start + policy.default_lines - 1
+    bounded_end = min(start + policy.max_lines - 1, requested_end)
     disk = _workspace.resolve_pin_file(pin, path)
     if disk is None:
         raise StateError(f"file is not a regular file inside the Pin: {path}")
@@ -900,30 +994,73 @@ def evidence_read(root: pathlib.Path, locator: str) -> dict:
         lines = disk.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError) as exc:
         raise StateError(f"file is not readable UTF-8 text: {path}") from exc
-    numbered = [
-        f"{index}|{lines[index - 1][:500]}"
-        for index in range(start, min(end, len(lines)) + 1)
-    ]
-    text = "\n".join(numbered)
-    raw = text.encode("utf-8")
-    truncated = end < len(lines)
-    if len(raw) > MAX_READ_BYTES:
-        text = raw[:MAX_READ_BYTES].decode("utf-8", errors="ignore")
-        truncated = True
-    actual_end = min(end, len(lines))
-    return {
-        "locator": (
+    requested_locator = (
+        f"{source}/{path}#L{start}-L{end}" if end is not None else locator
+    )
+
+    def response(
+        numbered: list[str], clipped_lines: list[int], *, limit_reached: bool
+    ) -> dict:
+        actual_end = start + len(numbered) - 1
+        has_more = actual_end < len(lines)
+        if has_more:
+            next_start = max(start, actual_end + 1)
+            if limit_reached and end is not None:
+                next_end = min(end, next_start + policy.max_lines - 1)
+            else:
+                next_end = min(len(lines), next_start + policy.default_lines - 1)
+            next_locator = f"{source}/{path}#L{next_start}-L{next_end}"
+        else:
+            next_locator = None
+        returned_locator = (
             f"{source}/{path}#L{start}-L{actual_end}"
-            if actual_end >= start
+            if numbered
             else f"{source}/{path}"
-        ),
-        "source": source,
-        "path": path,
-        "start": start,
-        "end": actual_end,
-        "text": text + ("\n" if text else ""),
-        "truncated": truncated,
-    }
+        )
+        return {
+            "requested_locator": requested_locator,
+            "returned_locator": returned_locator,
+            "source": source,
+            "path": path,
+            "start": start,
+            "end": actual_end if numbered else None,
+            "text": "\n".join(numbered) + ("\n" if numbered else ""),
+            "clipped_lines": clipped_lines,
+            "limit": {
+                "max_lines": policy.max_lines,
+                "max_output_bytes": policy.max_output_bytes,
+            },
+            "limit_reached": limit_reached,
+            "has_more": has_more,
+            "next_locator": next_locator,
+        }
+
+    numbered: list[str] = []
+    clipped_lines: list[int] = []
+    target_end = min(bounded_end, len(lines))
+    for index in range(start, target_end + 1):
+        line = lines[index - 1]
+        clipped = len(line) > 500
+        candidate_lines = [*numbered, f"{index}|{line[:500]}"]
+        candidate_clipped = [*clipped_lines, *([index] if clipped else [])]
+        more_requested = index < min(requested_end, len(lines))
+        candidate = response(
+            candidate_lines,
+            candidate_clipped,
+            limit_reached=more_requested or clipped,
+        )
+        if compact_json_size(candidate) > policy.max_output_bytes:
+            if not numbered:
+                raise StateError("read byte policy cannot fit one complete line item")
+            break
+        numbered = candidate_lines
+        clipped_lines = candidate_clipped
+    actual_end = start + len(numbered) - 1
+    limit_reached = actual_end < min(requested_end, len(lines)) or bool(clipped_lines)
+    result = response(numbered, clipped_lines, limit_reached=limit_reached)
+    if compact_json_size(result) > policy.max_output_bytes:
+        raise StateError("read response exceeds its byte policy")
+    return result
 
 
 @_locked

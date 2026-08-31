@@ -7,6 +7,16 @@ import time
 from collections.abc import Collection
 
 
+def compact_json(data) -> str:
+    return (
+        json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str) + "\n"
+    )
+
+
+def compact_json_size(data) -> int:
+    return len(compact_json(data).encode("utf-8"))
+
+
 def atomic_json(path: pathlib.Path, data: dict) -> None:
     atomic_text(
         path,

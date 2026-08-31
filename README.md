@@ -19,14 +19,16 @@ From the repository that should receive the Wiki, install the skill at project
 scope. This example assumes the two repositories are siblings:
 
 ```text
-npx skills@latest add ../open-okf-wiki/skills/repo-wiki --skill repo-wiki --agent codex --copy -y
+npx skills@latest add ../open-okf-wiki/skills/repo-wiki --skill repo-wiki --agent codex -y
 ```
 
 Use `--agent claude-code` for Claude Code, or omit `--agent` to let the
-installer detect supported agents. `--copy` avoids symlink privileges on
-Windows. The Codex command above installs to `.agents/skills/repo-wiki`; replace
-that path in the examples below if your agent uses another project skill
-directory.
+installer detect supported agents. Add `--copy` where symlink privileges are
+unavailable. A copied install is a versioned bundle, not a development link:
+reinstall it after upgrading this repository and commit its `skills-lock.json`
+entry. Do not keep a second same-named skill in another Codex scope. The Codex
+command above installs to `.agents/skills/repo-wiki`; replace that path in the
+examples below if your agent uses another project skill directory.
 
 A Run pins each Git Source at its HEAD commit. Live worktrees may be dirty or
 move afterwards; workers read the Pin. Commit the installed skill and lock
@@ -52,6 +54,31 @@ empty Workspace; it never assumes that the current directory is a Source:
 uv run .agents/skills/repo-wiki/scripts/okf.py workspace init --lang zh --freshness-days 90
 uv run .agents/skills/repo-wiki/scripts/okf.py workspace show --json
 ```
+
+The Workspace policy is complete and strict. These defaults bound every
+evidence response and all host-agent phases:
+
+```text
+uv run .agents/skills/repo-wiki/scripts/okf.py workspace init --lang zh \
+  --max-active-children 4 --max-children-per-run 128 \
+  --search-max-results 20 --search-max-output-bytes 8192 \
+  --read-default-lines 40 --read-max-lines 200 \
+  --read-max-output-bytes 65536
+```
+
+Change policy only between Runs with `workspace configure`; `run start`
+snapshots it and records the installed skill bundle digest. For Codex, map the
+same active-child value to the project-level native hard cap:
+
+```toml
+# .codex/config.toml
+[agents]
+max_concurrent_threads_per_session = 4
+```
+
+The skill uses a four-slot rolling window by default: a freed slot is refilled
+immediately. Evidence research, page writing, repairs and reviews share that
+one window; children never spawn descendants.
 
 Register every clean Git Source explicitly. `link` registers a local
 worktree — paths outside the Workspace are mounted automatically under
@@ -140,6 +167,8 @@ design behaves consistently on Windows, Linux and macOS without symlinks.
   the Composition Map only when the complete Candidate is prepared.
 - One living Plan and progress file persist analysis and next actions across
   context compression. There are no Attempt or checkpoint histories.
+- One immutable Run Policy bounds compact JSON evidence output, active and total
+  child fan-out; search/read continuation prevents rescanning after truncation.
 - One independent Wiki review binds Plan, Composition, drafts and Candidate to
   an exact digest; every change requires a new complete-bundle review whose
   packet points to the fixed prior review Artifact.

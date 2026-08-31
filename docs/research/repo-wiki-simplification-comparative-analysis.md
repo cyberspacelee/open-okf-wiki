@@ -54,11 +54,9 @@ parallel execution and telemetry belong to the host or deterministic runtime.
 
 ### 1. User-supplied session identity is ceremony, not independence
 
-The skill currently requires `--session <unique-id>` at Run start and a
-different `--session <new-session>` at review start
-([SKILL.md](../../skills/repo-wiki/SKILL.md)). The kernel can prove only that two
-strings differ. It cannot prove that a fresh reviewer context produced the
-second string.
+The superseded lifecycle required caller-supplied scheduler identity at Run and
+review start. The kernel could prove only that two strings differed, not that a
+fresh reviewer context produced the second value.
 
 GitHub and Claude establish subagent isolation in the runtime. Claude's
 documentation explicitly states that a normal subagent starts with a fresh

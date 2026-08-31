@@ -346,10 +346,9 @@ cd "$WORKSPACE"
 uv run "$OKF" workspace init --lang zh --freshness-days 90 --json
 uv run "$OKF" source add clone https://github.com/keycloak/keycloak.git \
   --name Keycloak --ref 96fef56e18cabf1b3e89812315a97dbf20243d51 --json
-uv run "$OKF" run start --producer repo-wiki/index-study \
-  --session keycloak-20260828 --json
+uv run "$OKF" run start --json
 uv run "$OKF" run status --json
 ```
 
-预期停在 `current_phase: "triage"`，唯一任务 `triage:keycloak` 为 `pending`；不要执行
-`task start`。Index 路径位于 status 返回的 `run_dir/drafts/index/keycloak.md`。
+当前 lifecycle 预期停在 `phase: "plan"`。结构 Index 位于 status 返回的
+`run_dir/index/Keycloak.md`；运行时应通过 bounded evidence 命令导航，而不是读取该内部文件。

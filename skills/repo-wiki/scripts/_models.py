@@ -53,6 +53,67 @@ _WINDOWS_RESERVED = {
 }
 
 
+class SearchPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    max_results: Annotated[int, Field(ge=1, le=100)]
+    max_output_bytes: Annotated[int, Field(ge=4096, le=64 * 1024)]
+
+
+class ReadPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    default_lines: Annotated[int, Field(ge=1, le=1000)]
+    max_lines: Annotated[int, Field(ge=1, le=1000)]
+    max_output_bytes: Annotated[int, Field(ge=4096, le=256 * 1024)]
+
+    @model_validator(mode="after")
+    def default_fits_maximum(self):
+        if self.default_lines > self.max_lines:
+            raise ValueError("default_lines must not exceed max_lines")
+        return self
+
+
+class EvidencePolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    search: SearchPolicy
+    read: ReadPolicy
+
+
+class AgentPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    max_active_children: Annotated[int, Field(ge=1, le=16)]
+    max_spawn_depth: Literal[1]
+    max_children_per_run: Annotated[int, Field(ge=1, le=512)]
+
+
+class RunPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    evidence: EvidencePolicy
+    agents: AgentPolicy
+
+    @classmethod
+    def defaults(cls) -> "RunPolicy":
+        return cls(
+            evidence=EvidencePolicy(
+                search=SearchPolicy(max_results=20, max_output_bytes=8 * 1024),
+                read=ReadPolicy(
+                    default_lines=40,
+                    max_lines=200,
+                    max_output_bytes=64 * 1024,
+                ),
+            ),
+            agents=AgentPolicy(
+                max_active_children=4,
+                max_spawn_depth=1,
+                max_children_per_run=128,
+            ),
+        )
+
+
 class Generated(BaseModel):
     by: NonEmpty
     at: datetime

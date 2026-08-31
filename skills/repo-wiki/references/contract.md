@@ -77,10 +77,45 @@ Unknown IDs and broken links fail validation.
 
 ## Deterministic boundary
 
+Workspace configuration contains one strict Run Policy. `run start` snapshots
+it, and active Runs never observe later Workspace changes. Its evidence policy
+defines search result count plus compact-JSON output bytes, and read default
+lines, maximum lines and compact-JSON output bytes. Search returns `next_after`;
+read returns `next_locator`. Both preserve complete UTF-8 JSON items and report
+`limit_reached` separately from `has_more`.
+
+The required policy shape and defaults are:
+
+```json
+{
+  "evidence": {
+    "search": {"max_results": 20, "max_output_bytes": 8192},
+    "read": {"default_lines": 40, "max_lines": 200, "max_output_bytes": 65536}
+  },
+  "agents": {
+    "max_active_children": 4,
+    "max_spawn_depth": 1,
+    "max_children_per_run": 128
+  }
+}
+```
+
+Kernel safety ceilings are 100 search results, 64 KiB search output, 1,000
+read lines, 256 KiB read output, 16 active children and 512 unique children.
+Output byte minima are 4 KiB, `default_lines` must not exceed `max_lines`, and
+spawn depth is exactly one.
+
+The agent policy defaults to four active children, spawn depth one and 128
+unique children per Run. The host maps the active-child value to its native
+session cap and uses one rolling window across every phase. The kernel exposes
+the immutable policy and records it in the Publication; it does not schedule
+agents. Structured live-eval traces verify active high-water, depth, total
+fan-out and rolling refill.
+
 The kernel proves revisions, captured paths, locator syntax and ranges, Plan and
 Composition schemas, Plan-review and bundle-review digests, exact unit coverage,
 page metadata, locale-template separation, citation joins, diagram structure,
 logical-link binding, Candidate validity and atomic Publication. Validation
 collects every independently diagnosable issue in one pass and names checks
 skipped because a prerequisite Artifact could not be parsed. The host owns
-subagent isolation, parallelism and the persistent coordinator loop.
+subagent isolation, policy enforcement and the persistent coordinator loop.

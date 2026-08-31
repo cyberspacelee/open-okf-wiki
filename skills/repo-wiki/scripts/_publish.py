@@ -420,6 +420,8 @@ def publish(root: pathlib.Path) -> dict:
                 "okf_version": "0.2",
                 "run_id": state["run_id"],
                 "published_at": datetime.now(timezone.utc).isoformat(),
+                "policy": state["policy"],
+                "skill_bundle_digest": state["skill_bundle_digest"],
                 "revisions": state["revisions"],
                 "catalogs": state["catalogs"],
                 "pages": _page_manifest(root, candidate, state),

@@ -127,12 +127,34 @@ def composition_subject_digest(
     ).hexdigest()
 
 
-def trace_data(path: pathlib.Path) -> tuple[int, list[dict], list[str]]:
+_TERMINAL_AGENT_STATES = {
+    "completed",
+    "failed",
+    "canceled",
+    "cancelled",
+    "errored",
+    "interrupted",
+    "shutdown",
+}
+
+
+def trace_data(path: pathlib.Path) -> tuple[int, list[dict], list[str], dict]:
     parsed = 0
     commands = []
     spawn_prompts = []
+    active_agents: set[str] = set()
+    stats = {
+        "peak_active": 0,
+        "unique_children": 0,
+        "max_depth": 0,
+        "failed_spawns": 0,
+        "rolling_refill_observed": False,
+    }
+    children: set[str] = set()
+    depths: dict[str, int] = {}
+    terminal_seen = False
     if not path.is_file():
-        return parsed, commands, spawn_prompts
+        return parsed, commands, spawn_prompts, stats
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             event = json.loads(line)
@@ -151,14 +173,34 @@ def trace_data(path: pathlib.Path) -> tuple[int, list[dict], list[str]]:
                 commands.append(
                     {"command": command, "exit_code": item.get("exit_code", 0)}
                 )
-        elif (
-            event.get("type") == "item.completed"
-            and item.get("type") == "collab_tool_call"
-            and item.get("tool") == "spawn_agent"
-            and item.get("receiver_thread_ids")
+        elif event.get("type") == "item.completed" and item.get("type") == (
+            "collab_tool_call"
         ):
-            spawn_prompts.append(item.get("prompt", ""))
-    return parsed, commands, spawn_prompts
+            states = item.get("agents_states", {})
+            for thread_id, state in states.items():
+                if state.get("status") in _TERMINAL_AGENT_STATES:
+                    terminal_seen = terminal_seen or thread_id in active_agents
+                    active_agents.discard(thread_id)
+            if item.get("tool") == "spawn_agent":
+                receivers = item.get("receiver_thread_ids") or []
+                if not receivers:
+                    stats["failed_spawns"] += 1
+                    continue
+                spawn_prompts.append(item.get("prompt", ""))
+                if terminal_seen and active_agents:
+                    stats["rolling_refill_observed"] = True
+                parent = item.get("sender_thread_id")
+                parent_depth = depths.get(parent, 0)
+                for thread_id in receivers:
+                    children.add(thread_id)
+                    depths[thread_id] = parent_depth + 1
+                active_agents.update(receivers)
+                stats["peak_active"] = max(stats["peak_active"], len(active_agents))
+                stats["max_depth"] = max(
+                    stats["max_depth"], *(depths[thread_id] for thread_id in receivers)
+                )
+    stats["unique_children"] = len(children)
+    return parsed, commands, spawn_prompts, stats
 
 
 def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
@@ -175,16 +217,19 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     work = run_dir / "work"
     trace_path = ws / "host-run.log"
     trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
-    parsed_events, commands, spawn_prompts = trace_data(trace_path)
+    parsed_events, commands, spawn_prompts, trace_agents = trace_data(trace_path)
 
     check(
         "Run uses the artifact-loop contract without scheduler state",
         state.get("contract") == "artifact-loop-late-bind"
+        and manifest.get("policy") == state.get("policy")
+        and manifest.get("skill_bundle_digest") == state.get("skill_bundle_digest")
         and not any(
             key in state
             for key in ("targets", "tasks", "producer_session", "review_rounds")
         ),
-        f"contract={state.get('contract')}, keys={sorted(state)}",
+        f"contract={state.get('contract')}, policy={state.get('policy')}, "
+        f"keys={sorted(state)}",
     )
 
     plan = frontmatter(work / "plan.md")
@@ -433,10 +478,24 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
 
     runtime_skill = SKILL
     metadata_path = ws / "live-eval.json"
+    metadata = {}
     if metadata_path.is_file():
-        candidate = pathlib.Path(load(metadata_path).get("runtime_skill", ""))
+        metadata = load(metadata_path)
+        candidate = pathlib.Path(metadata.get("runtime_skill", ""))
         if (candidate / "scripts/okf.py").is_file():
             runtime_skill = candidate
+    requested_cap = state["policy"]["agents"]["max_active_children"]
+    check(
+        "live adapter records concurrency enforcement",
+        (
+            metadata.get("concurrency_enforcement") == "host-native"
+            and metadata.get("host_effective_max_active_children") == requested_cap
+        )
+        if metadata.get("host") == "codex"
+        else metadata.get("concurrency_enforcement") == "prompt-only",
+        f"host={metadata.get('host')}, enforcement={metadata.get('concurrency_enforcement')}, "
+        f"effective={metadata.get('host_effective_max_active_children')}, requested={requested_cap}",
+    )
     validation = subprocess.run(
         [
             "uv",
@@ -520,6 +579,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
             r"\btask\s+(?:start|packet|checkpoint|complete)\b", item.get("command", "")
         )
         or "--session" in item.get("command", "")
+        or "--producer" in item.get("command", "")
     ]
     source_roots = [
         ws.joinpath(*pathlib.PurePosixPath(item["path"]).parts)
@@ -661,6 +721,21 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
             f"router_errors={router_errors}, help={help_calls}, "
             f"concurrency_errors={concurrency_errors}",
         )
+        agent_policy = state["policy"]["agents"]
+        check(
+            "trace keeps subagent fan-out within the Run policy",
+            trace_agents["peak_active"] <= agent_policy["max_active_children"]
+            and trace_agents["max_depth"] <= agent_policy["max_spawn_depth"]
+            and trace_agents["unique_children"] <= agent_policy["max_children_per_run"]
+            and trace_agents["failed_spawns"] == 0,
+            f"trace_agents={trace_agents}, policy={agent_policy}",
+        )
+        if trace_agents["unique_children"] > agent_policy["max_active_children"]:
+            check(
+                "subagent dispatch refills a rolling window",
+                trace_agents["rolling_refill_observed"],
+                f"trace_agents={trace_agents}",
+            )
 
     root_index = (bundle / "index.md").read_text(encoding="utf-8")
     log = (bundle / "log.md").read_text(encoding="utf-8")
