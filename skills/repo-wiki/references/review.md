@@ -19,8 +19,18 @@ assessment. Replace the fixed Artifact in one update.
 
 Judge the Wiki globally:
 
-- knowledge-unit coverage and honest gaps;
-- Grep Test, page boundaries, duplicate concepts and routing quality;
+- Source Area, Domain, Concept, table and knowledge-unit coverage with honest
+  structured Gaps;
+- exact Domain definition ownership, Concept definition ownership and
+  persistent Concept model ownership carried from Plan into pages;
+- per-Concept Model Basis: Catalog-owned OpenGauss structure, ordered code
+  fallback evidence, and `none` only for non-persistent Concepts;
+- complete generated Schema/Table reference coverage and links from authored
+  Concept, DataModel and Lifecycle pages without copied field inventories;
+- physical ER edges match captured constraints; logical relationships remain
+  separately labeled and heuristic relationships stay out of ER diagrams;
+- Grep Test for optional depth pages, page boundaries, duplicate concepts and
+  routing quality;
 - page type, representation, hierarchy implied by paths and cross-links;
 - root and directory Navigation Indexes route every composed page through the
   intended capability hierarchy with no orphan or page-type directory;
@@ -55,12 +65,13 @@ Areas are `plan`, `composition` and `page`. Page issues name at least one
 `page_id`. Operations are `repair`, `split`, `merge` and `move`; structural
 operations always use the composition area. Split and move issues name at
 least one affected Page ID; merge issues name at least two. Categories are
-`domain-coverage`, `concept-boundary`, `grep-test`, `unsupported-claim`,
-`invented-rationale`, `padded-gap`, `routing`, `coverage`, `language` and
-`representation`.
+`domain-coverage`, `concept-boundary`, `model-basis`, `table-disposition`,
+`relationship-confidence`, `reference-coverage`, `grep-test`,
+`unsupported-claim`, `invented-rationale`, `padded-gap`, `routing`, `coverage`,
+`language` and `representation`.
 
 Issue IDs are stable lowercase slugs. An approved report has no open issues and
-retains resolved entries. An empty Candidate is approvable only when the empty
-Plan explains why no knowledge passes the Grep Test. Do not run coordinator
+retains resolved entries. Mandatory coverage prevents an empty Candidate. Do
+not run coordinator
 commands such as status, `review complete`, Publication or export. Return only
 the report path, verdict and open issue count.

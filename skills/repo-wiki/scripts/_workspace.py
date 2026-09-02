@@ -182,7 +182,7 @@ def load(root: pathlib.Path) -> Workspace:
             raise WorkspaceError(f"invalid source name: {name!r}")
         if any(existing.casefold() == name.casefold() for existing in sources):
             raise WorkspaceError(f"duplicate source: {name}")
-        if kind not in ("git", "opengauss", "postgres", "files"):
+        if kind not in ("git", "opengauss", "files"):
             raise WorkspaceError(f"invalid source '{name}'")
         tables = entry.get("tables", [])
         if not isinstance(tables, list) or any(
@@ -205,7 +205,7 @@ def load(root: pathlib.Path) -> Workspace:
             source_path = pathlib.Path(
                 os.path.abspath(root / pathlib.Path(*pure.parts))
             )
-        if kind in ("opengauss", "postgres") and (
+        if kind == "opengauss" and (
             not isinstance(entry.get("url_env"), str)
             or not isinstance(entry.get("schema"), str)
         ):

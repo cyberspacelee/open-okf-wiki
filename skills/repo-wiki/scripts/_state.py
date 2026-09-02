@@ -22,7 +22,7 @@ from _models import (
 from pydantic import ValidationError
 
 VERSION = 1
-CONTRACT = "artifact-loop-routing-closure"
+CONTRACT = "domain-concept-model-coverage"
 LOCK_TIMEOUT_SEC = 60
 MAX_STATUS_ISSUES = 10
 
@@ -194,6 +194,7 @@ def _artifact_paths(root: pathlib.Path, state: dict) -> dict[str, str]:
         "plan_review": str(work / "plan-review.json"),
         "composition": str(work / "composition.md"),
         "composition_review": str(work / "composition-review.json"),
+        "reference_map": str(work / "reference-map.json"),
         "drafts": str(work / "drafts"),
         "review": str(work / "review.json"),
         "candidate": str(base / "candidate"),
@@ -227,7 +228,7 @@ def start_run(root: pathlib.Path) -> dict:
                 record = _workspace.capture_files_revision(root, source)
                 _workspace.materialize_pin(root, run_id, source, record)
                 revisions.append(record)
-            elif source.kind in ("opengauss", "postgres"):
+            elif source.kind == "opengauss":
                 catalogs.append(_db.capture_catalog(root, source))
             else:
                 raise StateError(f"unsupported source kind: {source.kind}")
@@ -389,6 +390,8 @@ def _artifact_counts(root: pathlib.Path, state: dict) -> dict:
     result = {
         "knowledge_units": None,
         "pages": None,
+        "authored_pages": None,
+        "reference_pages": 0,
         "drafts_written": len(list((work / "drafts").glob("*.md"))),
         "drafts_missing": None,
     }
@@ -402,8 +405,21 @@ def _artifact_counts(root: pathlib.Path, state: dict) -> dict:
         expected = {page.id for page in composition.pages}
         present = {path.stem for path in (work / "drafts").glob("*.md")}
         result["pages"] = len(composition.pages)
+        result["authored_pages"] = len(composition.pages)
         result["drafts_missing"] = len(expected - present)
     except (OSError, StateError, ValidationError):
+        pass
+    try:
+        reference_map = json.loads(
+            (work / "reference-map.json").read_text(encoding="utf-8")
+        )
+        if reference_map["subject_digest"] != _composition_subject_digest(root, state):
+            raise ValueError
+        reference_pages = reference_map["pages"]
+        result["reference_pages"] = len(reference_pages)
+        if result["pages"] is not None:
+            result["pages"] += len(reference_pages)
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         pass
     return result
 
@@ -520,7 +536,7 @@ def status(root: pathlib.Path) -> dict:
     report, review_issues = _validate.validate_review(
         pathlib.Path(paths["review"]),
         state["review_subject_digest"],
-        {page.id for page in composition.pages},
+        _candidate_page_ids(root, state),
     )
     errors = _errors(review_issues)
     if errors:
@@ -547,6 +563,41 @@ def assert_revisions_current(root: pathlib.Path, state: dict) -> None:
         _workspace.assert_pin_current(root, state["run_id"], source, record)
 
 
+def _write_reference_map(
+    root: pathlib.Path,
+    state: dict,
+    plan: KnowledgePlan,
+    composition: CompositionMap,
+) -> list[dict]:
+    import _reference
+
+    pages = _reference.derive_pages(root, state, plan, composition)
+    atomic_json(
+        work_dir(root, state) / "reference-map.json",
+        {
+            "subject_digest": _composition_subject_digest(root, state),
+            "pages": [
+                {
+                    key: page.get(key)
+                    for key in ("id", "path", "type", "source", "table")
+                }
+                for page in pages
+            ]
+        },
+    )
+    return pages
+
+
+def _candidate_page_ids(root: pathlib.Path, state: dict) -> set[str]:
+    return {
+        parsed.meta["id"]
+        for path in candidate_dir(root, state).rglob("*.md")
+        if path.name not in ("index.md", "log.md")
+        and not (parsed := parse_file(path)).errors
+        and isinstance(parsed.meta.get("id"), str)
+    }
+
+
 def _markdown_model(path: pathlib.Path, model):
     parsed = parse_file(path)
     if parsed.errors:
@@ -567,7 +618,12 @@ def _bind_candidate(
     import _validate
 
     work = work_dir(root, state)
+    generated = _write_reference_map(root, state, plan, composition)
     paths = {page.id: page.path for page in composition.pages}
+    for page in generated:
+        if page["id"] in paths or page["path"] in paths.values():
+            raise StateError(f"generated page conflicts with Composition: {page['id']}")
+        paths[page["id"]] = page["path"]
     candidate = candidate_dir(root, state)
     shutil.rmtree(candidate, ignore_errors=True)
     candidate.mkdir(parents=True)
@@ -582,7 +638,9 @@ def _bind_candidate(
     for page in composition.pages:
         draft = work / "drafts" / f"{page.id}.md"
         spec = _validate.page_spec(plan, page)
-        rendered = _validate.render_generated_page(root, state, spec, draft)
+        rendered = _validate.render_generated_page(
+            root, state, spec, draft, plan=plan, page=page
+        )
         if rendered is None:
             raise StateError(f"cannot bind invalid page draft: {page.id}")
         parsed = parse_page(rendered)
@@ -594,6 +652,26 @@ def _bind_candidate(
         destination.write_text(
             render(parsed.meta, body), encoding="utf-8", newline="\n"
         )
+    for page in generated:
+        meta = {
+            key: page[key]
+            for key in ("id", "type", "title", "description", "tags", "diagrams", "sources")
+        }
+        meta.update(
+            {
+                "coverage": "full",
+                "language": state["language"],
+                "status": "draft",
+                "generated": {
+                    "by": "repo-wiki",
+                    "at": datetime.fromisoformat(state["started_at"]),
+                },
+            }
+        )
+        body = _LOGICAL_LINK.sub(resolve, page["body"])
+        destination = candidate / page["path"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(render(meta, body), encoding="utf-8", newline="\n")
     _publish._write_generated(
         candidate, _publish.render_indexes(candidate, state["language"])
     )
@@ -671,12 +749,16 @@ def composition_review_prepare(root: pathlib.Path) -> dict:
                     "message": "repair the Knowledge Plan and obtain approval",
                 }
             )
-        _, composition_issues = _validate.validate_composition_artifact(
+        composition, composition_issues = _validate.validate_composition_artifact(
             work / "composition.md", plan
         )
         errors.extend(_errors(composition_issues))
+    else:
+        composition = None
     if errors:
         return {"ok": False, "issues": errors, "state": status(root)}
+
+    _write_reference_map(root, state, plan, composition)
 
     review_path = work / "composition-review.json"
     previous_review = _previous_review(review_path, CompositionReviewReport)
@@ -696,6 +778,7 @@ def composition_review_prepare(root: pathlib.Path) -> dict:
             "plan": str(work / "plan.md"),
             "plan_review": str(work / "plan-review.json"),
             "composition": str(work / "composition.md"),
+            "reference_map": str(work / "reference-map.json"),
         },
         "workdir": str(root),
     }
@@ -800,6 +883,7 @@ def review_prepare(root: pathlib.Path) -> dict:
             "composition_review": str(work / "composition-review.json"),
             "evidence": str(work / "evidence"),
             "candidate": str(candidate_dir(root, state)),
+            "reference_map": str(work / "reference-map.json"),
         },
         "workdir": str(root),
     }
@@ -834,13 +918,10 @@ def review_complete(root: pathlib.Path) -> dict:
     candidate = candidate_dir(root, state)
     if state.get("candidate_digest") != directory_digest(candidate):
         raise StateError("candidate changed; run 'review prepare' again")
-    composition = _markdown_model(
-        work_dir(root, state) / "composition.md", CompositionMap
-    )
     report, issues = _validate.validate_review(
         work_dir(root, state) / "review.json",
         state["review_subject_digest"],
-        {page.id for page in composition.pages},
+        _candidate_page_ids(root, state),
     )
     errors = _errors(issues)
     if errors:

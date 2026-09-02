@@ -7,7 +7,27 @@ read run internals, write Composition or choose pages.
 The packet is the command's JSON output; `artifact` names this report's output
 path and is not an input packet file.
 
-First perform the routing sweep before semantic recall:
+First verify mandatory coverage closure:
+
+- every eligible Source region has one non-overlapping Source Area disposition;
+- every Domain has a definition, evidence and an owner unit that names it;
+- every Concept belongs to one Domain and has a definition owner that names it;
+- each persistent Concept has exactly one model unit and a valid `opengauss` or
+  `code` Model Basis; a `none` Concept has neither;
+- every captured OpenGauss table has one disposition, with every `replica` and
+  `excluded` claim evidenced and every `unresolved` item rejected;
+- every Catalog table named by an `opengauss` Concept exists in its captured
+  Source, and every selected Concept table maps back through a disposition;
+- OpenGauss facts own physical structure; code evidence adds behavior rather
+  than replacing columns, keys, constraints, indexes or partitions;
+- a configured but unselected relevant table produces a partial code model and
+  a `catalog-selection` Gap; capture failure is not represented as fallback;
+- code-derived structure follows DDL/migrations, ORM/XML, SQL/mappers and
+  persistence code in descending precedence;
+- physical constraints and logical relationships remain separate, and only
+  evidenced non-heuristic logical relationships enter a logical ER view.
+
+Then perform the routing sweep:
 
 - derive at least two concrete maintainer probes from every compound unit's
   named stages or domains: "where would I change X?" and "where would I debug
@@ -57,7 +77,9 @@ semantic-recall criterion that remains assessable before page fan-out:
 - after a split or merge repair, repeat that causal check on the affected
   records; two independently seeded halves still require one bridge question
   or explicit gap naming the upstream handoff and downstream feedback;
-- every unit passes the Grep Test and every exclusion is honest;
+- every optional depth unit passes the Grep Test and every exclusion is honest;
+  never apply it to Domain, Concept, persistence-model or captured-table
+  coverage;
 - each unit is one routable change surface or causal question; split umbrella
   questions that only enumerate independently owned domains, while preserving
   their handoff in a focused bridge unit or gap.
@@ -90,10 +112,11 @@ Artifact once with strict JSON:
 }
 ```
 
-Categories are `domain-coverage`, `source-role`, `lifecycle`, `failure-path`,
-`cross-source-contract`, `grep-test`, `gap` and `routing`. Operations are
+Categories are `domain-coverage`, `concept-coverage`, `model-basis`,
+`table-disposition`, `relationship-confidence`, `source-role`, `lifecycle`,
+`failure-path`, `cross-source-contract`, `grep-test`, `gap` and `routing`. Operations are
 `repair`, `split` and `merge`; structural issues name their affected `unit_ids`.
-An empty or one-unit Plan uses `merge_probes: []`. Issue IDs are stable lowercase
+A one-unit Plan uses `merge_probes: []`. Issue IDs are stable lowercase
 slugs. An approved report has no open issues and retains resolved entries. Do
 not run coordinator commands such as status, `review complete`, Publication or
 export. Return only the report path, verdict and open issue count.

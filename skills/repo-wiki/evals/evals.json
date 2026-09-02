@@ -1,11 +1,15 @@
 {
   "skill_name": "repo-wiki",
+  "coverage_notes": [
+    "This release does not add an OpenGauss Java live scenario because no stable representative public fixture is available.",
+    "OpenGauss catalog capture and disposition behavior is covered by deterministic kernel fixtures and tests; this file does not claim a live database evaluation."
+  ],
   "evals": [
     {
       "id": 1,
       "name": "cli-contract-e2e",
       "tier": 1,
-      "prompt": "(no LLM) run_cli_e2e.py exercises the fixed Artifact loop, bounded evidence, Plan and Composition review gates, explicit follow-up input, late link binding and atomic Publication",
+      "prompt": "(no LLM) run_cli_e2e.py exercises the fixed Artifact loop, bounded evidence, Domain/Concept/source-area closure, code and non-persistent model bases, Plan and Composition review gates, authored-page routing, late link binding, deterministic navigation and atomic Publication",
       "expected_output": "passed true; exit 0 on Windows, Linux and macOS"
     },
     {
@@ -19,12 +23,17 @@
         "one long-lived planner integrates all four Sources",
         "focused evidence workers return notes and independent page writers own drafts",
         "an independent digest-bound Plan review approves domain recall before Composition",
+        "Plan closes every Source, Domain and Concept and assigns explicit definition and model owner units",
+        "each Concept declares opengauss, code or none model basis with matching evidence and coverage gaps",
+        "every selected Catalog table has exactly one resolved disposition when a captured Catalog is present",
         "Plan closes every scoped Source with a seed and integration units name producer and consumer roles",
         "Plan and Composition reviews record merge probes covering every routed item",
         "Plan routes the scenario's enterprise change intents and covers or explicitly gaps the invoice/payment/overdue feedback bridge",
         "Plan uses cohesive routable units without imposing a fixed unit count",
         "an independent digest-bound Composition review approves task routing before page fan-out",
+        "Composition maps Domain and Concept definition owners and every persistent model owner to the required authored Page Type",
         "Composition routes the Kill Bill intents across cohesive capability-oriented pages instead of imposing a fixed page count or mirroring Maven modules",
+        "generated Schema and Table references are excluded from authored drafts and merge-probe coverage while remaining in Candidate review and Publication",
         "the reviewed Candidate contains root and capability Navigation Indexes before Publication",
         "Composition review rejects both unrelated bundling and mechanical one-unit-per-page fan-out",
         "the final Wiki carries every routed intent in page metadata and evidence-backed prose",

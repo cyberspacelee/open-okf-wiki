@@ -5,11 +5,15 @@ reads each relevant evidence note once; the planner that already synthesized
 those notes into the approved Plan does not reread them. This is the first
 stage allowed to choose pages and physical paths.
 
-Write `work/composition.md` with one entry per final page:
+Write `work/composition.md` with one entry per authored page plus Reference
+Roots for generated pages:
 
 ```yaml
 ---
 kind: composition-map
+reference_roots:
+  - source: database
+    path: reference/database
 pages:
   - id: request-recovery
     path: operations/request-recovery.md
@@ -32,7 +36,7 @@ After the frontmatter, add a short analysis paragraph explaining the routing
 and unit grouping. Write page titles, descriptions, tags and Diagram questions
 in `status.language`; preserve exact domain identifiers where needed.
 
-Assign every Plan unit to exactly one page. A page inherits the union of its
+Assign every Plan unit to exactly one authored page. A page inherits the union of its
 units' scopes and evidence seeds, so do not repeat those fields. Page IDs and
 paths are unique. The physical path is both the final hierarchy and navigation
 binding; do not maintain a separate parent graph or writer dependency graph.
@@ -42,6 +46,25 @@ cross-Source diagram lists every participant, not only the initiating Source.
 Every page assigning multiple units includes `merge_rationale`; a one-unit page
 must omit it.
 
+Declare exactly one `reference_roots` entry for each OpenGauss Source and none
+for Git or files Sources. Its `path` is a unique bundle directory that does not
+overlap an authored page path. The kernel generates the Source's Schema page,
+every captured Table page and their links under that root; do not add those
+generated pages to `pages` or assign their identifiers by hand. After
+Composition validation, read their stable IDs and paths only from the derived
+Reference Map named by status and the review packet.
+
+Composition makes the Plan's ownership visible through exact unit mapping:
+
+- a Domain `owner_unit_id` maps to a Domain page;
+- a Concept `owner_unit_id` maps to a Domain or Concept page that defines it;
+- every persistent Concept `model_unit_id` maps to a DataModel page;
+- a non-persistent Concept has no model page obligation.
+
+Several tightly coupled Concepts may share one owner page when they have the
+same reader task and change surface. Separate owner fields are unnecessary;
+Plan unit assignment is the authority.
+
 Apply the Task Routing Test: a maintainer arriving with one concrete change or
 failure question lands on one page. Split units when they have independent
 owners, failure modes or change surfaces. Merge only when separate pages would
@@ -50,11 +73,12 @@ they share the same reader entry point, evidence neighborhood and maintenance
 session and neither remains independently useful after the split. Do not map
 units to pages mechanically: units are coverage obligations, not a requested
 page count. Record the overall routing analysis in the body.
-A one-unit repository may produce one page; a large repository is not thin
-merely because unrelated knowledge was compressed into a few pages.
+A page may own several tightly coupled units, but unrelated knowledge compressed
+into a few umbrella pages fails routing and ownership closure.
 
-Thin means omitting inventories, signature catalogs and duplicated background.
-It does not mean minimizing page count. Use capability-oriented paths that
+Authored pages omit signature catalogs and duplicated background. Deterministic
+Schema and Table pages carry captured inventories. Neither rule minimizes page
+count. Use capability-oriented paths that
 match maintainer tasks; page-type folders such as `flow/` or `lifecycle/` are
 not an information architecture by themselves. In a multi-page Wiki, every
 ordinary concept page is nested under a capability directory; only Overview and
@@ -66,14 +90,18 @@ page only when it provides a real cross-page map, and keep detailed ownership
 in the linked pages. An Overview routes common task clusters; it need not list
 every leaf when a routed capability page links its related details. Select page
 types and diagrams from the writing contract. Use Domain for capability
-ownership and real invariants, Procedure for an internal orchestration,
-calculation or algorithm, Flow for a trigger-to-outcome handoff across
-participants, and Lifecycle for state reachability. Writers may run concurrently
-after Composition review because each reopens Source evidence.
+ownership and real invariants, Concept for domain-specific noun semantics,
+Procedure for an internal orchestration, calculation or algorithm, Flow for a
+trigger-to-outcome handoff across participants, and Lifecycle for state
+reachability. A DataModel containing code-backed Concepts plans a logical ER
+diagram. Its OpenGauss-backed Concepts always leave physical ER to the generated
+model block; a mixed page may therefore contain both separate views.
+Writers may run concurrently after Composition review because each reopens
+Source evidence.
 
 Drafts remain at `work/drafts/<page-id>.md`: this identity store is deliberately
 flat so a Composition move does not rename writer work. The Candidate and
 Navigation Index materialize the approved path hierarchy before bundle review.
 
-An empty Plan has `pages: []`. It still receives Composition review, then
-proceeds to bundle review with no drafts; do not create a placeholder page.
+Mandatory Plan ownership prevents an empty Composition. Do not manufacture
+pages outside the approved units or generated OpenGauss references.

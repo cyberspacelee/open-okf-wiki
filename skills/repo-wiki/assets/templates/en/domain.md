@@ -13,11 +13,12 @@ Use a compact table for each rule, enforcement point and observable failure.
 
 ## Concepts
 
-Define only terms whose meaning is specific to this capability. Link independent
+Define the Domain's primary Concepts or link their Concept pages. State each
+Concept's owner and Model Basis without copying its fields. Link independent
 Flows and Lifecycles instead of embedding their full execution prose here.
 
 ## Change points
 
-Route common maintenance intents to the relevant enforcement or extension
-surface. Render a planned diagram only when it answers one bounded question
+Route common maintenance intents to the relevant Concept, model, enforcement or
+extension surface. Render a planned diagram only when it answers one bounded question
 that does not justify a separate Flow or Lifecycle page.

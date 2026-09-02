@@ -5,8 +5,9 @@ sources: []
 
 ## State ownership
 
-Name the object, owner, persisted state and events or commands that may change
-it.
+Name the Concept, owner and events or commands that may change it. Link the
+authoritative generated Table page for persisted state fields; do not copy a
+field list here.
 
 ## State model
 
@@ -21,4 +22,5 @@ failure. Do not repeat the entire diagram as prose.
 ## Recovery and change points
 
 Explain retry or repair entry points and route changes to their enforcement and
-tests.
+tests. Keep lock duration, batch size and other engineering parameters on their
+Procedure or operations owner page.

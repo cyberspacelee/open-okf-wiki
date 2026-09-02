@@ -244,11 +244,14 @@ def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> 
     work = root / ".okf-wiki" / "runs" / state["run_id"] / "work"
     parsed_composition = parse_file(work / "composition.md")
     composition = CompositionMap.model_validate(parsed_composition.meta, strict=True)
+    authored = {page.path: page for page in composition.pages}
+    catalogs = state.get("catalogs", [])
     result = {}
-    for composed in composition.pages:
-        page = candidate / composed.path
+    for page in _content_pages(candidate):
+        relative = page.relative_to(candidate).as_posix()
+        composed = authored.get(relative)
         parsed = parse_file(page)
-        source_blobs = {}
+        inputs = {}
         for source in parsed.meta.get("sources", []):
             resource = source.get("resource", "")
             item = _validate.parse_resource(resource)
@@ -261,19 +264,50 @@ def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> 
                     blob = _workspace.git_blob_oid(registered, revision["commit"], rel)
                 elif registered and registered.kind == "files":
                     content = _workspace.files_blob(registered, rel)
-                    blob = hashlib.sha256(content).hexdigest() if content else None
+                    blob = hashlib.sha256(content).hexdigest() if content is not None else None
                 if blob:
-                    source_blobs[f"{source_name}/{rel}"] = blob
-        draft = work / "drafts" / f"{composed.id}.md"
-        result[composed.path] = {
-            "page_id": composed.id,
-            "units": composed.units,
-            "draft_digest": hashlib.sha256(draft.read_bytes()).hexdigest(),
+                    inputs[f"{source_name}/{rel}"] = blob
+                continue
+            for catalog in catalogs:
+                if resource == catalog["resource"]:
+                    inputs[f"catalog:{catalog['name']}"] = catalog["content_hash"]
+                    break
+                table = next(
+                    (item for item in catalog["tables"] if item["resource"] == resource),
+                    None,
+                )
+                if table is not None:
+                    inputs[f"catalog:{catalog['name']}:{table['name']}"] = table[
+                        "content_hash"
+                    ]
+                    break
+        record = {
+            "page_id": parsed.meta["id"],
+            "type": parsed.meta["type"],
+            "origin": "authored" if composed is not None else "generated",
+            "units": composed.units if composed is not None else [],
             "output_digest": hashlib.sha256(page.read_bytes()).hexdigest(),
             "review_digest": state["approved_review_digest"],
-            "source_blobs": source_blobs,
+            "inputs": inputs,
         }
+        if composed is not None:
+            draft = work / "drafts" / f"{composed.id}.md"
+            record["draft_digest"] = hashlib.sha256(draft.read_bytes()).hexdigest()
+        result[relative] = record
     return result
+
+
+def _nav_manifest(bundle: pathlib.Path) -> list[dict]:
+    return [
+        {
+            "path": path.relative_to(bundle).as_posix(),
+            "id": parsed.meta["id"],
+            "type": parsed.meta["type"],
+            "title": parsed.meta["title"],
+        }
+        for path in _content_pages(bundle)
+        if not (parsed := parse_file(path)).errors
+    ]
 
 
 def current(root: pathlib.Path) -> dict | None:
@@ -439,6 +473,7 @@ def publish(root: pathlib.Path) -> dict:
                 "revisions": state["revisions"],
                 "catalogs": state["catalogs"],
                 "pages": _page_manifest(root, candidate, state),
+                "nav": _nav_manifest(partial),
             }
             generation, pointer = _commit_generation(root, partial, manifest, old)
             prune(root)

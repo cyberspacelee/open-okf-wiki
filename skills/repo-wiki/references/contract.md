@@ -1,24 +1,59 @@
 # Writing Contract
 
-## Admission and representation
+## Coverage and representation
 
-Admit knowledge only when grep plus two or three files cannot reconstruct it in
-about a minute: cross-module architecture, lifecycle and failure propagation,
-enforced invariants, written decisions and task routing. Exclude inventories,
-signatures, directory trees, configuration lists and restated comments.
+The Wiki closes four mandatory ledgers before optional depth is considered:
+
+- every eligible Source region has one Source Area disposition;
+- every discovered business responsibility belongs to one Domain;
+- every primary domain noun belongs to one Domain and has one definition owner;
+- every captured OpenGauss table has one table disposition and, when relevant,
+  links to its Concepts.
+
+Every persistent Concept also has one data-model owner. The Grep Test controls
+only optional depth such as a separate Procedure, Flow or Lifecycle page. It
+cannot remove Domain, Concept, persistence-model, Schema or Table coverage.
+The Plan and Composition must therefore contain coverage owners; an empty Wiki
+is not a valid Publication.
 
 Use prose for definitions and rationale, tables for repeated comparisons, and
 diagrams when topology, ordering, state reachability or cardinality would
 otherwise be reconstructed across sentences. Split only for an independently
-routable, independently evidenced question.
+routable, independently evidenced question. Omit signature catalogs, directory
+mirrors, copied configuration and restated comments from authored pages;
+deterministic reference pages may contain complete captured schema facts.
+
+## Model evidence
+
+Select a Model Basis per Concept:
+
+- `opengauss`: captured Catalog facts own physical columns, keys, constraints,
+  indexes and partitions; code supplies behavior, state meaning and ownership;
+- `code`: when no relevant OpenGauss evidence is configured, recover a logical
+  model in the order DDL/migrations, ORM annotations or XML overrides, SQL and
+  mappers, then persistence code;
+- `none`: the Concept is not persistent and has no data-model owner.
+
+OpenGauss is the only database Source kind. A configured OpenGauss capture must
+succeed; connection, identity or capture failure blocks the Run rather than
+silently changing the Concept to `code`. When code names a relevant table that
+was not selected for capture, the Concept may use a partial code model only
+with a `catalog-selection` Gap naming the omitted evidence.
+
+Physical relationships come only from captured constraints. Code-derived
+relationships are logical and record their evidence basis separately. Render
+physical and logical ER views separately; Mermaid line style expresses
+identifying semantics, never evidence confidence.
 
 ## Scope and locators
 
 A scope pairs a registered Source with normalized relative POSIX paths. `.`
 selects the eligible Source root. Cross-Source claims evidence each participant.
-Each Source appears once per unit with one role: `owner`, `producer`, `contract`,
-`consumer` or `feedback`, and has at least one seed inside its paths. Integration
-units include producer and consumer scopes from at least two Sources.
+Each Source appears once per unit with one role: `owner`, `model`, `producer`,
+`contract`, `consumer` or `feedback`, and has at least one seed inside its
+paths. Integration units include producer and consumer scopes from at least two
+Sources. A `model` scope identifies structural evidence; it does not imply
+business ownership.
 For a Catalog Source, `.` selects the whole captured catalog; otherwise paths
 select exact table names/page slugs, and evidence from a sibling table is out of
 scope.
@@ -41,34 +76,45 @@ planning progress is one living Markdown file that is overwritten in place.
 The kernel creates its initial marker; Plan review remains closed until the
 coordinator replaces that marker with findings, gaps and next actions.
 
-Plan owns stable knowledge units, evidence scopes, seeds and gaps. Composition
-assigns those units to stable page IDs, page metadata, diagrams and final paths.
+Plan owns the coverage ledger, stable knowledge units, evidence scopes, seeds
+and gaps. Domains and Concepts use unit IDs to declare their unique definition
+and data-model owners. Composition assigns units to stable authored Page IDs,
+metadata, diagrams and final paths, and assigns each OpenGauss Source one
+Reference Root. The kernel deterministically derives Schema and Table pages
+from the captured Catalog, Plan dispositions and those roots. It first exposes
+their IDs and paths in the read-only derived `work/reference-map.json`; agents
+never edit that Artifact or reconstruct its naming rules.
 Independent Plan review binds domain recall to the frozen Sources. Independent
 Composition review binds task routing and page cohesion before page fan-out.
 Both reviews record merge probes covering every routed item when more than one
 exists; a merge decision requires a matching open merge issue.
-Writers own page body, citations and coverage. Final bundle review owns the
-machine trust stamp and is digest-bound to both approved pre-write reviews. If
-no knowledge passes admission, the Plan records why in `gaps`, Composition and
-Candidate are empty, and all reviews may approve a Publication with no concept
-pages.
+Writers own authored page bodies, citations and coverage. They do not transcribe
+Catalog field inventories. Final bundle review owns the machine trust stamp and
+is digest-bound to both approved pre-write reviews.
 
 ## Page types and diagrams
 
-Types are `Overview`, `Architecture`, `Domain`, `Procedure`, `Flow`, `Lifecycle`,
-`DataModel` and `Table`.
+Types are `Overview`, `Architecture`, `Domain`, `Concept`, `Procedure`, `Flow`,
+`Lifecycle`, `DataModel`, `Schema` and `Table`.
 
 - Overview routes tasks and has no diagram.
 - Architecture explains static boundaries and requires a flowchart.
 - Domain explains capability ownership and invariants; diagrams are optional.
+- Concept defines one or more tightly coupled domain nouns, ownership and
+  semantic relationships; diagrams are optional.
 - Procedure explains an internal orchestration, calculation or algorithm;
   diagrams are optional.
 - Flow requires a flowchart or sequence.
 - Lifecycle requires a state diagram.
-- DataModel requires an ER diagram.
-- Table explains one captured table and has no diagram.
+- DataModel requires an authored logical ER diagram for a `code` basis. For an
+  `opengauss` basis, its physical ER is generated at the model marker and the
+  Composition does not plan a writer ER for that block.
+- Schema is a deterministic OpenGauss Source overview and has no authored
+  diagram.
+- Table is a deterministic reference for one captured table and has no authored
+  diagram.
 
-Each Diagram Spec has a page-local ASCII ID, supported kind, short question and
+Each authored Diagram Spec has a page-local ASCII ID, supported kind, short question and
 one or more participating Sources inherited from its page scopes.
 A page plans at most four. Each appears exactly once with one
 `%% okf-id: <diagram-id>` marker, matching `accTitle` and `accDescr`. Keep
@@ -97,6 +143,9 @@ headings are required, and sections designated by the template as compact
 tables must contain Markdown tables.
 
 ## Deterministic boundary
+
+The Run contract is `domain-concept-model-coverage`. Reject every older Run
+state rather than migrating or branching its schema; OKF remains v0.2.
 
 Workspace configuration contains one strict Run Policy. `run start` snapshots
 it, and active Runs never observe later Workspace changes. Its evidence policy
@@ -142,7 +191,10 @@ collects every independently diagnosable issue in one pass and names checks
 skipped because a prerequisite Artifact could not be parsed. The host owns
 subagent isolation, policy enforcement and the persistent coordinator loop.
 
-Candidate construction also generates the root and directory Navigation
-Indexes from Composition paths before final review. Multi-page Compositions put
-ordinary pages under capability directories and reject page-type directories;
-Publication regenerates the same indexes deterministically.
+Candidate construction also generates Schema and Table references, model blocks,
+and root and directory Navigation Indexes from the approved Plan and Composition
+before final review. Multi-page Compositions put ordinary pages under capability
+directories and reject page-type directories; Publication regenerates the same
+outputs deterministically. Its manifest records an authored/generated origin and
+the exact Git blob, files hash or Catalog/table hash used by every page, plus a
+non-null navigation inventory derived from the published page tree.

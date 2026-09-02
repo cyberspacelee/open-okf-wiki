@@ -1,7 +1,7 @@
 # Repository Wiki Producer
 
-A skill-driven producer of a Thin Wiki over a hub Workspace whose children are
-registered Sources.
+A skill-driven producer of an evidence-anchored Domain Wiki over a hub Workspace
+whose children are registered Sources.
 
 ## Language
 
@@ -24,9 +24,46 @@ The frozen Source tree at a Run's Revision.
 _Avoid_: live worktree, clone
 
 **Catalog**:
-A content-addressed description of explicitly selected database tables captured
-for a Run.
+A content-addressed OpenGauss schema description captured for a Run. It is the
+primary evidence for the physical structure of covered persistent Concepts.
 _Avoid_: database dump, Git Revision
+
+**Source Area**:
+A deterministic code or file region classified in the Plan as domain-owned,
+shared, test, generated or excluded. Together, Source Areas close Source
+coverage without mirroring packages into pages.
+_Avoid_: Knowledge Unit, page folder
+
+**Domain**:
+A stable business responsibility with explicit boundaries and Concepts. It may
+span Sources and packages.
+_Avoid_: Source, module, table prefix
+
+**Concept**:
+A domain noun with defined meaning, ownership and, when persistent, one data
+model owner.
+_Avoid_: class, table, generic term
+
+**Model Basis**:
+The evidence mode selected per Concept: `opengauss` for Catalog-backed physical
+structure, `code` for a logical model recovered from frozen code, or `none` for
+a non-persistent Concept.
+_Avoid_: Workspace-wide database mode, confidence score
+
+**Table Disposition**:
+The Plan's one-time classification of every captured OpenGauss table, recording
+its role, owning Domain and Concepts or a concrete coverage Gap.
+_Avoid_: page assignment, name-prefix guess
+
+**Physical Relationship**:
+A relationship declared by captured OpenGauss constraints, including ordered
+composite keys, cardinality and optionality derived by the kernel.
+_Avoid_: ORM association, naming inference
+
+**Logical Relationship**:
+A relationship recovered from code evidence and recorded separately from the
+physical model with its evidence basis.
+_Avoid_: undeclared database constraint, Mermaid line-style confidence
 
 **Navigation Index**:
 A generated `index.md` view of the Candidate or Publication page hierarchy.
@@ -55,7 +92,8 @@ _Avoid_: Target DAG, phase cursor that permits premature exit
 
 **Fixed Artifact**:
 A Markdown or JSON file at a stable path, overwritten as understanding improves.
-Plan, progress, Composition, drafts and review survive context compression directly.
+Plan, progress, Composition, the derived Reference Map, drafts and review survive
+context compression directly.
 _Avoid_: Attempt Artifact, checkpoint history
 
 **Handoff**:
@@ -74,9 +112,9 @@ cite.
 _Avoid_: package task, inventory
 
 **Knowledge Plan**:
-The evolving cross-Source analysis defining stable Knowledge Units, scopes, seeds
-and gaps without choosing Wiki pages or paths. It may be empty only when its
-gaps explain why no knowledge passes the Grep Test.
+The evolving cross-Source analysis whose coverage ledger defines Source Areas,
+Domains, Concepts, table dispositions and relationships before defining stable
+Knowledge Units, scopes, seeds and gaps. It does not choose Wiki paths.
 _Avoid_: page tree, Source shard
 
 **Knowledge Unit**:
@@ -92,9 +130,19 @@ _Avoid_: dossier Target, competing Plan
 
 **Composition Map**:
 The global information-architecture decision assigning every Knowledge Unit to
-one stable Page ID, representation and final path. An empty Plan has an empty
-Composition and produces no placeholder page.
+one stable Page ID, representation and final path, plus deterministic reference
+roots for captured Catalogs.
 _Avoid_: Plan, parent DAG, writer schedule
+
+**Reference Root**:
+A Composition path under which the kernel generates one Schema page and the
+captured tables' Table pages for an OpenGauss Source.
+_Avoid_: authored page, database connection
+
+**Reference Map**:
+A read-only derived Artifact mapping every generated Schema and Table Page ID to
+its final path, type, Source and table before page writing begins.
+_Avoid_: Composition input, naming convention
 
 **Task Routing Test**:
 A page-boundary check requiring one concrete maintenance change or failure
@@ -114,8 +162,9 @@ _Avoid_: Markdown path, Target identity
 
 **Page Type**:
 The closed semantic class selected by the reader question: Overview,
-Architecture, Domain, Procedure, Flow, Lifecycle, DataModel or Table. Procedure
-owns an internal algorithm or orchestration; Flow owns an end-to-end handoff.
+Architecture, Domain, Concept, Procedure, Flow, Lifecycle, DataModel, Schema or
+Table. Procedure owns an internal algorithm or orchestration; Flow owns an
+end-to-end handoff; Schema and Table are deterministic reference pages.
 _Avoid_: arbitrary template name
 
 **Diagram Spec**:
@@ -142,15 +191,16 @@ _Avoid_: Candidate, export
 A recoverable physical copy of the current Publication.
 _Avoid_: authoritative Publication
 
-**Thin Wiki**:
-A routing layer for knowledge expensive to reconstruct, bounded by the Grep
-Test rather than file or directory coverage.
-_Avoid_: Source mirror, API reference
+**Domain Wiki**:
+A routing and explanation layer whose mandatory coverage closes Source Areas,
+Domains, Concepts and captured tables while avoiding Source mirroring.
+_Avoid_: minimal page set, API dump
 
 **Grep Test**:
-The admission check that excludes knowledge reconstructable by grep plus a few
-source files in about a minute.
-_Avoid_: file coverage, documentation quota
+The admission check for optional depth pages such as Procedure, Flow and
+Lifecycle. It never excludes mandatory Domain, Concept, DataModel, Schema or
+Table coverage.
+_Avoid_: coverage gate, page-count target
 
 **Locator**:
 A plain Source-relative evidence path with an optional line range, bound to the

@@ -22,6 +22,12 @@ PagePath = Annotated[
     str,
     StringConstraints(max_length=240, pattern=r"^[a-z0-9][a-z0-9/_.-]*\.md$"),
 ]
+ReferencePath = Annotated[
+    str,
+    StringConstraints(
+        max_length=230, pattern=r"^[a-z0-9](?:[a-z0-9/_.-]*[a-z0-9_])?$"
+    ),
+]
 StableId = Annotated[
     str,
     StringConstraints(max_length=64, pattern=r"^[a-z0-9][a-z0-9.-]*$"),
@@ -33,10 +39,12 @@ PageType = Literal[
     "Overview",
     "Architecture",
     "Domain",
+    "Concept",
     "Procedure",
     "Flow",
     "Lifecycle",
     "DataModel",
+    "Schema",
     "Table",
 ]
 DiagramKind = Literal["flowchart", "sequence", "state", "er"]
@@ -161,9 +169,8 @@ def _check_diagram_contract(page_type: str, diagrams: list[DiagramSpec]) -> None
         "Architecture": {"flowchart"},
         "Flow": {"flowchart", "sequence"},
         "Lifecycle": {"state"},
-        "DataModel": {"er"},
     }
-    if page_type in {"Overview", "Table"} and diagrams:
+    if page_type in {"Overview", "Schema", "Table"} and diagrams:
         raise ValueError(f"{page_type} pages must not plan diagrams")
     if page_type in required and not (kinds & required[page_type]):
         expected = " or ".join(sorted(required[page_type]))
@@ -222,7 +229,7 @@ class PageScope(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     source: ShortText
-    role: Literal["owner", "producer", "contract", "consumer", "feedback"]
+    role: Literal["owner", "producer", "contract", "consumer", "feedback", "model"]
     paths: list[ScopePath] = Field(min_length=1, max_length=32)
 
     @field_validator("paths")
@@ -261,6 +268,8 @@ class KnowledgeUnit(BaseModel):
         "operations",
     ]
     question: ClaimText
+    domain_ids: list[StableId] = Field(min_length=1)
+    concept_ids: list[StableId]
     scopes: list[PageScope] = Field(min_length=1, max_length=16)
     evidence_seeds: list[ScopePath] = Field(min_length=1, max_length=16)
 
@@ -293,20 +302,292 @@ class UnitMergeProbe(BaseModel):
         return values
 
 
+class KnowledgeGap(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: StableId
+    category: Literal[
+        "catalog-selection",
+        "source-coverage",
+        "model-coverage",
+        "relationship-confidence",
+        "other",
+    ]
+    claim: ClaimText
+    evidence: list[ScopePath]
+
+
+class SourceArea(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: StableId
+    source: ShortText
+    paths: list[ScopePath] = Field(min_length=1)
+    disposition: Literal["domain", "shared", "test", "generated", "excluded"]
+    domain_ids: list[StableId]
+    evidence_seeds: list[ScopePath] = Field(min_length=1)
+
+    @field_validator("paths")
+    @classmethod
+    def normalized_relative_paths(cls, values: list[str]) -> list[str]:
+        return _normalized_scope_paths(values)
+
+    @model_validator(mode="after")
+    def domain_disposition_names_a_domain(self):
+        if self.disposition == "domain" and not self.domain_ids:
+            raise ValueError("domain source areas require at least one domain id")
+        return self
+
+
+class Domain(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: StableId
+    name: ShortText
+    definition: ClaimText
+    owner_unit_id: StableId
+    evidence: list[ScopePath] = Field(min_length=1)
+
+
+class CatalogTableRef(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source: ShortText
+    table: NonEmpty
+
+
+class ConceptModelBasis(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    basis: Literal["opengauss", "code", "none"]
+    coverage: Literal["full", "partial"]
+    catalog_tables: list[CatalogTableRef]
+    structure_evidence: list[ScopePath]
+    gap_ids: list[StableId]
+
+    @model_validator(mode="after")
+    def evidence_matches_basis(self):
+        if self.coverage == "partial" and not self.gap_ids:
+            raise ValueError("partial model coverage requires at least one gap id")
+        if self.coverage == "full" and self.gap_ids:
+            raise ValueError("full model coverage must not reference gaps")
+        if self.basis == "opengauss":
+            if not self.catalog_tables:
+                raise ValueError("opengauss model basis requires catalog tables")
+            if self.structure_evidence:
+                raise ValueError("opengauss structure comes from catalog_tables")
+        elif self.basis == "code":
+            if self.catalog_tables:
+                raise ValueError("code model basis must not reference catalog tables")
+            if not self.structure_evidence:
+                raise ValueError("code model basis requires structure evidence")
+        elif (
+            self.coverage != "full"
+            or self.gap_ids
+            or self.catalog_tables
+            or self.structure_evidence
+        ):
+            raise ValueError(
+                "none model basis must be full and carry no structure resources or gaps"
+            )
+        return self
+
+
+class DomainConcept(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: StableId
+    domain_id: StableId
+    kind: Literal[
+        "entity",
+        "value-object",
+        "event",
+        "service",
+        "policy",
+        "process",
+        "read-model",
+    ]
+    name: ShortText
+    definition: ClaimText
+    owner_unit_id: StableId
+    model_unit_id: StableId | None
+    owner_evidence: list[ScopePath] = Field(min_length=1)
+    behavior_seeds: list[ScopePath]
+    model_basis: ConceptModelBasis
+
+    @model_validator(mode="after")
+    def model_owner_matches_persistence(self):
+        if self.model_basis.basis == "none" and self.model_unit_id is not None:
+            raise ValueError("non-persistent concepts must not have a model unit")
+        if self.model_basis.basis != "none" and self.model_unit_id is None:
+            raise ValueError("persistent concepts require a model unit")
+        return self
+
+
+class TableDisposition(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source: ShortText
+    table: NonEmpty
+    role: Literal[
+        "entity",
+        "association",
+        "history",
+        "reference",
+        "read-model",
+        "working",
+        "infrastructure",
+        "replica",
+        "excluded",
+        "unresolved",
+    ]
+    domain_id: StableId | None
+    concept_ids: list[StableId]
+    evidence: list[ScopePath] = Field(min_length=1)
+    gap_ids: list[StableId]
+    replica_of: CatalogTableRef | None
+
+    @model_validator(mode="after")
+    def role_has_required_context(self):
+        if self.role == "replica" and self.replica_of is None:
+            raise ValueError("replica tables require replica_of")
+        if self.role != "replica" and self.replica_of is not None:
+            raise ValueError("replica_of is only valid for replica tables")
+        if self.role == "unresolved" and not self.gap_ids:
+            raise ValueError("unresolved tables require at least one gap id")
+        return self
+
+
+class DomainRelationship(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: StableId
+    from_concept_id: StableId
+    to_concept_id: StableId
+    level: Literal["declared", "mapped", "observed", "heuristic"]
+    cardinality: Literal[
+        "one-to-one", "one-to-many", "many-to-one", "many-to-many", "unknown"
+    ]
+    evidence: list[ScopePath] = Field(min_length=1)
+    include_in_er: bool
+
+    @model_validator(mode="after")
+    def heuristics_are_not_formal_model_edges(self):
+        if self.level == "heuristic" and self.include_in_er:
+            raise ValueError("heuristic relationships must not appear in ER diagrams")
+        return self
+
+
 class KnowledgePlan(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     kind: Literal["knowledge-plan"]
-    units: list[KnowledgeUnit] = Field(max_length=64)
-    gaps: list[ClaimText] = Field(default_factory=list, max_length=16)
+    source_areas: list[SourceArea] = Field(min_length=1)
+    domains: list[Domain] = Field(min_length=1)
+    concepts: list[DomainConcept] = Field(min_length=1)
+    table_dispositions: list[TableDisposition]
+    relationships: list[DomainRelationship]
+    units: list[KnowledgeUnit] = Field(min_length=1)
+    gaps: list[KnowledgeGap]
 
     @model_validator(mode="after")
-    def unique_units(self):
-        ids = [item.id for item in self.units]
-        if len(ids) != len(set(ids)):
-            raise ValueError("knowledge unit ids must be unique")
-        if not self.units and not self.gaps:
-            raise ValueError("an empty knowledge plan must explain why in gaps")
+    def references_form_a_closed_model(self):
+        collections = {
+            "source area": [item.id for item in self.source_areas],
+            "domain": [item.id for item in self.domains],
+            "concept": [item.id for item in self.concepts],
+            "relationship": [item.id for item in self.relationships],
+            "knowledge unit": [item.id for item in self.units],
+            "gap": [item.id for item in self.gaps],
+        }
+        for label, ids in collections.items():
+            if len(ids) != len(set(ids)):
+                raise ValueError(f"{label} ids must be unique")
+        tables = [(item.source, item.table) for item in self.table_dispositions]
+        if len(tables) != len(set(tables)):
+            raise ValueError("each catalog table must have exactly one disposition")
+        area_paths = [
+            (area.source, path)
+            for area in self.source_areas
+            for path in area.paths
+        ]
+        for index, (source, path) in enumerate(area_paths):
+            for other_source, other in area_paths[index + 1 :]:
+                if source == other_source and (
+                    path == other
+                    or path == "."
+                    or other == "."
+                    or path.startswith(other + "/")
+                    or other.startswith(path + "/")
+                ):
+                    raise ValueError("source area paths must not overlap")
+
+        domains = {item.id: item for item in self.domains}
+        concepts = {item.id: item for item in self.concepts}
+        units = {item.id: item for item in self.units}
+        gaps = {item.id for item in self.gaps}
+        dispositions = {
+            (item.source, item.table): item for item in self.table_dispositions
+        }
+        for area in self.source_areas:
+            if unknown := set(area.domain_ids) - set(domains):
+                raise ValueError(f"source area references unknown domains: {sorted(unknown)}")
+        for unit in self.units:
+            if unknown := set(unit.domain_ids) - set(domains):
+                raise ValueError(f"knowledge unit references unknown domains: {sorted(unknown)}")
+            if unknown := set(unit.concept_ids) - set(concepts):
+                raise ValueError(f"knowledge unit references unknown concepts: {sorted(unknown)}")
+            if any(concepts[item].domain_id not in unit.domain_ids for item in unit.concept_ids):
+                raise ValueError("knowledge unit concept domains must be included in domain_ids")
+        for domain in self.domains:
+            owner = units.get(domain.owner_unit_id)
+            if owner is None or domain.id not in owner.domain_ids:
+                raise ValueError("each domain owner unit must cover that domain")
+        for concept in self.concepts:
+            if concept.domain_id not in domains:
+                raise ValueError(f"concept {concept.id} references an unknown domain")
+            owner = units.get(concept.owner_unit_id)
+            if owner is None or concept.id not in owner.concept_ids:
+                raise ValueError(f"concept {concept.id} owner unit must cover the concept")
+            if concept.model_unit_id is not None:
+                model = units.get(concept.model_unit_id)
+                if model is None or model.kind != "data-model" or concept.id not in model.concept_ids:
+                    raise ValueError(f"concept {concept.id} model unit must be a data-model unit covering it")
+            if unknown := set(concept.model_basis.gap_ids) - gaps:
+                raise ValueError(f"concept {concept.id} references unknown gaps: {sorted(unknown)}")
+            for table in concept.model_basis.catalog_tables:
+                disposition = dispositions.get((table.source, table.table))
+                if disposition is None or concept.id not in disposition.concept_ids:
+                    raise ValueError(
+                        f"concept {concept.id} catalog table requires a matching disposition"
+                    )
+        for disposition in self.table_dispositions:
+            if disposition.domain_id is not None and disposition.domain_id not in domains:
+                raise ValueError("table disposition references an unknown domain")
+            if unknown := set(disposition.concept_ids) - set(concepts):
+                raise ValueError(f"table disposition references unknown concepts: {sorted(unknown)}")
+            if disposition.concept_ids and disposition.domain_id is None:
+                raise ValueError("tables assigned to concepts require a domain")
+            if any(
+                concepts[item].domain_id != disposition.domain_id
+                for item in disposition.concept_ids
+            ):
+                raise ValueError("table concepts must belong to the table domain")
+            if unknown := set(disposition.gap_ids) - gaps:
+                raise ValueError(f"table disposition references unknown gaps: {sorted(unknown)}")
+            if disposition.replica_of is not None:
+                target = (disposition.replica_of.source, disposition.replica_of.table)
+                if target not in dispositions or target == (
+                    disposition.source,
+                    disposition.table,
+                ):
+                    raise ValueError("replica_of must reference another disposed catalog table")
+        for relationship in self.relationships:
+            if (
+                relationship.from_concept_id not in concepts
+                or relationship.to_concept_id not in concepts
+            ):
+                raise ValueError("relationship endpoints must reference known concepts")
         return self
 
 
@@ -317,6 +598,10 @@ class PlanReviewIssue(BaseModel):
     status: Literal["open", "resolved"]
     category: Literal[
         "domain-coverage",
+        "concept-coverage",
+        "model-basis",
+        "table-disposition",
+        "relationship-confidence",
         "source-role",
         "lifecycle",
         "failure-path",
@@ -381,7 +666,7 @@ class CompositionPage(BaseModel):
     title: ShortText
     description: ClaimText
     tags: list[ShortText] = Field(default_factory=list, max_length=16)
-    units: list[StableId] = Field(min_length=1, max_length=32)
+    units: list[StableId] = Field(min_length=1)
     merge_rationale: ClaimText | None = None
     diagrams: list[DiagramSpec] = Field(max_length=4)
 
@@ -415,11 +700,28 @@ class PageMergeProbe(BaseModel):
         return values
 
 
+class ReferenceRoot(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source: ShortText
+    path: ReferencePath
+
+    @field_validator("path")
+    @classmethod
+    def normalized_directory_path(cls, value: str) -> str:
+        _normalized_scope_paths([value])
+        _portable_page_path(value + "/page.md")
+        if any(part.endswith(".md") for part in value.split("/")):
+            raise ValueError("reference root must be a named bundle directory")
+        return value
+
+
 class CompositionMap(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     kind: Literal["composition-map"]
-    pages: list[CompositionPage] = Field(max_length=64)
+    reference_roots: list[ReferenceRoot]
+    pages: list[CompositionPage]
     gaps: list[ClaimText] = Field(default_factory=list, max_length=16)
 
     @model_validator(mode="after")
@@ -430,6 +732,12 @@ class CompositionMap(BaseModel):
             raise ValueError("page ids must be unique")
         if len(paths) != len(set(paths)):
             raise ValueError("page paths must be unique")
+        root_sources = [item.source for item in self.reference_roots]
+        if len(root_sources) != len(set(root_sources)):
+            raise ValueError("each source must have exactly one reference root")
+        root_paths = [item.path for item in self.reference_roots]
+        if len(root_paths) != len(set(root_paths)):
+            raise ValueError("reference root paths must be unique")
         return self
 
 
@@ -441,6 +749,10 @@ class ReviewIssue(BaseModel):
     category: Literal[
         "domain-coverage",
         "concept-boundary",
+        "model-basis",
+        "table-disposition",
+        "relationship-confidence",
+        "reference-coverage",
         "grep-test",
         "unsupported-claim",
         "invented-rationale",

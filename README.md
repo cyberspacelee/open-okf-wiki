@@ -125,8 +125,8 @@ commit, and citations resolve from Git's object database.
 OpenGauss is optional. Store the URL in the operating-system environment or
 in a workspace-root `.env`; the operating-system value wins. Configuration and
 Run state retain only the variable name, never credentials.
-`postgres://` and `postgresql://` URLs still connect; captured resources use
-`opengauss://`.
+Only `opengauss://` URLs are accepted. Captured resources use the same public
+scheme; the PostgreSQL wire-protocol conversion is internal.
 
 ```dotenv
 APP_DATABASE_URL=opengauss://user:password@host:5432/database
@@ -195,7 +195,8 @@ design behaves consistently on Windows, Linux and macOS without symlinks.
 - One independent Wiki review binds Plan, Composition, drafts and Candidate to
   an exact digest; every change requires a new complete-bundle review whose
   packet points to the fixed prior review Artifact.
-- An explained empty Plan publishes no placeholder concept pages.
+- Every Run must close Source Area, Domain and Concept coverage; empty Plans,
+  Compositions and Candidates are rejected.
 - Root index.md contains only okf_version 0.2; nested indexes and log.md have
   no frontmatter. Candidate and Publication both contain the deterministic
   navigation tree.
@@ -230,7 +231,8 @@ not a restriction on skill runtime hosts or models.
     .okf-wiki/runs/<internal-run-id>/index/
     .okf-wiki/runs/<internal-run-id>/work/
     .okf-wiki/pins/<run-id>/<name>/
-    .okf-wiki/catalogs/<content-hash>/
+    .okf-wiki/catalogs/<source>-<short-hash>/catalog.json
+    .okf-wiki/catalogs/<source>-<short-hash>/tables/<table>.json
     .okf-wiki/publication/generations/<digest>/
     wiki/
 

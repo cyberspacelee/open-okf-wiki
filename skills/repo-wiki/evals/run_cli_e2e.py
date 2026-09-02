@@ -61,7 +61,9 @@ def source(path: pathlib.Path, label: str) -> pathlib.Path:
     return path
 
 
-def unit(unit_id: str, source_names: list[str], kind: str) -> dict:
+def unit(
+    unit_id: str, source_names: list[str], kind: str, concept_ids: list[str]
+) -> dict:
     roles = (
         ["producer", "consumer", *(["contract"] * (len(source_names) - 2))]
         if kind == "integration"
@@ -71,6 +73,8 @@ def unit(unit_id: str, source_names: list[str], kind: str) -> dict:
         "id": unit_id,
         "kind": kind,
         "question": f"How does {unit_id} work across the captured sources?",
+        "domain_ids": ["workspace"],
+        "concept_ids": concept_ids,
         "scopes": [
             {"source": name, "role": role, "paths": ["."]}
             for name, role in zip(source_names, roles, strict=True)
@@ -78,6 +82,93 @@ def unit(unit_id: str, source_names: list[str], kind: str) -> dict:
         "evidence_seeds": [
             f"{name}/src/main/java/example/App.java#L1-L2" for name in source_names
         ],
+    }
+
+
+def knowledge_plan(units: list[dict]) -> dict:
+    api_ref = "API/src/main/java/example/App.java#L1-L2"
+    web_ref = "WebUI/src/main/java/example/App.java#L1-L2"
+    return {
+        "kind": "knowledge-plan",
+        "source_areas": [
+            {
+                "id": "api.workspace",
+                "source": "API",
+                "paths": ["."],
+                "disposition": "domain",
+                "domain_ids": ["workspace"],
+                "evidence_seeds": [api_ref],
+            },
+            {
+                "id": "web.workspace",
+                "source": "WebUI",
+                "paths": ["."],
+                "disposition": "domain",
+                "domain_ids": ["workspace"],
+                "evidence_seeds": [web_ref],
+            },
+        ],
+        "domains": [
+            {
+                "id": "workspace",
+                "name": "Workspace routing",
+                "definition": "Owns maintainer routing and the API-to-WebUI boundary.",
+                "owner_unit_id": "workspace-routing",
+                "evidence": [api_ref, web_ref],
+            }
+        ],
+        "concepts": [
+            {
+                "id": "routing",
+                "domain_id": "workspace",
+                "kind": "process",
+                "name": "Routing",
+                "definition": "Selects one maintainer route for a workspace question.",
+                "owner_unit_id": "workspace-routing",
+                "model_unit_id": "workspace-model",
+                "owner_evidence": [api_ref],
+                "behavior_seeds": [api_ref],
+                "model_basis": {
+                    "basis": "code",
+                    "coverage": "full",
+                    "catalog_tables": [],
+                    "structure_evidence": [api_ref],
+                    "gap_ids": [],
+                },
+            },
+            {
+                "id": "source-boundary",
+                "domain_id": "workspace",
+                "kind": "service",
+                "name": "Source boundary",
+                "definition": "Coordinates the API and WebUI handoff without persistence.",
+                "owner_unit_id": "workspace-routing",
+                "model_unit_id": None,
+                "owner_evidence": [api_ref, web_ref],
+                "behavior_seeds": [api_ref, web_ref],
+                "model_basis": {
+                    "basis": "none",
+                    "coverage": "full",
+                    "catalog_tables": [],
+                    "structure_evidence": [],
+                    "gap_ids": [],
+                },
+            },
+        ],
+        "table_dispositions": [],
+        "relationships": [
+            {
+                "id": "routing-selects-boundary",
+                "from_concept_id": "routing",
+                "to_concept_id": "source-boundary",
+                "level": "observed",
+                "cardinality": "one-to-one",
+                "evidence": [api_ref, web_ref],
+                "include_in_er": True,
+            }
+        ],
+        "units": units,
+        "gaps": [],
     }
 
 
@@ -94,6 +185,29 @@ def page(refs: list[tuple[str, str]], logical_link: str, page_type: str) -> str:
             "## Task entry points\n\n"
             "| Task | Start here |\n| --- | --- |\n"
             f"| Change a boundary | {logical_link} |\n\n{definitions}"
+        )
+    elif page_type == "DataModel":
+        body = (
+            "## Model basis\n\n"
+            f"Routing uses code-derived structure from the pinned API entry. {citations}\n\n"
+            "## Physical model\n\n"
+            "<!-- okf-generated:model -->\n\n"
+            "## Logical relationships\n\n"
+            "```mermaid\n"
+            "%% okf-id: routing-model\n"
+            "erDiagram\n"
+            "    accTitle: Routing model\n"
+            "    accDescr: Routing selects the API-to-WebUI source boundary.\n"
+            "    ROUTING ||--|| SOURCE_BOUNDARY : selects\n"
+            "```\n\n"
+            f"The code-derived relationship is anchored in both entry points. {citations}\n\n"
+            "## Ownership and boundaries\n\nAPI owns routing; WebUI participates in the handoff.\n\n"
+            f"## Reference model\n\nNo OpenGauss reference exists for this code-only fixture. {logical_link}\n\n"
+            "## Code-to-data mapping\n\n"
+            "| Concept | Code projection | Owner |\n"
+            "| --- | --- | --- |\n"
+            "| Routing | App entry | API |\n\n"
+            f"{definitions}"
         )
     elif page_type == "Procedure":
         body = (
@@ -218,13 +332,29 @@ def evaluate(base: pathlib.Path) -> dict:
         work / "plan.md",
         markdown(
             {
-                "kind": "knowledge-plan",
-                "units": [
-                    unit("workspace-routing", ["API"], "capability"),
-                    unit("workspace-algorithm", ["API"], "flow"),
-                    unit("source-boundaries", ["API", "WebUI"], "integration"),
-                ],
-                "gaps": [],
+                **knowledge_plan(
+                    [
+                        unit(
+                            "workspace-routing",
+                            ["API", "WebUI"],
+                            "capability",
+                            ["routing", "source-boundary"],
+                        ),
+                        unit("workspace-algorithm", ["API"], "flow", ["routing"]),
+                        unit(
+                            "source-boundaries",
+                            ["API", "WebUI"],
+                            "integration",
+                            ["source-boundary"],
+                        ),
+                        unit(
+                            "workspace-model",
+                            ["API", "WebUI"],
+                            "data-model",
+                            ["routing"],
+                        ),
+                    ]
+                )
             },
             "# Knowledge Plan\n\nThe API and WebUI expose one cross-Source boundary.",
         ),
@@ -247,6 +377,11 @@ def evaluate(base: pathlib.Path) -> dict:
                         "unit_ids": ["workspace-routing", "workspace-algorithm"],
                         "decision": "keep-separate",
                         "rationale": "Entry navigation and the routing algorithm answer different maintenance questions.",
+                    },
+                    {
+                        "unit_ids": ["workspace-algorithm", "workspace-model"],
+                        "decision": "keep-separate",
+                        "rationale": "Routing behavior and its code-derived model answer different questions.",
                     },
                 ],
                 "issues": [
@@ -291,6 +426,11 @@ def evaluate(base: pathlib.Path) -> dict:
                         "decision": "keep-separate",
                         "rationale": "Entry navigation and the routing algorithm answer different maintenance questions.",
                     },
+                    {
+                        "unit_ids": ["workspace-algorithm", "workspace-model"],
+                        "decision": "keep-separate",
+                        "rationale": "Routing behavior and its code-derived model answer different questions.",
+                    },
                 ],
                 "issues": [
                     {
@@ -309,6 +449,7 @@ def evaluate(base: pathlib.Path) -> dict:
         markdown(
             {
                 "kind": "composition-map",
+                "reference_roots": [],
                 "pages": [
                     {
                         "id": "architecture",
@@ -329,13 +470,30 @@ def evaluate(base: pathlib.Path) -> dict:
                     },
                     {
                         "id": "overview",
-                        "path": "overview.md",
-                        "type": "Overview",
+                        "path": "routing/overview.md",
+                        "type": "Domain",
                         "title": "Overview",
                         "description": "Open first to route work.",
                         "tags": ["overview"],
                         "units": ["workspace-routing"],
                         "diagrams": [],
+                    },
+                    {
+                        "id": "data-model",
+                        "path": "routing/data-model.md",
+                        "type": "DataModel",
+                        "title": "Routing model",
+                        "description": "Open before changing routing structure.",
+                        "tags": ["routing", "model"],
+                        "units": ["workspace-model"],
+                        "diagrams": [
+                            {
+                                "id": "routing-model",
+                                "kind": "er",
+                                "question": "How does routing select a source boundary?",
+                                "sources": ["API", "WebUI"],
+                            }
+                        ],
                     },
                     {
                         "id": "procedure",
@@ -370,6 +528,11 @@ def evaluate(base: pathlib.Path) -> dict:
                         "page_ids": ["overview", "procedure"],
                         "decision": "keep-separate",
                         "rationale": "The overview routes readers while the procedure explains the routing algorithm.",
+                    },
+                    {
+                        "page_ids": ["procedure", "data-model"],
+                        "decision": "keep-separate",
+                        "rationale": "The procedure explains behavior while the model explains structure.",
                     },
                 ],
                 "issues": [
@@ -418,6 +581,11 @@ def evaluate(base: pathlib.Path) -> dict:
                         "decision": "keep-separate",
                         "rationale": "The overview routes readers while the procedure explains the routing algorithm.",
                     },
+                    {
+                        "page_ids": ["procedure", "data-model"],
+                        "decision": "keep-separate",
+                        "rationale": "The procedure explains behavior while the model explains structure.",
+                    },
                 ],
                 "issues": [
                     {
@@ -449,11 +617,23 @@ def evaluate(base: pathlib.Path) -> dict:
     )
     write(
         work / "drafts/overview.md",
-        page([("api", api_ref)], "See [architecture][architecture].", "Overview"),
+        page(
+            [("api", api_ref), ("web", web_ref)],
+            "See [architecture][architecture].",
+            "Domain",
+        ),
     )
     write(
         work / "drafts/procedure.md",
         page([("api", api_ref)], "[overview][overview].", "Procedure"),
+    )
+    write(
+        work / "drafts/data-model.md",
+        page(
+            [("api", api_ref), ("web", web_ref)],
+            "See [overview][overview].",
+            "DataModel",
+        ),
     )
 
     overview = work / "drafts/overview.md"
@@ -550,7 +730,7 @@ def evaluate(base: pathlib.Path) -> dict:
     validation = run(ws, "validate", "--published")
     if validation["errors"] or validation.get("complete") is not True:
         raise RuntimeError(f"published validation failed: {validation}")
-    bound = pathlib.Path(published["path"]) / "overview.md"
+    bound = pathlib.Path(published["path"]) / "routing/overview.md"
     if "](/system/architecture.md)" not in bound.read_text(encoding="utf-8"):
         raise RuntimeError("logical page ID was not bound")
 

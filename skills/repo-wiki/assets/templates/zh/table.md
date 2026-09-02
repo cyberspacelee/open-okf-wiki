@@ -5,16 +5,22 @@ sources: []
 
 {table_comment}
 
-# 数据表结构
+## 数据表结构
 
-| 字段 | 类型 | 可为空 | 默认值 | 说明 |
-| --- | --- | --- | --- | --- |
-| {column} | {type} | {yes/no} | {default} | {comment} |
+{columns}
 
-## 键与关系
+## 约束与关系
 
-记录已捕获目录中的键。数据表页面不包含图；如有组合的数据模型页面，使用逻辑页面 ID 链接。
+{constraints}
+
+## 索引与分区
+
+{storage}
+
+## Domain 归属
+
+{domain_links}
 
 ## 使用方式
 
-只陈述有证据支持的应用归属和生命周期。链接代码概念，不要复制其内容。
+{usage_links}

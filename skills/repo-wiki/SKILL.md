@@ -1,6 +1,6 @@
 ---
 name: repo-wiki
-description: Generate or refresh a thin, evidence-anchored repository Wiki and human-reviewed onboarding proposals. Use for codebase Wikis, repository-wide architecture documentation, onboarding documentation, AGENTS.md or CONTEXT.md proposals, and resuming an existing Wiki run; do not use for a standalone architecture diagram.
+description: Generate or refresh an evidence-anchored Domain Wiki and human-reviewed onboarding proposals. Use for codebase Wikis, repository-wide architecture documentation, onboarding documentation, AGENTS.md or CONTEXT.md proposals, and resuming an existing Wiki run; do not use for a standalone architecture diagram.
 ---
 
 # Repo Wiki
@@ -36,11 +36,17 @@ Use the matching registration form for another filesystem Source:
     okf source add clone https://example.test/service.git --name service --ref main
     okf source add files ../contracts --name contracts
 
-For OpenGauss, inspect the live schema, then register only the selected tables:
+For OpenGauss, provide an `opengauss://` URL, inspect the live schema, then
+register only the selected tables:
 
     okf db tables --url-env DATABASE_URL --json
     okf db describe orders --url-env DATABASE_URL --json
     okf source add opengauss --name database --url-env DATABASE_URL --schema public --table orders
+
+OpenGauss is the only supported database Source. A failed connection, server
+identity check or capture blocks the Run; do not replace it with code evidence.
+Without a configured database Source, the Plan recovers logical models from
+frozen code evidence.
 
 After `run start`, inspect captured database evidence without reconnecting:
 
@@ -60,6 +66,7 @@ Disk Artifacts are authoritative after restart or context compression:
     work/plan-review.json
     work/composition.md
     work/composition-review.json
+    work/reference-map.json
     work/drafts/<page-id>.md
     work/review.json
 
@@ -131,7 +138,10 @@ ambiguous Source selection or another real external dependency. Resume with
 
 Read [references/plan.md](references/plan.md) and
 [references/contract.md](references/contract.md). One long-lived planner owns
-the cross-Source model and continuously overwrites `work/plan.md`. Replace the
+the cross-Source model and continuously overwrites `work/plan.md`. Its coverage
+ledger closes Source Areas, Domains, Concepts and captured tables before Plan
+review. Model Basis is selected per Concept, so one Plan may combine
+OpenGauss-backed, code-derived and non-persistent Concepts. Replace the
 initial `work/progress.md` note before Plan review and keep it current before
 context compression and after merging worker results.
 Do not copy unit, page or draft counts into Progress; read the derived
@@ -196,16 +206,15 @@ packet as `previous_review` and that the replacement report must copy the new
 packet's top-level `subject_digest`, never the nested prior digest.
 Plan is complete only when that digest-bound report is approved and status
 advances to Composition. Retain that reviewer handle through Composition review.
-If no knowledge passes the Grep Test, write an empty `units` list and explain
-the exclusion in `gaps`; this is a valid reviewed and published empty Wiki.
 
 ## Write
 
 Read [references/composition.md](references/composition.md). The planner or one
 composer turns the completed knowledge units into `work/composition.md`.
 Composition is the first Artifact that defines page IDs, titles and physical
-paths. It assigns every knowledge unit exactly once and carries no scheduler or
-hierarchy graph; the final path is the published hierarchy.
+paths. It assigns every knowledge unit exactly once and one Reference Root per
+OpenGauss Source; the final paths are the published hierarchy. The kernel
+derives Schema and Table references from those roots.
 
 Run `okf review composition --json` and send its packet to the retained Plan
 reviewer verbatim; do not restate its digest in prose. That reviewer reads
@@ -223,13 +232,15 @@ reviewer.
 Then read [references/page.md](references/page.md). For two or more independent
 pages, dispatch one writer per page instead of drafting them in the coordinator.
 Each writer receives the Plan, Composition, relevant evidence-note paths, the
+read-only `status.artifacts.reference_map`,
 exact template under `assets/templates/<status.language>/`, its fixed output
 `work/drafts/<page-id>.md` and `status.language` verbatim. There is no language
 fallback; a missing locale template is a broken skill package.
-Map Page Types to templates as follows: `Overview` to `overview.md`,
-`Architecture` to `architecture.md`, `Domain` to `domain.md`, `Flow` to
-`flow.md`, `Procedure` to `procedure.md`, `Lifecycle` to `lifecycle.md`,
-`DataModel` to `data-model.md` and `Table` to `table.md`.
+Map authored Page Types to templates as follows: `Overview` to `overview.md`,
+`Architecture` to `architecture.md`, `Domain` to `domain.md`, `Concept` to
+`concept.md`, `Flow` to `flow.md`, `Procedure` to `procedure.md`, `Lifecycle`
+to `lifecycle.md` and `DataModel` to `data-model.md`. Schema and Table templates
+belong to deterministic generation and are never writer assignments.
 Resolve these paths once from `<skill>` and `status.artifacts`, then pass those
 exact strings to writers; do not reconstruct runtime paths.
 For every dispatch, copy the literal Composition `pages[].id` into the output
@@ -241,13 +252,15 @@ directly from Composition. Send page repairs back to the original writer while
 it remains available.
 
 Use `[label][page-id]` without a definition for logical page links. The kernel
-binds known IDs to final paths; unknown IDs fail review preparation.
+binds known IDs to final paths; generated reference IDs come only from the
+Reference Map. Unknown or guessed IDs fail review preparation.
 
 ## Review and publish
 
 Run `okf review prepare --json`. It validates all work, binds the exact
-Candidate, generates its root and directory Navigation Indexes and returns one
-fixed review packet. Dispatch that complete packet
+Candidate, generates OpenGauss reference pages and model blocks plus the root
+and directory Navigation Indexes, and returns one fixed review packet. Dispatch
+that complete packet
 verbatim to a fresh, independent reviewer; do not copy its digest into separate
 prose. The producing context must not review its own work. The reviewer reads
 [references/review.md](references/review.md) and writes `work/review.json`.
@@ -263,12 +276,14 @@ incrementally or run `review complete`, status, Publication, or export commands.
 Run `okf review complete --json`. On `changes_requested`, use its complete
 `issues` array rather than the compact status summary. Group open issues by
 their named `page_ids` and include each issue's ID, claim and resolution
-verbatim in the corresponding writer follow-up; a generic "read the review"
-request is not a repair packet. Repair the named Plan, Composition or page
-files and prepare a new Candidate. Follow-up review verifies every prior issue
-and only regressions introduced or unmasked by those repairs; it does not
-restart repository-wide discovery. Structural `split`, `merge` and `move`
-changes belong in Composition.
+verbatim in the corresponding writer follow-up. Schema and Table IDs have no
+writer draft: route their classification or placement defects to the Plan or
+Composition owner, then regenerate them. A generic "read the review" request
+is not a repair packet. Repair the named Plan, Composition or page files and
+prepare a new Candidate. Follow-up review verifies every prior issue and only
+regressions introduced or unmasked by those repairs; it does not restart
+repository-wide discovery. Structural `split`, `merge` and `move` changes
+belong in Composition.
 
 After approval, `next_actions` returns `publication publish`. Run it, then
 verify:

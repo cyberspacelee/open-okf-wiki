@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Literal
 from urllib.parse import unquote, urlparse
 
-from _db import catalog_record, catalog_storage_key
+from _db import DbError, catalog_record, catalog_storage_key, load_catalog, load_index
 from _diagram import validate as validate_diagrams
 from _files import directory_digest
 from _frontmatter import parse_file, render
@@ -40,10 +40,12 @@ _TEMPLATE_NAMES = {
     "Overview": "overview.md",
     "Architecture": "architecture.md",
     "Domain": "domain.md",
+    "Concept": "concept.md",
     "Procedure": "procedure.md",
     "Flow": "flow.md",
     "Lifecycle": "lifecycle.md",
     "DataModel": "data-model.md",
+    "Schema": "schema.md",
     "Table": "table.md",
 }
 _GENERIC_PAGE_DIRECTORIES = {
@@ -53,6 +55,7 @@ _TABLE_SECTIONS = {
     ("en", "Overview"): "Task entry points",
     ("en", "Architecture"): "Failure and change propagation",
     ("en", "Domain"): "Invariants and rules",
+    ("en", "Concept"): "Invariants and rules",
     ("en", "Procedure"): "Rules and failure modes",
     ("en", "Flow"): "Alternatives and recovery",
     ("en", "Lifecycle"): "Transitions and guards",
@@ -60,6 +63,7 @@ _TABLE_SECTIONS = {
     ("zh", "Overview"): "任务入口",
     ("zh", "Architecture"): "故障与变更传播",
     ("zh", "Domain"): "不变量与规则",
+    ("zh", "Concept"): "不变量与规则",
     ("zh", "Procedure"): "规则与失败模式",
     ("zh", "Flow"): "替代路径与恢复",
     ("zh", "Lifecycle"): "转换与守卫条件",
@@ -224,21 +228,14 @@ def _catalog_record_valid(root: pathlib.Path, entry) -> bool:
         or storage_key != catalog_storage_key(str(entry.get("name", "")), content_hash)
     ):
         return False
-    capture = root / ".okf-wiki" / "catalogs" / storage_key / "catalog.json"
     try:
-        captured = json.loads(capture.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        manifest = load_index(root, storage_key)
+        load_catalog(root, storage_key)
+    except DbError:
         return False
-    if not isinstance(captured, dict):
+    if manifest.get("content_hash") != content_hash:
         return False
-    digest = hashlib.sha256(
-        json.dumps(
-            captured, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode()
-    ).hexdigest()
-    if digest != content_hash:
-        return False
-    return entry == catalog_record(captured, content_hash, storage_key)
+    return entry == catalog_record(manifest, content_hash, storage_key)
 
 
 def _check_range(
@@ -352,7 +349,16 @@ def _validate_scopes(
                 issue("error", "scope-source-invalid", str(path), scope.source)
             )
             continue
-        if source.kind in ("opengauss", "postgres"):
+        if source.kind == "opengauss":
+            if scope.role != "model":
+                issues.append(
+                    issue(
+                        "error",
+                        "scope-role-invalid",
+                        str(path),
+                        f"{scope.source}: OpenGauss scopes require role model",
+                    )
+                )
             catalog = next(
                 (entry for entry in state["catalogs"] if entry["name"] == scope.source),
                 None,
@@ -372,6 +378,15 @@ def _validate_scopes(
                     )
                 )
             continue
+        if scope.role == "model":
+            issues.append(
+                issue(
+                    "error",
+                    "scope-role-invalid",
+                    str(path),
+                    f"{scope.source}: role model is reserved for OpenGauss scopes",
+                )
+            )
         pin = _workspace.pin_dir(root, state["run_id"], scope.source)
         for scope_path in scope.paths:
             candidate = pin if scope_path == "." else pin / scope_path
@@ -420,18 +435,188 @@ def _validate_scopes(
 def _validate_knowledge_plan(
     root: pathlib.Path, state: dict, plan: KnowledgePlan, path: pathlib.Path
 ) -> list[Issue]:
-    return [
+    import _workspace
+
+    issues = [
         problem
         for unit in plan.units
         for problem in _validate_scopes(root, state, unit, path)
     ]
+    workspace = _workspace.load(root)
+    actual_sources = set(workspace.sources)
+    covered_sources = {area.source for area in plan.source_areas}
+    if covered_sources != actual_sources:
+        issues.append(
+            issue(
+                "error",
+                "source-area-coverage-invalid",
+                str(path),
+                f"source areas must cover every run source: missing={sorted(actual_sources - covered_sources)}, unknown={sorted(covered_sources - actual_sources)}",
+            )
+        )
+
+    for area in plan.source_areas:
+        source = workspace.sources.get(area.source)
+        if source is None:
+            continue
+        roots = {area.source: area.paths}
+        if source.kind == "opengauss":
+            catalog = next(
+                (entry for entry in state["catalogs"] if entry["name"] == area.source),
+                None,
+            )
+            allowed = {"."}
+            if catalog:
+                allowed.update(table["page_slug"] for table in catalog["tables"])
+                allowed.update(table["name"] for table in catalog["tables"])
+            for scope_path in sorted(set(area.paths) - allowed):
+                issues.append(
+                    issue(
+                        "error",
+                        "source-area-path-invalid",
+                        str(path),
+                        f"{area.source}/{scope_path}",
+                    )
+                )
+        else:
+            pin = _workspace.pin_dir(root, state["run_id"], area.source)
+            for scope_path in area.paths:
+                candidate = pin if scope_path == "." else pin / scope_path
+                if not candidate.exists():
+                    issues.append(
+                        issue(
+                            "error",
+                            "source-area-path-invalid",
+                            str(path),
+                            f"{area.source}/{scope_path}",
+                        )
+                    )
+        for resource in area.evidence_seeds:
+            catalog_locator = _catalog_locator(state, resource)
+            parsed = parse_resource(resource)
+            evidence_source = catalog_locator[0] if catalog_locator else parsed[0] if parsed else None
+            if evidence_source != area.source:
+                issues.append(
+                    issue("error", "evidence-outside-source-area", str(path), resource)
+                )
+            elif catalog_locator:
+                if not _catalog_in_scope(state, resource, roots):
+                    issues.append(
+                        issue("error", "evidence-outside-source-area", str(path), resource)
+                    )
+            elif parsed and not _path_in_scope(parsed[1], area.paths):
+                issues.append(
+                    issue("error", "evidence-outside-source-area", str(path), resource)
+                )
+
+    selected_tables = {
+        (catalog["name"], table["name"])
+        for catalog in state["catalogs"]
+        for table in catalog["tables"]
+    }
+    disposed_tables = {
+        (item.source, item.table) for item in plan.table_dispositions
+    }
+    if selected_tables != disposed_tables:
+        issues.append(
+            issue(
+                "error",
+                "table-disposition-coverage-invalid",
+                str(path),
+                f"catalog tables require exactly one disposition: missing={sorted(selected_tables - disposed_tables)}, unknown={sorted(disposed_tables - selected_tables)}",
+            )
+        )
+    for disposition in plan.table_dispositions:
+        if disposition.role == "unresolved":
+            issues.append(
+                issue(
+                    "error",
+                    "table-disposition-unresolved",
+                    str(path),
+                    f"{disposition.source}/{disposition.table}",
+                )
+            )
+
+    units = {unit.id: unit for unit in plan.units}
+    for concept in plan.concepts:
+        if concept.model_basis.basis != "code":
+            continue
+        model_unit = units[concept.model_unit_id]
+        roots = {scope.source: scope.paths for scope in model_unit.scopes}
+        for resource in concept.model_basis.structure_evidence:
+            locator = parse_resource(resource)
+            if (
+                locator is None
+                or locator[0] not in roots
+                or not _path_in_scope(locator[1], roots[locator[0]])
+            ):
+                issues.append(
+                    issue(
+                        "error",
+                        "model-evidence-outside-scope",
+                        str(path),
+                        f"{concept.id}: {resource}",
+                    )
+                )
+
+    evidence = []
+    for area in plan.source_areas:
+        evidence.extend(area.evidence_seeds)
+    for domain in plan.domains:
+        evidence.extend(domain.evidence)
+    for concept in plan.concepts:
+        evidence.extend(concept.owner_evidence)
+        evidence.extend(concept.behavior_seeds)
+        evidence.extend(concept.model_basis.structure_evidence)
+    for disposition in plan.table_dispositions:
+        evidence.extend(disposition.evidence)
+    for relationship in plan.relationships:
+        evidence.extend(relationship.evidence)
+    for gap in plan.gaps:
+        evidence.extend(gap.evidence)
+    for resource in sorted(set(evidence)):
+        if _catalog_locator(state, resource) is not None:
+            continue
+        resolved = _resolve_resource(root, state, resource)
+        if resolved is None:
+            issues.append(issue("error", "evidence-unresolved", str(path), resource))
+            continue
+        issues.extend(_check_range(*resolved, resource))
+    return issues
 
 
 def _validate_composition(
     plan: KnowledgePlan, composition: CompositionMap, path: pathlib.Path
 ) -> list[Issue]:
     issues = []
+    root_paths = [root.path.rstrip("/") for root in composition.reference_roots]
+    for reference_root in root_paths:
+        conflicts = [
+            page.path
+            for page in composition.pages
+            if page.path.startswith(reference_root + "/")
+        ] + [
+            other
+            for other in root_paths
+            if other != reference_root
+            and (
+                other.startswith(reference_root + "/")
+                or reference_root.startswith(other + "/")
+            )
+        ]
+        if conflicts:
+            issues.append(
+                issue(
+                    "error",
+                    "reference-root-overlap",
+                    str(path),
+                    f"{reference_root}: conflicts with {sorted(set(conflicts))}",
+                )
+            )
     units = {unit.id: unit for unit in plan.units}
+    pages_by_unit = {
+        unit_id: page for page in composition.pages for unit_id in page.units
+    }
     for page in composition.pages:
         if pathlib.PurePosixPath(page.path).name in {"index.md", "log.md"}:
             issues.append(issue("error", "reserved-page", str(path), page.path))
@@ -475,6 +660,37 @@ def _validate_composition(
                         f"{page.id}/{diagram.id}: {sorted(unknown)}",
                     )
                 )
+        modeled = [
+            concept
+            for concept in plan.concepts
+            if concept.model_unit_id in page.units
+        ]
+        if (
+            page.type == "DataModel"
+            and any(concept.model_basis.basis == "opengauss" for concept in modeled)
+            and len(page.diagrams) == 4
+        ):
+            issues.append(
+                issue(
+                    "error",
+                    "generated-diagram-capacity-exceeded",
+                    str(path),
+                    f"{page.id}: reserve one of four diagram slots for the generated physical ER",
+                )
+            )
+        if (
+            page.type == "DataModel"
+            and any(concept.model_basis.basis == "code" for concept in modeled)
+            and not any(diagram.kind == "er" for diagram in page.diagrams)
+        ):
+            issues.append(
+                issue(
+                    "error",
+                    "code-data-model-diagram-required",
+                    str(path),
+                    f"{page.id}: code-derived DataModel pages require an authored ER diagram",
+                )
+            )
     active_units = {unit.id for unit in plan.units}
     mapped = [unit for page in composition.pages for unit in page.units]
     if set(mapped) != active_units or len(mapped) != len(set(mapped)):
@@ -484,6 +700,52 @@ def _validate_composition(
                 "composition-coverage-invalid",
                 str(path),
                 "knowledge units must be assigned to exactly one page",
+            )
+        )
+    for domain in plan.domains:
+        owner = pages_by_unit.get(domain.owner_unit_id)
+        if owner is not None and owner.type != "Domain":
+            issues.append(
+                issue(
+                    "error",
+                    "domain-definition-owner-invalid",
+                    str(path),
+                    f"{domain.id}: owner unit must map to a Domain page",
+                )
+            )
+    for concept in plan.concepts:
+        owner = pages_by_unit.get(concept.owner_unit_id)
+        if owner is not None and owner.type not in {"Domain", "Concept"}:
+            issues.append(
+                issue(
+                    "error",
+                    "concept-definition-owner-invalid",
+                    str(path),
+                    f"{concept.id}: owner unit must map to a Domain or Concept page",
+                )
+            )
+        if concept.model_unit_id is not None:
+            model = pages_by_unit.get(concept.model_unit_id)
+            if model is not None and model.type != "DataModel":
+                issues.append(
+                    issue(
+                        "error",
+                        "concept-model-owner-invalid",
+                        str(path),
+                        f"{concept.id}: model unit must map to a DataModel page",
+                    )
+                )
+    catalog_sources = {
+        disposition.source for disposition in plan.table_dispositions
+    }
+    reference_sources = {root.source for root in composition.reference_roots}
+    if reference_sources != catalog_sources:
+        issues.append(
+            issue(
+                "error",
+                "reference-root-coverage-invalid",
+                str(path),
+                f"reference roots must cover catalog sources: missing={sorted(catalog_sources - reference_sources)}, unknown={sorted(reference_sources - catalog_sources)}",
             )
         )
     return issues
@@ -508,6 +770,25 @@ def page_spec(plan: KnowledgePlan, page) -> dict:
         "scopes": scopes,
         "owner": next(iter(sources)) if len(sources) == 1 else "workspace",
     }
+
+
+def generated_page_spec(
+    root: pathlib.Path, state: dict, plan: KnowledgePlan, page
+) -> dict:
+    spec = page_spec(plan, page)
+    if spec["type"] == "DataModel":
+        import _reference
+
+        meta, _body = _reference.enrich_data_model(
+            root,
+            state,
+            plan,
+            page,
+            {"sources": [], "diagrams": spec["diagrams"]},
+            "<!-- okf-generated:model -->",
+        )
+        spec["diagrams"] = meta["diagrams"]
+    return spec
 
 
 def _validate_page_draft(
@@ -762,7 +1043,14 @@ def validate_drafts(
         checked = pathlib.Path(temporary)
         for page_id in sorted(set(expected) & set(present)):
             spec = page_spec(plan, expected[page_id])
-            rendered = render_generated_page(root, state, spec, present[page_id])
+            rendered = render_generated_page(
+                root,
+                state,
+                spec,
+                present[page_id],
+                plan=plan,
+                page=expected[page_id],
+            )
             if rendered is None:
                 parsed = parse_file(present[page_id])
                 messages = parsed.errors
@@ -782,7 +1070,12 @@ def validate_drafts(
             path.write_text(rendered, encoding="utf-8", newline="\n")
             issues.extend(
                 dataclasses.replace(item, path=str(present[page_id]))
-                for item in _validate_page_draft(root, state, spec, path)
+                for item in _validate_page_draft(
+                    root,
+                    state,
+                    generated_page_spec(root, state, plan, expected[page_id]),
+                    path,
+                )
             )
     return issues
 
@@ -840,7 +1133,13 @@ def validate_review(
 
 
 def render_generated_page(
-    root: pathlib.Path, state: dict, spec: dict, path: pathlib.Path
+    root: pathlib.Path,
+    state: dict,
+    spec: dict,
+    path: pathlib.Path,
+    *,
+    plan: KnowledgePlan | None = None,
+    page=None,
 ) -> str | None:
     import _workspace
 
@@ -889,7 +1188,14 @@ def render_generated_page(
                 source.update({key: value for key, value in signals.items() if value})
         enriched.append(source)
     meta["sources"] = enriched
-    return render(meta, parsed.body)
+    body = parsed.body
+    if spec["type"] == "DataModel":
+        if plan is None or page is None:
+            raise ValueError("DataModel rendering requires its Plan and Composition page")
+        import _reference
+
+        meta, body = _reference.enrich_data_model(root, state, plan, page, meta, body)
+    return render(meta, body)
 
 
 def validate_page(
@@ -1238,30 +1544,51 @@ def validate_candidate(
             )
         )
     page_set = {path.relative_to(candidate).as_posix() for path in pages}
-    page_by_path = (
-        {page.path: page for page in composition.pages}
-        if composition is not None
-        else {}
-    )
+    page_by_path = {}
+    if composition is not None:
+        page_by_path = {page.path: page for page in composition.pages}
+        if plan is not None:
+            try:
+                import _reference
+
+                generated = _reference.derive_pages(root, state, plan, composition)
+            except (DbError, ValueError) as exc:
+                issues.append(
+                    issue("error", "reference-generation-invalid", str(candidate), str(exc))
+                )
+                generated = []
+            for page in generated:
+                if page["path"] in page_by_path:
+                    issues.append(
+                        issue(
+                            "error",
+                            "generated-page-path-conflict",
+                            str(candidate),
+                            page["path"],
+                        )
+                    )
+                else:
+                    page_by_path[page["path"]] = page
     if composition is not None and page_set != set(page_by_path):
         issues.append(
             issue(
                 "error",
                 "page-set-mismatch",
                 str(candidate),
-                "candidate pages must exactly match the Composition Map",
+                "candidate pages must exactly match authored and derived pages",
             )
         )
     for path in pages:
         rel = path.relative_to(candidate).as_posix()
         page = page_by_path.get(rel)
-        expected = (
-            page_spec(plan, page)
-            if plan is not None and page is not None
-            else page.model_dump(mode="json")
-            if page is not None
-            else None
-        )
+        expected = None
+        if page is not None:
+            if isinstance(page, dict):
+                expected = {**page, "owner": "workspace"}
+            elif plan is not None:
+                expected = generated_page_spec(root, state, plan, page)
+            else:
+                expected = page.model_dump(mode="json")
         issues.extend(
             validate_page(
                 root,
@@ -1300,7 +1627,9 @@ def _link_issues(
             else:
                 rel_target = pathlib.PurePosixPath(rel).parent / clean
             normalized = pathlib.PurePosixPath(rel_target)
-            if ".." in normalized.parts or normalized.as_posix() not in allowed:
+            if normalized.as_posix() == rel:
+                issues.append(issue("error", "self-link", str(path), target, line))
+            elif ".." in normalized.parts or normalized.as_posix() not in allowed:
                 issues.append(issue("error", "broken-link", str(path), target, line))
     return issues
 

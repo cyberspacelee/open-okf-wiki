@@ -2,6 +2,7 @@ import hashlib
 import json
 import pathlib
 import re
+from contextlib import contextmanager
 from urllib.parse import quote, urlsplit
 
 from _files import atomic_json
@@ -11,8 +12,23 @@ class DbError(Exception):
     pass
 
 
-_URL_SCHEMES = ("postgres://", "postgresql://", "opengauss://")
-_PSYCOPG_PREFIX = "opengauss://"
+_URL_PREFIX = "opengauss://"
+_CONSTRAINT_TYPES = {
+    "p": "primary_key",
+    "u": "unique",
+    "f": "foreign_key",
+    "c": "check",
+}
+_FK_ACTIONS = {
+    "a": "no_action",
+    "r": "restrict",
+    "c": "cascade",
+    "n": "set_null",
+    "d": "set_default",
+}
+_FK_MATCHES = {"f": "full", "p": "partial", "u": "unspecified"}
+_RELATION_KINDS = {"r": "table", "p": "partitioned_table"}
+_PERSISTENCE = {"p": "permanent", "u": "unlogged", "g": "temporary"}
 
 
 def load_env(root: pathlib.Path) -> dict[str, str]:
@@ -24,9 +40,7 @@ def load_env(root: pathlib.Path) -> dict[str, str]:
     with env_file.open(encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
+            if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
             key = key.strip()
@@ -34,7 +48,6 @@ def load_env(root: pathlib.Path) -> dict[str, str]:
             if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
                 value = value[1:-1]
             result[key] = value
-
     return result
 
 
@@ -54,16 +67,16 @@ def resolve_url(root: pathlib.Path, env_ref: str) -> str:
             raise DbError(f"Variable '{var_name}' not found")
         url = env_dict[var_name]
 
-    if not url.startswith(_URL_SCHEMES):
-        raise DbError("URL must start with postgres://, postgresql:// or opengauss://")
-
+    parsed = urlsplit(url)
+    if parsed.scheme != "opengauss" or not parsed.hostname or not parsed.path.strip("/"):
+        raise DbError("URL must be an opengauss:// URL with host and database")
     return url
 
 
 def _psycopg_url(url: str) -> str:
-    if url.startswith(_PSYCOPG_PREFIX):
-        return "postgresql://" + url[len(_PSYCOPG_PREFIX) :]
-    return url
+    if not url.startswith(_URL_PREFIX):
+        raise DbError("URL must start with opengauss://")
+    return "postgresql://" + url[len(_URL_PREFIX) :]
 
 
 def _connect(url: str):
@@ -79,148 +92,378 @@ def _connect(url: str):
             options="-c default_transaction_read_only=on -c statement_timeout=10000",
         )
     except Exception:  # noqa: BLE001 - database errors may contain credentials
-        db_name = _extract_dbname(url)
-        raise DbError(f"Failed to connect to database '{db_name}'")
+        raise DbError(f"Failed to connect to OpenGauss database '{_extract_dbname(url)}'")
 
 
-def tables(url: str, schema: str = "public") -> list[dict]:
+@contextmanager
+def _snapshot(url: str):
     conn = _connect(url)
     try:
         with conn.cursor() as cur:
-            cur.execute("SET TRANSACTION READ ONLY")
-            cur.execute(
-                """
-                SELECT c.relname, obj_description(c.oid, 'pg_class')
-                FROM pg_catalog.pg_class c
-                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = %s AND c.relkind IN ('r', 'p')
-                ORDER BY c.relname
-                """,
-                (schema,),
-            )
-            rows = cur.fetchall()
-    except Exception:  # noqa: BLE001 - keep query details and DSNs out of errors
-        raise DbError("Catalog query failed")
-    finally:
-        conn.close()
-
-    result = []
-    for name, comment in rows:
-        result.append({"name": name, "comment": comment or ""})
-
-    return result
-
-
-def describe(url: str, table: str, schema: str = "public") -> dict:
-    conn = _connect(url)
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SET TRANSACTION READ ONLY")
-
+            cur.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             cur.execute(
                 """
                 SELECT
-                  c.column_name,
-                  c.data_type,
-                  c.is_nullable,
-                  c.column_default,
-                  d.description
-                FROM information_schema.columns c
-                JOIN pg_catalog.pg_class pc
-                  ON pc.relname = c.table_name
-                JOIN pg_catalog.pg_namespace pn
-                  ON pn.oid = pc.relnamespace AND pn.nspname = c.table_schema
-                LEFT JOIN pg_catalog.pg_description d
-                  ON d.objoid = pc.oid AND d.objsubid = c.ordinal_position
-                WHERE c.table_schema = %s AND c.table_name = %s
-                  AND pc.relkind IN ('r', 'p')
-                ORDER BY c.ordinal_position
-                """,
-                (schema, table),
-            )
-            col_rows = cur.fetchall()
-
-            if not col_rows:
-                db_name = _extract_dbname(url)
-                raise DbError(
-                    f"Table '{table}' not found in schema '{schema}' of database '{db_name}'"
-                )
-
-            columns = []
-            for col_name, data_type, is_nullable, col_default, comment in col_rows:
-                columns.append(
-                    {
-                        "name": col_name,
-                        "type": data_type,
-                        "nullable": is_nullable == "YES",
-                        "default": col_default,
-                        "comment": comment or "",
-                    }
-                )
-
-            cur.execute(
+                  opengauss_version(),
+                  working_version_num(),
+                  gs_deployment(),
+                  version(),
+                  current_database()
                 """
-                SELECT obj_description(c.oid, 'pg_class')
-                FROM pg_catalog.pg_class c
-                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = %s AND c.relname = %s AND c.relkind IN ('r', 'p')
-                """,
-                (schema, table),
             )
-            comment_rows = cur.fetchall()
-            table_comment = comment_rows[0][0] if comment_rows else ""
-
-            cur.execute(
-                """
-                SELECT constraint_name, column_name
-                FROM information_schema.key_column_usage
-                WHERE table_schema = %s AND table_name = %s
-                  AND constraint_name IN (
-                    SELECT constraint_name FROM information_schema.table_constraints
-                    WHERE table_schema = %s AND table_name = %s AND constraint_type = 'PRIMARY KEY'
-                  )
-                ORDER BY ordinal_position
-                """,
-                (schema, table, schema, table),
-            )
-            pk_rows = cur.fetchall()
-            primary_key = [row[1] for row in pk_rows]
-
-            cur.execute(
-                """
-                SELECT kcu.column_name, ccu.table_name, ccu.column_name
-                FROM information_schema.key_column_usage kcu
-                JOIN information_schema.constraint_column_usage ccu
-                  ON kcu.constraint_name = ccu.constraint_name
-                WHERE kcu.table_schema = %s AND kcu.table_name = %s
-                  AND kcu.constraint_name IN (
-                    SELECT constraint_name FROM information_schema.table_constraints
-                    WHERE table_schema = %s AND table_name = %s AND constraint_type = 'FOREIGN KEY'
-                  )
-                """,
-                (schema, table, schema, table),
-            )
-            fk_rows = cur.fetchall()
-            foreign_keys = []
-            for col, ref_table, ref_col in fk_rows:
-                foreign_keys.append(
-                    {"columns": [col], "ref_table": ref_table, "ref_columns": [ref_col]}
-                )
-
+            row = cur.fetchone()
+            if not row or not isinstance(row[0], str) or not row[0].strip():
+                raise DbError("Connected server did not identify itself as OpenGauss")
+            fingerprint = {
+                "opengauss_version": row[0],
+                "working_version_num": row[1],
+                "deployment": row[2],
+                "server_version": row[3],
+                "database": row[4],
+            }
+        yield conn, fingerprint
     except DbError:
         raise
     except Exception:  # noqa: BLE001 - keep query details and DSNs out of errors
-        raise DbError("Catalog query failed")
+        raise DbError("OpenGauss catalog query failed")
     finally:
         conn.close()
 
+
+def _table_rows(conn, schema: str) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              c.oid,
+              c.relname,
+              obj_description(c.oid, 'pg_class'),
+              c.relkind,
+              c.relpersistence
+            FROM pg_catalog.pg_class c
+            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s AND c.relkind IN ('r', 'p')
+            ORDER BY c.relname
+            """,
+            (schema,),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "oid": oid,
+            "name": name,
+            "comment": comment or "",
+            "relation_kind": _RELATION_KINDS.get(kind, kind),
+            "persistence": _PERSISTENCE.get(persistence, persistence),
+        }
+        for oid, name, comment, kind, persistence in rows
+    ]
+
+
+def tables(url: str, schema: str = "public") -> list[dict]:
+    with _snapshot(url) as (conn, _fingerprint):
+        return [
+            {key: value for key, value in row.items() if key != "oid"}
+            for row in _table_rows(conn, schema)
+        ]
+
+
+def _column_rows(conn, relation_oid: int) -> tuple[list[dict], dict[int, str]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              a.attnum,
+              a.attname,
+              pg_catalog.format_type(a.atttypid, a.atttypmod),
+              NOT a.attnotnull,
+              pg_catalog.pg_get_expr(d.adbin, d.adrelid),
+              col_description(a.attrelid, a.attnum)
+            FROM pg_catalog.pg_attribute a
+            LEFT JOIN pg_catalog.pg_attrdef d
+              ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+            WHERE a.attrelid = %s AND a.attnum > 0 AND NOT a.attisdropped
+            ORDER BY a.attnum
+            """,
+            (relation_oid,),
+        )
+        rows = cur.fetchall()
+    names = {attnum: name for attnum, name, *_ in rows}
+    columns = [
+        {
+            "position": attnum,
+            "name": name,
+            "type": data_type,
+            "nullable": nullable,
+            "default": default,
+            "comment": comment or "",
+        }
+        for attnum, name, data_type, nullable, default, comment in rows
+    ]
+    return columns, names
+
+
+def _constraint_rows(conn, relation_oid: int, column_names: dict[int, str]) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              con.conname,
+              con.contype,
+              con.conkey,
+              ref_ns.nspname,
+              ref.relname,
+              con.confrelid,
+              con.confkey,
+              con.confmatchtype,
+              con.confupdtype,
+              con.confdeltype,
+              con.condeferrable,
+              con.condeferred,
+              con.convalidated,
+              con.consoft,
+              con.conopt,
+              con.condisable,
+              pg_catalog.pg_get_constraintdef(con.oid, true)
+            FROM pg_catalog.pg_constraint con
+            LEFT JOIN pg_catalog.pg_class ref ON ref.oid = con.confrelid
+            LEFT JOIN pg_catalog.pg_namespace ref_ns ON ref_ns.oid = ref.relnamespace
+            WHERE con.conrelid = %s AND con.contype IN ('p', 'u', 'f', 'c')
+            ORDER BY con.contype, con.conname
+            """,
+            (relation_oid,),
+        )
+        rows = cur.fetchall()
+
+    referenced_oids = sorted({row[5] for row in rows if row[5]})
+    referenced_columns: dict[int, dict[int, str]] = {}
+    if referenced_oids:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT a.attrelid, a.attnum, a.attname
+                FROM pg_catalog.pg_attribute a
+                WHERE a.attrelid = ANY(%s) AND a.attnum > 0 AND NOT a.attisdropped
+                ORDER BY a.attrelid, a.attnum
+                """,
+                (referenced_oids,),
+            )
+            for ref_oid, attnum, name in cur.fetchall():
+                referenced_columns.setdefault(ref_oid, {})[attnum] = name
+
+    constraints = []
+    for row in rows:
+        (
+            name,
+            kind,
+            keys,
+            ref_schema,
+            ref_table,
+            ref_oid,
+            ref_keys,
+            match_type,
+            update_action,
+            delete_action,
+            deferrable,
+            initially_deferred,
+            validated,
+            soft,
+            optimized,
+            disabled,
+            definition,
+        ) = row
+        item = {
+            "name": name,
+            "type": _CONSTRAINT_TYPES[kind],
+            "columns": [column_names[key] for key in (keys or []) if key in column_names],
+            "definition": definition,
+            "deferrable": bool(deferrable),
+            "initially_deferred": bool(initially_deferred),
+            "validated": bool(validated),
+            "soft": bool(soft),
+            "optimized": bool(optimized),
+            "disabled": bool(disabled),
+        }
+        if kind == "f":
+            ref_names = referenced_columns.get(ref_oid, {})
+            item.update(
+                ref_schema=ref_schema,
+                ref_table=ref_table,
+                ref_columns=[ref_names[key] for key in (ref_keys or []) if key in ref_names],
+                match=_FK_MATCHES.get(match_type, match_type),
+                on_update=_FK_ACTIONS.get(update_action, update_action),
+                on_delete=_FK_ACTIONS.get(delete_action, delete_action),
+            )
+        constraints.append(item)
+    return constraints
+
+
+def _index_rows(conn, relation_oid: int) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              index_class.relname,
+              idx.indisunique,
+              idx.indisprimary,
+              idx.indisvalid,
+              idx.indisusable,
+              idx.indisready,
+              access_method.amname,
+              ARRAY(
+                SELECT pg_catalog.pg_get_indexdef(idx.indexrelid, key_no, true)
+                FROM generate_series(1, idx.indnkeyatts) key_no
+                ORDER BY key_no
+              ),
+              ARRAY(
+                SELECT pg_catalog.pg_get_indexdef(idx.indexrelid, key_no, true)
+                FROM generate_series(idx.indnkeyatts + 1, idx.indnatts) key_no
+                ORDER BY key_no
+              ),
+              pg_catalog.pg_get_expr(idx.indpred, idx.indrelid),
+              tablespace.spcname,
+              pg_catalog.pg_get_indexdef(idx.indexrelid)
+            FROM pg_catalog.pg_index idx
+            JOIN pg_catalog.pg_class index_class ON index_class.oid = idx.indexrelid
+            JOIN pg_catalog.pg_am access_method ON access_method.oid = index_class.relam
+            LEFT JOIN pg_catalog.pg_tablespace tablespace
+              ON tablespace.oid = index_class.reltablespace
+            WHERE idx.indrelid = %s
+            ORDER BY index_class.relname
+            """,
+            (relation_oid,),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "name": name,
+            "unique": bool(unique),
+            "primary": bool(primary),
+            "valid": bool(valid),
+            "usable": bool(usable),
+            "ready": bool(ready),
+            "method": method,
+            "keys": list(keys or []),
+            "include": list(include or []),
+            "predicate": predicate,
+            "tablespace": tablespace,
+            "definition": definition,
+        }
+        for (
+            name,
+            unique,
+            primary,
+            valid,
+            usable,
+            ready,
+            method,
+            keys,
+            include,
+            predicate,
+            tablespace,
+            definition,
+        ) in rows
+    ]
+
+
+def _partition_rows(conn, relation_oid: int) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              p.relname,
+              p.parttype,
+              p.partstrategy,
+              p.boundaries,
+              tablespace.spcname
+            FROM pg_catalog.pg_partition p
+            LEFT JOIN pg_catalog.pg_tablespace tablespace
+              ON tablespace.oid = p.reltablespace
+            WHERE p.parentid = %s
+            ORDER BY p.relname
+            """,
+            (relation_oid,),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "name": name,
+            "type": partition_type,
+            "strategy": strategy,
+            "boundaries": boundaries,
+            "tablespace": tablespace,
+        }
+        for name, partition_type, strategy, boundaries, tablespace in rows
+    ]
+
+
+def _describe_row(conn, schema: str, relation: dict) -> dict:
+    columns, column_names = _column_rows(conn, relation["oid"])
+    constraints = _constraint_rows(conn, relation["oid"], column_names)
+    primary = next(
+        (item["columns"] for item in constraints if item["type"] == "primary_key"),
+        [],
+    )
+    foreign_keys = [
+        {
+            key: item[key]
+            for key in (
+                "name",
+                "columns",
+                "ref_schema",
+                "ref_table",
+                "ref_columns",
+                "match",
+                "on_update",
+                "on_delete",
+                "deferrable",
+                "initially_deferred",
+                "validated",
+                "soft",
+                "optimized",
+                "disabled",
+            )
+        }
+        for item in constraints
+        if item["type"] == "foreign_key"
+    ]
     return {
-        "name": table,
-        "comment": table_comment or "",
+        "schema": schema,
+        "name": relation["name"],
+        "comment": relation["comment"],
+        "relation_kind": relation["relation_kind"],
+        "persistence": relation["persistence"],
         "columns": columns,
-        "primary_key": primary_key,
+        "constraints": constraints,
+        "primary_key": primary,
         "foreign_keys": foreign_keys,
+        "indexes": _index_rows(conn, relation["oid"]),
+        "partitions": _partition_rows(conn, relation["oid"]),
     }
+
+
+def describe(url: str, table: str, schema: str = "public") -> dict:
+    with _snapshot(url) as (conn, _fingerprint):
+        relation = next(
+            (item for item in _table_rows(conn, schema) if item["name"] == table),
+            None,
+        )
+        if relation is None:
+            raise DbError(
+                f"Table '{table}' not found in schema '{schema}' of database "
+                f"'{_extract_dbname(url)}'"
+            )
+        return _describe_row(conn, schema, relation)
+
+
+def _inspect_catalog(url: str, schema: str, selected: list[str]) -> tuple[dict, list[dict]]:
+    with _snapshot(url) as (conn, fingerprint):
+        available = _table_rows(conn, schema)
+        by_name = {item["name"]: item for item in available}
+        missing = sorted(set(selected) - set(by_name))
+        if missing:
+            raise DbError(f"Configured tables not found in schema '{schema}': {missing}")
+        return fingerprint, [_describe_row(conn, schema, by_name[name]) for name in selected]
 
 
 def _extract_dbname(url: str) -> str:
@@ -235,6 +478,13 @@ def _canonical_database(url: str, schema: str) -> str:
     return f"opengauss://{host}{port}/{database}/{quote(schema, safe='')}"
 
 
+def _hash_json(value: dict) -> str:
+    raw = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    ).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
 def catalog_storage_key(source_name: str, content_hash: str) -> str:
     slug = re.sub(r"[^a-z0-9-]+", "-", source_name.lower()).strip("-")
     return f"{slug[:24].rstrip('-') or 'catalog'}-{content_hash[:16]}"
@@ -242,35 +492,6 @@ def catalog_storage_key(source_name: str, content_hash: str) -> str:
 
 def catalog_dir(root: pathlib.Path, storage_key: str) -> pathlib.Path:
     return root / ".okf-wiki" / "catalogs" / storage_key
-
-
-def catalog_index_path(root: pathlib.Path, storage_key: str) -> pathlib.Path:
-    return catalog_dir(root, storage_key) / "index.json"
-
-
-def catalog_table_path(
-    root: pathlib.Path, storage_key: str, page_slug: str
-) -> pathlib.Path:
-    return catalog_dir(root, storage_key) / "tables" / f"{page_slug}.json"
-
-
-def index_from_payload(payload: dict) -> dict:
-    return {
-        "name": payload["name"],
-        "schema": payload["schema"],
-        "resource": payload["resource"],
-        "tables": [
-            {
-                "name": table["name"],
-                "page_slug": table["page_slug"],
-                "resource": table["resource"],
-                "comment": table.get("comment") or "",
-                "primary_key": table.get("primary_key") or [],
-                "foreign_keys": table.get("foreign_keys") or [],
-            }
-            for table in payload["tables"]
-        ],
-    }
 
 
 def catalog_record(payload: dict, content_hash: str, storage_key: str) -> dict:
@@ -283,56 +504,84 @@ def catalog_record(payload: dict, content_hash: str, storage_key: str) -> dict:
         "storage_key": storage_key,
         "tables": [
             {
-                "name": table["name"],
-                "page_slug": table["page_slug"],
-                "resource": table["resource"],
+                key: table[key]
+                for key in ("name", "page_slug", "resource", "content_hash")
             }
             for table in payload["tables"]
         ],
     }
 
 
-def load_catalog(root: pathlib.Path, storage_key: str) -> dict:
-    path = catalog_dir(root, storage_key) / "catalog.json"
+def _read_json(path: pathlib.Path, description: str) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise DbError(f"captured catalog {storage_key} is missing or invalid") from exc
+        raise DbError(f"{description} is missing or invalid") from exc
+    if not isinstance(value, dict):
+        raise DbError(f"{description} is missing or invalid")
+    return value
+
+
+def _load_manifest(root: pathlib.Path, storage_key: str) -> dict:
+    manifest = _read_json(
+        catalog_dir(root, storage_key) / "catalog.json",
+        f"captured catalog {storage_key}",
+    )
+    content_hash = manifest.get("content_hash")
+    body = {key: value for key, value in manifest.items() if key != "content_hash"}
+    if not isinstance(content_hash, str) or _hash_json(body) != content_hash:
+        raise DbError(f"captured catalog {storage_key} failed integrity check")
+    return manifest
+
+
+def load_catalog(root: pathlib.Path, storage_key: str) -> dict:
+    manifest = _load_manifest(root, storage_key)
+    payload = {key: value for key, value in manifest.items() if key != "tables"}
+    payload["tables"] = []
+    for item in manifest["tables"]:
+        value = _read_json(
+            catalog_dir(root, storage_key) / item["path"],
+            f"captured table {item['name']}",
+        )
+        if _hash_json(value) != item.get("content_hash"):
+            raise DbError(f"captured table {item['name']} failed integrity check")
+        payload["tables"].append(value)
+    return payload
 
 
 def load_index(root: pathlib.Path, storage_key: str) -> dict:
-    path = catalog_index_path(root, storage_key)
-    if path.is_file():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            pass
-    return index_from_payload(load_catalog(root, storage_key))
+    return _load_manifest(root, storage_key)
 
 
 def load_table(root: pathlib.Path, storage_key: str, page_slug: str) -> dict:
-    path = catalog_table_path(root, storage_key, page_slug)
-    if path.is_file():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            pass
-    payload = load_catalog(root, storage_key)
-    for table in payload.get("tables", []):
-        if table.get("page_slug") == page_slug or table.get("name") == page_slug:
-            return table
-    raise DbError(f"Table '{page_slug}' not found in captured catalog")
+    manifest = _load_manifest(root, storage_key)
+    item = next(
+        (
+            table
+            for table in manifest.get("tables", [])
+            if table.get("page_slug") == page_slug or table.get("name") == page_slug
+        ),
+        None,
+    )
+    if item is None:
+        raise DbError(f"Table '{page_slug}' not found in captured catalog")
+    value = _read_json(
+        catalog_dir(root, storage_key) / item["path"],
+        f"captured table {item['name']}",
+    )
+    if _hash_json(value) != item.get("content_hash"):
+        raise DbError(f"captured table {item['name']} failed integrity check")
+    return value
 
 
 def show_captured(
     root: pathlib.Path, catalogs: list[dict], source: str | None = None
 ) -> list[dict]:
-    result = []
-    for record in catalogs:
-        if source and record.get("name") != source:
-            continue
-        result.append(load_index(root, record["storage_key"]))
-    return result
+    return [
+        load_index(root, record["storage_key"])
+        for record in catalogs
+        if not source or record.get("name") == source
+    ]
 
 
 def describe_captured(
@@ -347,9 +596,7 @@ def describe_captured(
             continue
         for item in record.get("tables", []):
             if item.get("name") == table or item.get("page_slug") == table:
-                matches.append(
-                    load_table(root, record["storage_key"], item["page_slug"])
-                )
+                matches.append(load_table(root, record["storage_key"], item["page_slug"]))
     if not matches:
         raise DbError(f"Table '{table}' not found in captured catalog")
     if len(matches) > 1:
@@ -357,62 +604,55 @@ def describe_captured(
     return matches[0]
 
 
-def capture_catalog(
-    root: pathlib.Path, source, *, tables=tables, describe=describe
-) -> dict:
+def _page_slug(table: str) -> str:
+    safe = re.sub(r"[^a-z0-9_-]+", "-", table.lower()).strip("-") or "table"
+    if safe != table:
+        safe += "-" + hashlib.sha256(table.encode()).hexdigest()[:8]
+    return safe
+
+
+def capture_catalog(root: pathlib.Path, source, *, inspect=_inspect_catalog) -> dict:
     url = resolve_url(root, source.url_env or "DATABASE_URL")
     schema = source.schema or "public"
-    available = tables(url, schema)
-    names = {item["name"] for item in available}
-    comments = {item["name"]: item.get("comment") or "" for item in available}
-    selected = list(source.tables) if source.tables else []
-    missing = sorted(set(selected) - names)
-    if missing:
-        raise DbError(f"Configured tables not found in schema '{schema}': {missing}")
-    described = []
-    for table in selected:
-        item = describe(url, table, schema)
-        if not item.get("comment"):
-            item["comment"] = comments.get(table, "")
-        safe = re.sub(r"[^a-z0-9_-]+", "-", table.lower()).strip("-") or "table"
-        if safe != table:
-            safe += "-" + hashlib.sha256(table.encode()).hexdigest()[:8]
-        item["page_slug"] = safe
-        described.append(item)
+    selected = list(source.tables)
+    fingerprint, described = inspect(url, schema, selected)
     schema_resource = _canonical_database(url, schema)
     for item in described:
+        item["page_slug"] = _page_slug(item["name"])
         item["resource"] = f"{schema_resource}/{quote(item['name'], safe='')}"
-    payload = {
+
+    table_entries = []
+    for item in described:
+        table_entries.append(
+            {
+                "name": item["name"],
+                "page_slug": item["page_slug"],
+                "resource": item["resource"],
+                "path": f"tables/{item['page_slug']}.json",
+                "comment": item.get("comment") or "",
+                "relation_kind": item.get("relation_kind"),
+                "persistence": item.get("persistence"),
+                "content_hash": _hash_json(item),
+            }
+        )
+    manifest_body = {
         "name": source.name,
         "schema": schema,
         "resource": schema_resource,
-        "tables": described,
+        "server": fingerprint,
+        "tables": table_entries,
     }
-    raw = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode()
-    content_hash = hashlib.sha256(raw).hexdigest()
+    content_hash = _hash_json(manifest_body)
+    manifest = {**manifest_body, "content_hash": content_hash}
     storage_key = catalog_storage_key(source.name, content_hash)
     directory = catalog_dir(root, storage_key)
     capture = directory / "catalog.json"
     if capture.is_file():
-        try:
-            existing = json.loads(capture.read_text(encoding="utf-8"))
-            existing_hash = hashlib.sha256(
-                json.dumps(
-                    existing,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode()
-            ).hexdigest()
-        except (OSError, json.JSONDecodeError):
-            existing_hash = None
-        if existing_hash != content_hash:
+        existing = _load_manifest(root, storage_key)
+        if existing.get("content_hash") != content_hash:
             raise DbError(f"catalog storage key collision: {storage_key}")
     directory.mkdir(parents=True, exist_ok=True)
-    atomic_json(directory / "catalog.json", payload)
-    atomic_json(catalog_index_path(root, storage_key), index_from_payload(payload))
-    for item in described:
-        atomic_json(catalog_table_path(root, storage_key, item["page_slug"]), item)
-    return catalog_record(payload, content_hash, storage_key)
+    for entry, item in zip(table_entries, described, strict=True):
+        atomic_json(directory / entry["path"], item)
+    atomic_json(capture, manifest)
+    return catalog_record(manifest, content_hash, storage_key)

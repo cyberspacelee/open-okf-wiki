@@ -2,11 +2,21 @@
 
 Review the exact Plan and Composition named by the `review composition` packet
 in the same independent context that approved the Plan. Read the approved Plan
-review, but do not reopen Source evidence or write pages. The packet's
+review and read-only Reference Map named by the packet, but do not reopen Source
+evidence or write pages. The packet's
 `artifact` is this report's output path.
 
 Apply the Task Routing Test before page fan-out:
 
+- every OpenGauss Source has exactly one collision-free Reference Root and no
+  Git/files Source has one;
+- generated Schema and Table references are absent from authored `pages`;
+- each Domain owner unit maps to a Domain page, each Concept owner unit maps to
+  one Domain or Concept page, and each persistent Concept model unit maps to a
+  DataModel page;
+- OpenGauss-backed Concepts leave physical ER generation to the kernel;
+  every DataModel containing code-backed Concepts plans a separate logical ER
+  diagram;
 - one concrete change or failure question routes to one page;
 - split units with independent owners, failure modes or change surfaces;
 - merge when splitting would make readers reconstruct one causal chain, or
@@ -27,8 +37,8 @@ Apply the Task Routing Test before page fan-out:
   of duplicating their ownership; it need not enumerate every leaf when routed
   capability pages expose those links;
 - every Plan unit is assigned once and cross-page handoffs remain visible;
-- thinness comes from removing inventories and duplication, not targeting a
-  minimum or maximum page count.
+- authored pages remove copied inventories and duplication, while generated
+  reference coverage remains complete; neither targets a page count.
 
 Sweep every page and report all independently supportable issues in one report;
 do not stop after the first routing or cohesion failure. Skip only a check whose
@@ -68,11 +78,12 @@ once with strict JSON:
 }
 ```
 
-Categories are `domain-coverage`, `concept-boundary`, `grep-test`,
-`unsupported-claim`, `invented-rationale`, `padded-gap`, `routing`, `coverage`,
-`language` and `representation`. Operations are `repair`, `split`, `merge` and
+Categories are `domain-coverage`, `concept-boundary`, `model-basis`,
+`table-disposition`, `relationship-confidence`, `reference-coverage`,
+`grep-test`, `unsupported-claim`, `invented-rationale`, `padded-gap`, `routing`,
+`coverage`, `language` and `representation`. Operations are `repair`, `split`, `merge` and
 `move`; every issue uses `area: "composition"`. Issue IDs are stable lowercase
-slugs. An empty or one-page Composition uses `merge_probes: []`. A `merge`
+slugs. A one-page Composition uses `merge_probes: []`. A `merge`
 probe requires the exact matching open merge issue; an approved report has no
 open issues and retains resolved entries. Do
 not run status, bundle review, Publication or export. Return only the report

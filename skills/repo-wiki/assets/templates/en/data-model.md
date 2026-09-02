@@ -3,21 +3,31 @@ coverage: full
 sources: []
 ---
 
-## Relationship model
+## Model basis
 
-Render every planned ER diagram with only entities in the selected scope.
-Show relationship names, cardinality and optionality; do not imply that
-unselected tables were inspected.
+State which Concepts use `opengauss` or `code`, their coverage, and any
+Catalog-selection gap. OpenGauss owns physical structure; code evidence owns
+only logical projections and behavior.
+
+## Physical model
+
+<!-- okf-generated:model -->
+
+## Logical relationships
+
+For code-derived models, render the planned logical ER diagram here. For
+OpenGauss-backed models, describe only evidenced semantic relationships that
+are not physical constraints and keep them distinct from the generated view.
 
 ## Ownership and boundaries
 
 State which Source owns each selected entity and where code or service
 boundaries meet persistence.
 
-## Selected tables
+## Reference model
 
-Use logical Page ID links for composed Table pages. Keep columns out of this
-page; do not invent a page for an unplanned table.
+Link generated Schema and Table references. Keep column, constraint and index
+inventories in those pages.
 
 ## Code-to-data mapping
 

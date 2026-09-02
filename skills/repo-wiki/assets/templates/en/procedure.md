@@ -11,7 +11,7 @@ calling or downstream capabilities.
 ## Inputs and outputs
 
 Name the domain inputs, produced values or records, and required preconditions.
-Keep field inventories in a DataModel or Table page.
+Keep field inventories in generated Schema or Table references.
 
 ## Execution and algorithm
 

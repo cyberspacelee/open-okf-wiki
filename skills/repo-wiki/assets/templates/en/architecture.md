@@ -18,7 +18,12 @@ Link source-owned pages instead of copying them.
 Use a compact table for the initiating failure or change, propagation path and
 affected validation surface.
 
-## Decisions
+## Recorded decisions
 
-Link existing ADRs. Without one, state only the observed decision with a
-Locator; never invent rationale.
+Link existing ADRs and summarize only their recorded rationale.
+
+## Observed patterns
+
+Describe recurring implementation structure with Locators. Label it as an
+observation rather than an intentional decision when no ADR or equivalent
+decision record exists.
