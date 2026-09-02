@@ -223,7 +223,6 @@ def _constraint_rows(conn, relation_oid: int, column_names: dict[int, str]) -> l
               con.convalidated,
               con.consoft,
               con.conopt,
-              con.condisable,
               pg_catalog.pg_get_constraintdef(con.oid, true)
             FROM pg_catalog.pg_constraint con
             LEFT JOIN pg_catalog.pg_class ref ON ref.oid = con.confrelid
@@ -269,7 +268,6 @@ def _constraint_rows(conn, relation_oid: int, column_names: dict[int, str]) -> l
             validated,
             soft,
             optimized,
-            disabled,
             definition,
         ) = row
         item = {
@@ -282,7 +280,6 @@ def _constraint_rows(conn, relation_oid: int, column_names: dict[int, str]) -> l
             "validated": bool(validated),
             "soft": bool(soft),
             "optimized": bool(optimized),
-            "disabled": bool(disabled),
         }
         if kind == "f":
             ref_names = referenced_columns.get(ref_oid, {})
@@ -421,7 +418,6 @@ def _describe_row(conn, schema: str, relation: dict) -> dict:
                 "validated",
                 "soft",
                 "optimized",
-                "disabled",
             )
         }
         for item in constraints

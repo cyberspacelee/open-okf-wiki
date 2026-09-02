@@ -185,7 +185,7 @@ def _table_body(
                 [
                     f"validated={str(bool(constraint.get('validated'))).lower()}",
                     f"soft={str(bool(constraint.get('soft'))).lower()}",
-                    f"disabled={str(bool(constraint.get('disabled'))).lower()}",
+                    f"optimized={str(bool(constraint.get('optimized'))).lower()}",
                 ]
             )
             constraint_lines.append(
@@ -516,7 +516,6 @@ def _active_fk(constraint: dict) -> bool:
         constraint.get("type") == "foreign_key"
         and constraint.get("validated") is True
         and constraint.get("soft") is False
-        and constraint.get("disabled") is False
     )
 
 
@@ -527,7 +526,6 @@ def _active_unique_sets(table: dict) -> set[frozenset[str]]:
             constraint.get("type") in {"primary_key", "unique"}
             and constraint.get("validated") is True
             and constraint.get("soft") is False
-            and constraint.get("disabled") is False
         ):
             result.add(frozenset(constraint.get("columns") or []))
     columns = {column["name"] for column in table.get("columns", [])}

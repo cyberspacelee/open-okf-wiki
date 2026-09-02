@@ -108,11 +108,11 @@ class RunPolicy(BaseModel):
     def defaults(cls) -> "RunPolicy":
         return cls(
             evidence=EvidencePolicy(
-                search=SearchPolicy(max_results=20, max_output_bytes=8 * 1024),
+                search=SearchPolicy(max_results=100, max_output_bytes=64 * 1024),
                 read=ReadPolicy(
-                    default_lines=40,
-                    max_lines=200,
-                    max_output_bytes=64 * 1024,
+                    default_lines=200,
+                    max_lines=1000,
+                    max_output_bytes=256 * 1024,
                 ),
             ),
             agents=AgentPolicy(

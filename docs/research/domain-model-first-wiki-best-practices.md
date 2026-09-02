@@ -99,7 +99,7 @@ capture 同时记录：
 | schema | `PG_NAMESPACE` | schema OID/name；所有 join 用 OID 或 schema-qualified identity |
 | relation | `PG_CLASS` | schema/name、`relkind`、`relpersistence`、partition/storage relevant flags |
 | column | `PG_ATTRIBUTE` + `PG_ATTRDEF` | ordinal、name、rendered type、nullability、default/generated expression、dropped flag |
-| constraint | `PG_CONSTRAINT` | type、name、validated/disabled/informational flags、完整 `conkey`/`confkey` 数组、actions、definition |
+| constraint | `PG_CONSTRAINT` | type、name、validated/informational flags、完整 `conkey`/`confkey` 数组、actions、definition |
 | index | `PG_INDEX` + index `PG_CLASS`，可辅以 `PG_INDEXES` | ordered key/include columns、unique/primary/valid/usable、expression、partial predicate、canonical definition |
 | comment | `PG_DESCRIPTION` 或 `obj_description`/`col_description` | table 和 column comment，允许为空 |
 | view | `PG_CLASS` + `pg_get_viewdef` | 视图种类与规范化 definition |
@@ -138,7 +138,7 @@ OpenGauss 支持普通行存表 FK 和复合 FK，但具体限制受表类型和
 
 ### 2.5 PostgreSQL 文档只作补充
 
-OpenGauss 官方说明部分 information schema/catalog 继承自 PG/PGXC，但 OpenGauss 自己增加了字段和语义，例如 `PG_CONSTRAINT.consoft/conopt/condisable`、`PG_INDEX.indisusable`。因此 PostgreSQL 官方文档只能用于解释共同字段，不能决定 OpenGauss 支持矩阵或查询列集合。[OpenGauss Information Schema](https://docs.opengauss.org/en/docs/7.0.0-RC3/sql_reference/information_schema.html)
+OpenGauss 官方说明部分 information schema/catalog 继承自 PG/PGXC，但 OpenGauss 自己增加了字段和语义，例如 `PG_CONSTRAINT.consoft/conopt`、`PG_INDEX.indisusable`。因此 PostgreSQL 官方文档只能用于解释共同字段，不能决定 OpenGauss 支持矩阵或查询列集合。[OpenGauss Information Schema](https://docs.opengauss.org/en/docs/7.0.0-RC3/sql_reference/information_schema.html)
 
 可用于交叉理解的 PostgreSQL 一手资料包括：[PostgreSQL `pg_constraint`](https://www.postgresql.org/docs/current/catalog-pg-constraint.html)、[PostgreSQL `pg_index`](https://www.postgresql.org/docs/current/catalog-pg-index.html)、[PostgreSQL comment functions](https://www.postgresql.org/docs/current/functions-info.html)。实现测试和运行时探测仍以目标 OpenGauss 版本为准。
 
@@ -153,7 +153,7 @@ OpenGauss 官方说明部分 information schema/catalog 继承自 PG/PGXC，但 
 | P3 | `observed` | 静态 SQL join、repository lookup、写入赋值；至少一个精确 locator | “代码使用表明” |
 | P4 | `heuristic` | 命名、类型、注释、同名表等线索 | “候选关系”，不得进正式 ER 边 |
 
-`convalidated=false`、`condisable=true` 或 informational constraint 不应升级为普通 P1；保留原始状态并在物理模型中显式标识。OpenGauss catalog 提供这些状态字段。[PG_CONSTRAINT](https://docs.opengauss.org/en/docs/latest/database_reference/pg_constraint.html)
+针对 OpenGauss 3.0，只有 `convalidated=true` 且 `consoft=false` 的约束可升级为普通 P1，其余约束保留原始状态并在物理模型中显式标识。[PG_CONSTRAINT](https://docs.opengauss.org/en/docs/3.0.0/docs/Developerguide/pg_constraint.html)
 
 关系冲突时不做静默覆盖：例如 ORM 声明 `ManyToOne`，catalog 无 FK，不代表数据库有 FK；catalog 有复合 FK，而 ORM 只映射一列，则页面应同时陈述物理关系和 code projection gap。
 

@@ -92,21 +92,16 @@ navigation、host agent 调度 subagents 的 repo-wiki skill。本文只研究�
 
 ## 本仓库现状与根因推论
 
-### 1. Search/read 的限制是实现常量，不是运行契约
+### 1. Search/read 的限制是不可变 Run 契约
 
-仓库事实：`_state.py` 目前用 `MAX_SEARCH_RESULTS=20`、
-`MAX_SEARCH_BYTES=8 KiB`、`MAX_READ_LINES=200`、`MAX_READ_BYTES=64 KiB`；
-`Workspace` 只保存 language、freshness 和 sources。Search 的 byte 计数只累计
-`path + snippet`，不含 JSON envelope；read 的 byte 截断只针对 `text`，两者都不等于
-“CLI stdout 不超过配置值”。Search 只有 `truncated`，没有 continuation cursor。
+仓库事实：当前默认 Search 最多返回 `100` 个结果和 `64 KiB` compact JSON，Read
+默认读取 `200` 行、最多 `1,000` 行和 `256 KiB` compact JSON。Workspace 保存完整
+policy，`run start` 将其快照到 Run；kernel 约束完整 JSON 输出，并为 Search 和 Read
+分别返回 `next_after` 和 `next_locator`。
 
-推论：当前限制能防止单次调用无限增长，但不能回答以下 contract 问题：
-
-- 该 Run 的 effective limits 是什么；
-- Workspace 配置变化是否影响已启动 Run；
-- byte budget 是 snippet bytes、text bytes 还是完整 JSON bytes；
-- truncated 后怎样不重扫地继续；
-- eval 如何断言配置值确实生效。
+这些数值只限制单次响应，不限制一次调查的总搜索量或读取量。大仓库应沿 continuation
+cursor 分页直到 `has_more=false`；提高默认页大小减少 subagent 工具调用，同时保留单次
+输出边界。
 
 ### 2. 并发当前是 prompt policy，没有 hard cap 证据
 
@@ -147,13 +142,13 @@ hard enforcement 和 trace assertion 均位于错误层或缺失。
   "execution": {
     "evidence": {
       "search": {
-        "max_results": 20,
-        "max_output_bytes": 8192
+        "max_results": 100,
+        "max_output_bytes": 65536
       },
       "read": {
-        "default_lines": 40,
-        "max_lines": 200,
-        "max_output_bytes": 65536
+        "default_lines": 200,
+        "max_lines": 1000,
+        "max_output_bytes": 262144
       }
     },
     "agents": {
@@ -166,8 +161,8 @@ hard enforcement 和 trace assertion 均位于错误层或缺失。
 }
 ```
 
-这是对本仓库的建议，不是外部规范规定的字段或数值。`20/8 KiB/40/200/64 KiB`
-保留当前行为作为新 schema 的显式默认；`4` 是本次目标 rolling window。`128` 是防止
+这是对本仓库的建议，不是外部规范规定的字段或数值。`100/64 KiB/200/1,000/256 KiB`
+是当前显式默认；`4` 是本次目标 rolling window。`128` 是防止
 无限 fan-out 的初始 safety fuse，应由 live eval 校准，而不是宣称为通用最佳值。
 
 配置规则：
@@ -197,7 +192,7 @@ item。
 {
   "items": [],
   "returned": 0,
-  "limit": {"max_items": 20, "max_output_bytes": 8192},
+  "limit": {"max_items": 100, "max_output_bytes": 65536},
   "limit_reached": false,
   "next_after": null
 }

@@ -205,7 +205,6 @@ def test_describe_preserves_composite_constraints_indexes_and_partitions(monkeyp
                     True,
                     False,
                     False,
-                    False,
                     "CHECK (amount >= 0)",
                 ),
                 (
@@ -224,7 +223,6 @@ def test_describe_preserves_composite_constraints_indexes_and_partitions(monkeyp
                     True,
                     False,
                     False,
-                    False,
                     "FOREIGN KEY (tenant_id, customer_id) REFERENCES crm.customers",
                 ),
                 (
@@ -241,7 +239,6 @@ def test_describe_preserves_composite_constraints_indexes_and_partitions(monkeyp
                     False,
                     False,
                     True,
-                    False,
                     False,
                     False,
                     "PRIMARY KEY (tenant_id, customer_id)",
@@ -294,7 +291,6 @@ def test_describe_preserves_composite_constraints_indexes_and_partitions(monkeyp
             "validated": True,
             "soft": False,
             "optimized": False,
-            "disabled": False,
         }
     ]
     assert result["constraints"][0]["definition"] == "CHECK (amount >= 0)"
@@ -303,6 +299,7 @@ def test_describe_preserves_composite_constraints_indexes_and_partitions(monkeyp
     constraint_sql = next(sql for sql, _ in conn.sql if "pg_constraint" in sql)
     assert "constraint_name" not in constraint_sql
     assert "con.conrelid = %s" in constraint_sql
+    assert "condisable" not in constraint_sql
 
 
 def _described_table(comment="line items"):

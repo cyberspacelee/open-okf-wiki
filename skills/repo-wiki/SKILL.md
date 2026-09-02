@@ -148,13 +148,14 @@ Do not copy unit, page or draft counts into Progress; read the derived
 `status.artifact_counts` instead.
 
 Dispatch focused evidence subagents for independent Source investigations,
-call paths, database facts or unresolved hypotheses. They write bounded notes
-under `work/evidence/` and return paths plus gaps. They do not write separate
-Plans or choose Wiki pages. Keep each note to the findings needed by its
-question, at most 12 KiB; omit inventories and command transcripts. File
+call paths, database facts or unresolved hypotheses. They write focused notes
+under `work/evidence/` and return paths plus findings and gaps counts. They do
+not write separate Plans or choose Wiki pages. Each note answers one focused
+question and omits inventories and command transcripts. Split notes only at
+semantic boundaries such as Domain, Concept, call path or failure path. File
 existence while its worker is running is not a handoff: wait for the worker to
-return the path, request any size repair on that handle, then read the final
-note once. Use disjoint chunks if needed rather than overlapping rereads. A
+return the path and counts, then pass that path to the planner or assigned page
+writer without relaying the note body through the coordinator. A
 Source count alone is not a reason to create one worker per Source. After one
 top-level outline per Source, dispatch two or more independent questions before
 deeper evidence navigation when those questions exist; the coordinator does
@@ -164,12 +165,12 @@ Inside one worker, keep evidence commands sequential. Agent fan-out is
 the concurrency boundary; launching many evidence commands concurrently adds
 router pressure without producing an additional independent judgment.
 
-Evidence-note granularity does not determine Plan-unit granularity. One bounded
+Evidence-note granularity does not determine Plan-unit granularity. One focused
 note may support several independently routable units; apply the maintainer
 probes in `references/plan.md` before writing the Plan instead of turning each
 worker question into one umbrella unit. Composition later applies the Task
 Routing Test in `references/composition.md`.
-Default each note to one Source and one bounded question. A cross-Source handoff
+Default each note to one Source and one focused question. A cross-Source handoff
 note is the exception and separates findings by Source; its locators still must
 be translated into participant-complete Plan scopes.
 

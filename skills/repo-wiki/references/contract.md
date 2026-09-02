@@ -159,8 +159,8 @@ The required policy shape and defaults are:
 ```json
 {
   "evidence": {
-    "search": {"max_results": 20, "max_output_bytes": 8192},
-    "read": {"default_lines": 40, "max_lines": 200, "max_output_bytes": 65536}
+    "search": {"max_results": 100, "max_output_bytes": 65536},
+    "read": {"default_lines": 200, "max_lines": 1000, "max_output_bytes": 262144}
   },
   "agents": {
     "max_active_children": 4,

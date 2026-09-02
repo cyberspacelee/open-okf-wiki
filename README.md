@@ -74,9 +74,9 @@ evidence response and all host-agent phases:
 ```text
 uv run $REPO_WIKI_SKILL/scripts/okf.py workspace init --lang zh \
   --max-active-children 4 --max-children-per-run 128 \
-  --search-max-results 20 --search-max-output-bytes 8192 \
-  --read-default-lines 40 --read-max-lines 200 \
-  --read-max-output-bytes 65536
+  --search-max-results 100 --search-max-output-bytes 65536 \
+  --read-default-lines 200 --read-max-lines 1000 \
+  --read-max-output-bytes 262144
 ```
 
 Change policy only between Runs with `workspace configure`; `run start`

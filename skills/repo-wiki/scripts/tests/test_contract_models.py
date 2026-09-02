@@ -111,15 +111,18 @@ def test_run_policy_is_complete_strict_and_bounded():
     policy = RunPolicy.defaults()
     assert policy.agents.max_active_children == 4
     assert policy.agents.max_spawn_depth == 1
-    assert policy.evidence.search.max_output_bytes == 8 * 1024
-    assert policy.evidence.read.max_output_bytes == 64 * 1024
+    assert policy.evidence.search.max_results == 100
+    assert policy.evidence.search.max_output_bytes == 64 * 1024
+    assert policy.evidence.read.default_lines == 200
+    assert policy.evidence.read.max_lines == 1000
+    assert policy.evidence.read.max_output_bytes == 256 * 1024
 
     invalid_agents = policy.model_dump()
     invalid_agents["agents"]["max_active_children"] = 0
     invalid_search = policy.model_dump()
     invalid_search["evidence"]["search"]["max_results"] = 101
     invalid_read = policy.model_dump()
-    invalid_read["evidence"]["read"]["default_lines"] = 201
+    invalid_read["evidence"]["read"]["default_lines"] = 1001
     for invalid in (
         invalid_agents,
         invalid_search,

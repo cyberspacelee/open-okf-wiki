@@ -34,7 +34,6 @@ def con(name, kind, columns, **extra):
         "definition": name,
         "validated": True,
         "soft": False,
-        "disabled": False,
         **extra,
     }
 
@@ -61,14 +60,6 @@ def captured_tables():
         soft=True,
         **ref,
     )
-    disabled = con(
-        "orders_disabled_fk",
-        "foreign_key",
-        ["tenant_id", "customer_id"],
-        disabled=True,
-        **ref,
-    )
-
     def col(position, name, kind="bigint"):
         return {
             "position": position,
@@ -114,10 +105,9 @@ def captured_tables():
                 ),
                 active,
                 soft,
-                disabled,
             ],
             "primary_key": ["tenant_id", "customer_id"],
-            "foreign_keys": [active, soft, disabled],
+            "foreign_keys": [active, soft],
             "indexes": [
                 {
                     "name": "orders_amount_idx",
@@ -406,7 +396,6 @@ def test_enrich_injects_composite_er_and_filters_nonphysical_fk(model):
     assert "||--o|" in body
     assert body.count("orders_customer_fk") == 1
     assert "orders_soft_fk" not in body
-    assert "orders_disabled_fk" not in body
     assert meta["diagrams"][0]["kind"] == "er"
     assert meta["diagrams"][0]["sources"] == ["database"]
     assert {item["resource"] for item in meta["sources"]} == set(resources.values())
