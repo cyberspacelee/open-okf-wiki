@@ -43,7 +43,7 @@ def workspace(
 
 def start(root: pathlib.Path) -> pathlib.Path:
     result = _state.start_run(root)
-    assert result["contract"] == "domain-concept-model-coverage"
+    assert result["contract"] == "domain-plan-ledger-coverage"
     assert result["language"] in ("en", "zh")
     assert result["sources"] == ["src"]
     assert result["phase"] == "plan"
@@ -88,16 +88,7 @@ def plan_meta(units: list[dict] | None = None) -> dict:
                 "name": concept_id.replace("-", " ").title(),
                 "definition": f"The {concept_id} concept owned by the answers domain.",
                 "owner_unit_id": owner["id"],
-                "model_unit_id": None,
-                "owner_evidence": [f"src/{source_path}#L1-L2"],
-                "behavior_seeds": [f"src/{source_path}#L1-L2"],
-                "model_basis": {
-                    "basis": "none",
-                    "coverage": "full",
-                    "catalog_tables": [],
-                    "structure_evidence": [],
-                    "gap_ids": [],
-                },
+                "model_basis": {"basis": "none"},
             }
         )
     return {
@@ -118,7 +109,6 @@ def plan_meta(units: list[dict] | None = None) -> dict:
                 "name": "Answers",
                 "definition": "Owns answer behavior and its service boundary.",
                 "owner_unit_id": units[0]["id"],
-                "evidence": ["src/app.py#L1-L2"],
             }
         ],
         "concepts": concepts,
@@ -129,37 +119,65 @@ def plan_meta(units: list[dict] | None = None) -> dict:
     }
 
 
-def plan() -> str:
+def plan(language: str = "en", extra: str = "") -> str:
+    if language == "zh":
+        body = (
+            "# 知识规划\n\n"
+            "## 全局模型\n\nAnswers Domain 负责答案行为。\n\n"
+            "## 生命周期与跨源关系\n\n答案由入口创建；该夹具没有跨源交接。\n\n"
+            "## 证据支持的结论\n\n冻结入口定义该能力。[^entry]\n\n"
+            "## 被拒绝的假设\n\n未发现需要保留的被拒绝假设。\n\n"
+            "## 未解决的缺口\n\n当前没有未解决缺口。\n\n"
+            "[^entry]: `src/app.py#L1-L2`\n"
+        )
+    else:
+        body = (
+            "# Knowledge Plan\n\n"
+            "## Global model\n\nThe Answers Domain owns answer behavior.\n\n"
+            "## Lifecycles and cross-source relationships\n\n"
+            "The entry creates answers; this fixture has no cross-source handoff.\n\n"
+            "## Evidence-backed conclusions\n\n"
+            "The frozen entry point defines the capability.[^entry]\n\n"
+            "## Rejected hypotheses\n\nNo rejected hypothesis remains.\n\n"
+            "## Unresolved gaps\n\nNo unresolved gap remains.\n\n"
+            "[^entry]: `src/app.py#L1-L2`\n"
+        )
     return render(
-        plan_meta(),
-        "# Knowledge Plan\n\nThe answer crosses an explicit service boundary.\n",
+        {"kind": "knowledge-plan-narrative", "ledger": "plan-ledger.json"},
+        body + extra,
     )
 
 
-def test_code_model_evidence_must_be_inside_the_model_unit_scope(tmp_path):
+def write_plan(
+    run: pathlib.Path,
+    value: dict | None = None,
+    *,
+    language: str = "en",
+    extra: str = "",
+) -> None:
+    work = run / "work"
+    write(work / "plan.md", plan(language, extra))
+    write(work / "plan-ledger.json", json.dumps(value or plan_meta()))
+
+
+def test_code_model_unit_is_derived_from_structure_evidence(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
-    value = plan_meta(
-        [
-            unit("answer", "app.py", "capability", "answer"),
-            unit("answer-model", "architecture.py", "data-model", "answer"),
-        ]
-    )
+    value = plan_meta([unit("answer", "app.py", "capability", "answer")])
     concept = value["concepts"][0]
-    concept["model_unit_id"] = "answer-model"
     concept["model_basis"] = {
         "basis": "code",
-        "coverage": "full",
-        "catalog_tables": [],
         "structure_evidence": ["src/app.py#L1-L2"],
-        "gap_ids": [],
     }
     path = run / "work/plan.md"
-    write(path, render(value, "# Knowledge Plan\n"))
+    write_plan(run, value)
 
-    _plan, issues = _validate.validate_plan_artifact(root, _state.read(root), path)
+    parsed, issues = _validate.validate_plan_artifact(root, _state.read(root), path)
 
-    assert "model-evidence-outside-scope" in {issue.code for issue in issues}
+    assert not issues
+    model = parsed.effective_units[-1]
+    assert model.id == "model.answer"
+    assert model.scopes[0].paths == ["app.py"]
 
 
 def test_each_domain_requires_a_dedicated_owner_unit(tmp_path):
@@ -174,11 +192,10 @@ def test_each_domain_requires_a_dedicated_owner_unit(tmp_path):
             "name": "Audit",
             "definition": "Owns an independent audit responsibility.",
             "owner_unit_id": value["units"][0]["id"],
-            "evidence": ["src/app.py#L1-L2"],
         }
     )
     path = run / "work/plan.md"
-    write(path, render(value, "# Knowledge Plan\n"))
+    write_plan(run, value)
 
     _plan, issues = _validate.validate_plan_artifact(root, _state.read(root), path)
 
@@ -230,6 +247,9 @@ def draft(resource: str, related_id: str, related_title: str) -> str:
         "| Rule | Enforcement point | Observable failure |\n"
         "| --- | --- | --- |\n"
         "| The entry point remains authoritative. | Captured function | Call failure |\n\n"
+        "## Data model overview\n\nNo persistent model exists for this fixture.\n\n"
+        "## State and lifecycle\n\nThe answer has no persisted state lifecycle.\n\n"
+        "## Key flows\n\nThe entry point produces the answer directly.[^entry]\n\n"
         f"## Concepts\n\nSee [{related_title}][{related_id}].\n\n"
         "## Change points\n\nChange the captured entry point and its tests.[^entry]\n\n"
         "[^entry]: Frozen source entry point.\n",
@@ -237,7 +257,12 @@ def draft(resource: str, related_id: str, related_title: str) -> str:
 
 
 def merge_probes(path: pathlib.Path, field: str) -> list[dict]:
-    ids = [item["id"] for item in parse_file(path).meta[field]]
+    data = (
+        json.loads(path.read_text(encoding="utf-8"))
+        if path.suffix == ".json"
+        else parse_file(path).meta
+    )
+    ids = [item["id"] for item in data[field]]
     if len(ids) < 2:
         return []
     return [
@@ -251,7 +276,7 @@ def merge_probes(path: pathlib.Path, field: str) -> list[dict]:
 
 
 def write_work(run: pathlib.Path) -> None:
-    write(run / "work/plan.md", plan())
+    write_plan(run)
     write(run / "work/progress.md", "# Progress\n\nPlan complete; pages remain.\n")
     write(run / "work/composition.md", composition())
     write(
@@ -317,7 +342,9 @@ def plan_review(path: pathlib.Path, digest: str, verdict: str) -> None:
             {
                 "subject_digest": digest,
                 "verdict": verdict,
-                "merge_probes": merge_probes(path.with_name("plan.md"), "units"),
+                "merge_probes": merge_probes(
+                    path.with_name("plan-ledger.json"), "units"
+                ),
                 "issues": issues,
             }
         ),
@@ -417,7 +444,7 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
         composition_packet["subject_digest"],
         "changes_requested",
     )
-    assert _state.status(root)["phase"] == "write"
+    assert _state.status(root)["phase"] == "composition"
     composition_path = run / "work/composition.md"
     write(
         composition_path,
@@ -504,17 +531,8 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
 def test_plan_without_domain_concept_ledger_is_rejected(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
-    write(
-        run / "work/plan.md",
-        render(
-            {
-                "kind": "knowledge-plan",
-                "units": [],
-                "gaps": [],
-            },
-            "# Plan\n\nNo knowledge passes the Grep Test.\n",
-        ),
-    )
+    write(run / "work/plan.md", plan())
+    write(run / "work/plan-ledger.json", json.dumps({"kind": "knowledge-plan"}))
     write(run / "work/progress.md", "# Progress\n\nPlan attempted.\n")
 
     status = _state.status(root)
@@ -526,7 +544,7 @@ def test_plan_without_domain_concept_ledger_is_rejected(tmp_path):
 def test_status_derives_plan_composition_and_draft_repairs(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
-    write(run / "work/plan.md", plan())
+    write_plan(run)
     assert _state.status(root)["issues"][0]["code"] == "progress-stale"
     write(run / "work/progress.md", "# Progress\n\nPlan complete; review is next.\n")
     assert _state.status(root)["issues"][0]["code"] == "plan-review-missing"
@@ -566,6 +584,9 @@ def test_status_derives_plan_composition_and_draft_repairs(tmp_path):
     status = _state.status(root)
     assert status["phase"] == "write"
     assert {item["code"] for item in status["issues"]} == {"page-draft-missing"}
+    assert {item["phase"] for item in status["issues"]} == {"write"}
+    assert {item["applicability"] for item in status["issues"]} == {"blocking"}
+    assert {item["next_action"] for item in status["issues"]} == {"repair work/drafts"}
     assert status["artifact_counts"] == {
         "knowledge_units": 2,
         "pages": 2,
@@ -576,18 +597,67 @@ def test_status_derives_plan_composition_and_draft_repairs(tmp_path):
     }
 
 
+def test_page_prepare_derives_one_bounded_domain_packet(tmp_path):
+    root = workspace(tmp_path)
+    run = start(root)
+    write_work(run)
+    approve_plan(root, run)
+    approve_composition(root, run)
+
+    result = _state.page_prepare(root, "answer")
+    packet = json.loads(pathlib.Path(result["artifact"]).read_text(encoding="utf-8"))
+
+    assert result["ok"] is True
+    assert packet["page"]["id"] == "answer"
+    assert [item["id"] for item in packet["units"]] == ["answer"]
+    assert [item["id"] for item in packet["projections"]] == ["architecture"]
+    assert [item["id"] for item in packet["domains"]] == ["answers"]
+    assert {item["id"] for item in packet["concepts"]} == {
+        "answer",
+        "architecture",
+    }
+    assert [item["id"] for item in packet["related_pages"]] == ["architecture"]
+    assert packet["evidence_seeds"] == [
+        "src/app.py#L1-L2",
+        "src/architecture.py#L1-L2",
+    ]
+    assert packet["template"].endswith("assets/templates/en/domain.md")
+    assert packet["output"].endswith("work/drafts/answer.md")
+    assert "plan" not in packet
+    assert "composition" not in packet
+
+    invalid = _state.page_prepare(root, "missing")
+    assert invalid["ok"] is False
+    assert invalid["issues"][0]["code"] == "page-id-invalid"
+
+
+def test_plan_narrative_requires_analysis_sections_and_resolved_evidence(tmp_path):
+    root = workspace(tmp_path)
+    run = start(root)
+    write(run / "work/plan-ledger.json", json.dumps(plan_meta()))
+    write(
+        run / "work/plan.md",
+        render(
+            {"kind": "knowledge-plan-narrative", "ledger": "plan-ledger.json"},
+            "# Knowledge Plan\n\n## Global model\n\nOnly a summary.\n",
+        ),
+    )
+
+    _plan, issues = _validate.validate_plan_artifact(
+        root, _state.read(root), run / "work/plan.md"
+    )
+
+    codes = {item.code for item in issues}
+    assert "plan-section-missing" in codes
+    assert "plan-evidence-missing" in codes
+
+
 def test_plan_rejects_a_scoped_source_without_its_own_seed(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
     broken = unit("answer", "app.py", "capability")
     broken["evidence_seeds"] = ["missing/app.py#L1-L2"]
-    write(
-        run / "work/plan.md",
-        render(
-            plan_meta([broken]),
-            "# Plan\n\nThe unit has an invalid seed.\n",
-        ),
-    )
+    write_plan(run, plan_meta([broken]))
 
     status = _state.status(root)
 
@@ -743,13 +813,7 @@ def test_active_run_rejects_a_changed_skill_bundle(tmp_path):
 def test_one_unit_plan_can_publish_one_page(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
-    write(
-        run / "work/plan.md",
-        render(
-            plan_meta([unit("answer", "app.py", "flow")]),
-            "# Plan\n\nOne coherent unit.\n",
-        ),
-    )
+    write_plan(run, plan_meta([unit("answer", "app.py", "flow")]))
     write(
         run / "work/composition.md",
         render(
@@ -788,12 +852,10 @@ def test_one_unit_plan_can_publish_one_page(tmp_path):
 def test_chinese_partial_page_uses_localized_gap_heading(tmp_path):
     root = workspace(tmp_path, "zh")
     run = start(root)
-    write(
-        run / "work/plan.md",
-        render(
-            plan_meta([unit("answer", "app.py", "capability")]),
-            "# Plan\n\n一个语义单元。\n",
-        ),
+    write_plan(
+        run,
+        plan_meta([unit("answer", "app.py", "capability")]),
+        language="zh",
     )
     write(run / "work/progress.md", "# Progress\n\n规划完成，下一步审查。\n")
     approve_plan(root, run)
@@ -832,6 +894,9 @@ def test_chinese_partial_page_uses_localized_gap_heading(tmp_path):
             "| 规则 | 执行位置 | 可观察失败 |\n"
             "| --- | --- | --- |\n"
             "| 入口保持唯一。 | 应用函数 | 调用失败 |\n\n"
+            "## 数据模型概览\n\n该夹具没有持久化模型。\n\n"
+            "## 状态与生命周期\n\n答案没有持久化状态生命周期。\n\n"
+            "## 关键流程\n\n入口直接生成答案。[^entry]\n\n"
             "## 领域概念\n\n答案是该能力的输出。\n\n"
             "## 变更入口\n\n修改入口及其测试。[^entry]\n\n"
             "## 缺口\n\n异常路径尚未捕获。\n\n"
@@ -928,6 +993,10 @@ def test_candidate_validation_collects_independent_errors_after_bad_plan(tmp_pat
         "template-heading-leak",
     } <= codes
     assert "placeholder-remaining" in codes
+    assert all(item.phase for item in result.issues)
+    assert {item.phase for item in result.issues if item.code == "schema-invalid"} == {
+        "plan"
+    }
     assert not result.complete
     assert "composition-unit-binding" in result.skipped_checks
 
@@ -941,8 +1010,19 @@ def test_block_resume_and_legacy_state_rejection(tmp_path):
     state = json.loads(path.read_text(encoding="utf-8"))
     state["contract"] = "artifact-loop-routing-closure"
     write(path, json.dumps(state))
-    with pytest.raises(_state.StateError, match="domain-concept-model-coverage"):
+    with pytest.raises(_state.StateError, match="domain-plan-ledger-coverage"):
         _state.read(root)
+
+
+def test_skill_digest_ignores_runtime_cache_files():
+    cache = pathlib.Path(_state.__file__).parent / "__pycache__" / "digest-noise.pyc"
+    before = _state._skill_bundle_digest()
+    cache.parent.mkdir(exist_ok=True)
+    cache.write_bytes(b"not a runtime source")
+    try:
+        assert _state._skill_bundle_digest() == before
+    finally:
+        cache.unlink()
 
 
 def test_legacy_embedded_catalog_tables_are_rejected(tmp_path):
@@ -1017,17 +1097,32 @@ def test_thin_catalog_state_validates_grouped_table_coverage(tmp_path, monkeypat
     value["table_groups"] = [
         {
             "source": "database",
-            "role": "working",
-            "tables": ["orders", "orders_tmp"],
-        }
+            "domain_id": "answers",
+            "role": "entity",
+            "tables": ["orders"],
+        },
+        {"source": "database", "role": "working", "tables": ["orders_tmp"]},
     ]
+    value["concepts"][0]["model_basis"] = {
+        "basis": "opengauss",
+        "catalog_tables": [{"source": "database", "table": "orders"}],
+    }
     path = run / "work/plan.md"
-    write(path, render(value, "# Knowledge Plan\n"))
+    write_plan(run, value)
 
     plan_value, issues = _validate.validate_plan_artifact(root, state, path)
 
     assert plan_value is not None
     assert not issues
+    model_unit = next(
+        unit for unit in plan_value.effective_units if unit.id == "model.answer"
+    )
+    assert model_unit.evidence_seeds == ["database/orders"]
+    assert model_unit.scopes[0].model_dump() == {
+        "source": "database",
+        "role": "model",
+        "paths": ["orders"],
+    }
     assert set(state["catalogs"][0]) == {"name", "content_hash", "storage_key"}
 
 

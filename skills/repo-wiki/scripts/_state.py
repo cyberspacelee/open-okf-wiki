@@ -22,7 +22,7 @@ from _models import (
 from pydantic import ValidationError
 
 VERSION = 1
-CONTRACT = "domain-concept-model-coverage"
+CONTRACT = "domain-plan-ledger-coverage"
 LOCK_TIMEOUT_SEC = 60
 MAX_STATUS_ISSUES = 10
 
@@ -46,9 +46,9 @@ def run_dir(root: pathlib.Path, run_id: str) -> pathlib.Path:
 def _skill_bundle_digest() -> str:
     skill = pathlib.Path(__file__).resolve().parent.parent
     files = [skill / "SKILL.md"]
-    files.extend(sorted((skill / "references").glob("*")))
+    files.extend(sorted((skill / "references").glob("*.md")))
     files.extend(sorted((skill / "scripts").glob("*.py")))
-    files.extend(sorted((skill / "assets").rglob("*")))
+    files.extend(sorted((skill / "assets").rglob("*.md")))
     digest = hashlib.sha256()
     for path in files:
         if not path.is_file():
@@ -163,7 +163,9 @@ def read(root: pathlib.Path) -> dict | None:
         or not all(isinstance(item[key], str) and item[key] for key in item)
         for item in catalogs
     ):
-        raise StateError("legacy or unsupported run state; thin Catalog pointers are required")
+        raise StateError(
+            "legacy or unsupported run state; thin Catalog pointers are required"
+        )
     try:
         RunPolicy.model_validate(state.get("policy"), strict=True)
     except ValidationError as exc:
@@ -197,12 +199,14 @@ def _artifact_paths(root: pathlib.Path, state: dict) -> dict[str, str]:
     base = run_dir(root, state["run_id"])
     return {
         "plan": str(work / "plan.md"),
+        "plan_ledger": str(work / "plan-ledger.json"),
         "progress": str(work / "progress.md"),
         "evidence": str(work / "evidence"),
         "plan_review": str(work / "plan-review.json"),
         "composition": str(work / "composition.md"),
         "composition_review": str(work / "composition-review.json"),
         "reference_map": str(work / "reference-map.json"),
+        "page_packets": str(work / "page-packets"),
         "drafts": str(work / "drafts"),
         "review": str(work / "review.json"),
         "candidate": str(base / "candidate"),
@@ -260,7 +264,14 @@ def start_run(root: pathlib.Path) -> dict:
         "catalogs": catalogs,
     }
     base = run_dir(root, run_id)
-    for relative in ("index", "work/evidence", "work/drafts", "candidate", "proposals"):
+    for relative in (
+        "index",
+        "work/evidence",
+        "work/drafts",
+        "work/page-packets",
+        "candidate",
+        "proposals",
+    ):
         (base / relative).mkdir(parents=True, exist_ok=True)
     (base / "work/progress.md").write_text(
         "# Progress\n\n<!-- repo-wiki-progress:initial -->\n"
@@ -305,6 +316,7 @@ def _work_digest(root: pathlib.Path, state: dict) -> str:
     work = work_dir(root, state)
     files = [
         work / "plan.md",
+        work / "plan-ledger.json",
         work / "plan-review.json",
         work / "composition.md",
         work / "composition-review.json",
@@ -330,9 +342,12 @@ def _work_digest(root: pathlib.Path, state: dict) -> str:
 
 
 def _plan_subject_digest(root: pathlib.Path, state: dict) -> str:
-    plan = work_dir(root, state) / "plan.md"
+    work = work_dir(root, state)
     payload = {
-        "plan": hashlib.sha256(plan.read_bytes()).hexdigest(),
+        "plan": hashlib.sha256((work / "plan.md").read_bytes()).hexdigest(),
+        "plan_ledger": hashlib.sha256(
+            (work / "plan-ledger.json").read_bytes()
+        ).hexdigest(),
         "revisions": state["revisions"],
         "catalogs": [
             {"name": item["name"], "content_hash": item["content_hash"]}
@@ -368,7 +383,15 @@ def _status_payload(
     *,
     issues: list[dict] | None = None,
 ) -> dict:
-    all_issues = issues or []
+    all_issues = [
+        {
+            **item,
+            "phase": item.get("phase") or phase,
+            "applicability": "blocking",
+            "next_action": next_actions[0] if next_actions else None,
+        }
+        for item in (issues or [])
+    ]
     issue_counts = {}
     for item in all_issues:
         code = item.get("code", "unknown")
@@ -404,8 +427,10 @@ def _artifact_counts(root: pathlib.Path, state: dict) -> dict:
         "drafts_missing": None,
     }
     try:
-        plan = _markdown_model(work / "plan.md", KnowledgePlan)
-        result["knowledge_units"] = len(plan.units)
+        plan = KnowledgePlan.model_validate_json(
+            (work / "plan-ledger.json").read_text(encoding="utf-8"), strict=True
+        )
+        result["knowledge_units"] = len(plan.effective_units)
     except (OSError, StateError, ValidationError):
         pass
     try:
@@ -455,7 +480,11 @@ def status(root: pathlib.Path) -> dict:
     errors = _errors(plan_issues)
     if errors:
         return _status_payload(
-            root, state, "plan", ["repair work/plan.md"], issues=errors
+            root,
+            state,
+            "plan",
+            ["repair work/plan.md and work/plan-ledger.json"],
+            issues=errors,
         )
 
     progress_issues = _validate.validate_progress_artifact(
@@ -470,7 +499,7 @@ def status(root: pathlib.Path) -> dict:
     plan_review, plan_review_issues = _validate.validate_plan_review(
         pathlib.Path(paths["plan_review"]),
         _plan_subject_digest(root, state),
-        {unit.id for unit in plan.units},
+        {unit.id for unit in plan.effective_units},
     )
     errors = _errors(plan_review_issues)
     if errors:
@@ -492,7 +521,7 @@ def status(root: pathlib.Path) -> dict:
     errors = _errors(composition_issues)
     if errors:
         return _status_payload(
-            root, state, "write", ["repair work/composition.md"], issues=errors
+            root, state, "composition", ["repair work/composition.md"], issues=errors
         )
 
     composition_review, composition_review_issues = (
@@ -515,7 +544,7 @@ def status(root: pathlib.Path) -> dict:
         return _status_payload(
             root,
             state,
-            "write",
+            "composition",
             [
                 "repair the issues in work/composition-review.json",
                 "review composition",
@@ -590,7 +619,7 @@ def _write_reference_map(
                     for key in ("id", "path", "type", "source", "table")
                 }
                 for page in pages
-            ]
+            ],
         },
     )
     return pages
@@ -663,7 +692,15 @@ def _bind_candidate(
     for page in generated:
         meta = {
             key: page[key]
-            for key in ("id", "type", "title", "description", "tags", "diagrams", "sources")
+            for key in (
+                "id",
+                "type",
+                "title",
+                "description",
+                "tags",
+                "diagrams",
+                "sources",
+            )
         }
         meta.update(
             {
@@ -720,6 +757,7 @@ def plan_review_prepare(root: pathlib.Path) -> dict:
         ),
         "inputs": {
             "plan": str(work / "plan.md"),
+            "plan_ledger": str(work / "plan-ledger.json"),
             "evidence": str(work / "evidence"),
             "sources": [item["name"] for item in state["revisions"]]
             + [item["name"] for item in state["catalogs"]],
@@ -744,7 +782,7 @@ def composition_review_prepare(root: pathlib.Path) -> dict:
         plan_review, plan_review_issues = _validate.validate_plan_review(
             work / "plan-review.json",
             _plan_subject_digest(root, state),
-            {unit.id for unit in plan.units},
+            {unit.id for unit in plan.effective_units},
         )
         errors.extend(_errors(plan_review_issues))
         if plan_review is not None and plan_review.verdict != "approved":
@@ -784,6 +822,7 @@ def composition_review_prepare(root: pathlib.Path) -> dict:
         ),
         "inputs": {
             "plan": str(work / "plan.md"),
+            "plan_ledger": str(work / "plan-ledger.json"),
             "plan_review": str(work / "plan-review.json"),
             "composition": str(work / "composition.md"),
             "reference_map": str(work / "reference-map.json"),
@@ -793,6 +832,182 @@ def composition_review_prepare(root: pathlib.Path) -> dict:
     if previous_review:
         packet["previous_review"] = previous_review
     return packet
+
+
+@_locked
+def page_prepare(root: pathlib.Path, page_id: str) -> dict:
+    import _validate
+
+    state = _require_run(root, {"active"})
+    assert_revisions_current(root, state)
+    work = work_dir(root, state)
+    plan, issues = _validate.validate_plan_artifact(root, state, work / "plan.md")
+    if plan is None or _errors(issues):
+        return {"ok": False, "issues": _errors(issues), "state": status(root)}
+    plan_review, review_issues = _validate.validate_plan_review(
+        work / "plan-review.json",
+        _plan_subject_digest(root, state),
+        {unit.id for unit in plan.effective_units},
+    )
+    composition, composition_issues = _validate.validate_composition_artifact(
+        work / "composition.md", plan
+    )
+    errors = [*_errors(review_issues), *_errors(composition_issues)]
+    if plan_review is not None and plan_review.verdict != "approved":
+        errors.append(
+            {
+                "severity": "error",
+                "code": "plan-review-rejected",
+                "path": str(work / "plan-review.json"),
+                "line": None,
+                "message": "repair the Knowledge Plan and obtain approval",
+            }
+        )
+    if composition is None:
+        return {"ok": False, "issues": errors, "state": status(root)}
+    composition_review, composition_review_issues = (
+        _validate.validate_composition_review(
+            work / "composition-review.json",
+            _composition_subject_digest(root, state),
+            {page.id for page in composition.pages},
+        )
+    )
+    errors.extend(_errors(composition_review_issues))
+    if composition_review is not None and composition_review.verdict != "approved":
+        errors.append(
+            {
+                "severity": "error",
+                "code": "composition-review-rejected",
+                "path": str(work / "composition-review.json"),
+                "line": None,
+                "message": "repair the Composition and obtain approval",
+            }
+        )
+    page = next((item for item in composition.pages if item.id == page_id), None)
+    if page is None:
+        errors.append(
+            {
+                "severity": "error",
+                "code": "page-id-invalid",
+                "path": str(work / "composition.md"),
+                "line": None,
+                "message": f"unknown authored page id: {page_id}",
+            }
+        )
+    if errors:
+        return {"ok": False, "issues": errors, "state": status(root)}
+
+    reference_pages = _write_reference_map(root, state, plan, composition)
+    units = {unit.id: unit for unit in plan.effective_units}
+    owned_units = [units[unit_id] for unit_id in page.units]
+    projection_units = _validate.page_projection_units(plan, page)
+    domain_ids = {domain_id for unit in owned_units for domain_id in unit.domain_ids}
+    selected_concepts = {
+        concept.id
+        for concept in plan.concepts
+        if concept.id in {item for unit in owned_units for item in unit.concept_ids}
+        or (page.type == "Domain" and concept.domain_id in domain_ids)
+    }
+    relationships = [
+        item
+        for item in plan.relationships
+        if item.from_concept_id in selected_concepts
+        or item.to_concept_id in selected_concepts
+    ]
+    selected_concepts.update(
+        endpoint
+        for relationship in relationships
+        for endpoint in (relationship.from_concept_id, relationship.to_concept_id)
+    )
+    concepts = [item for item in plan.concepts if item.id in selected_concepts]
+    model_tables = {
+        (table.source, table.table)
+        for concept in concepts
+        for table in concept.model_basis.catalog_tables
+    }
+    catalog_sources = {source for source, _table in model_tables}
+
+    page_domains = {
+        candidate.id: {
+            domain_id
+            for unit_id in candidate.units
+            for domain_id in units[unit_id].domain_ids
+        }
+        for candidate in composition.pages
+    }
+    related_pages = [
+        candidate.model_dump(mode="json", exclude_none=True)
+        for candidate in composition.pages
+        if candidate.id != page.id and page_domains[candidate.id] & domain_ids
+    ]
+    references = [
+        item
+        for item in reference_pages
+        if (item["type"] == "Schema" and item["source"] in catalog_sources)
+        or (item["source"], item["table"]) in model_tables
+    ]
+    spec = _validate.page_spec(plan, page)
+    gap_ids = {gap_id for concept in concepts for gap_id in concept.model_basis.gap_ids}
+    gap_ids.update(
+        gap_id
+        for disposition in plan.table_dispositions
+        if disposition.domain_id in domain_ids
+        for gap_id in disposition.gap_ids
+    )
+    payload = {
+        "subject_digest": _composition_subject_digest(root, state),
+        "page": page.model_dump(mode="json", exclude_none=True),
+        "units": [
+            unit.model_dump(mode="json", exclude_defaults=True) for unit in owned_units
+        ],
+        "projections": [
+            unit.model_dump(mode="json", exclude_defaults=True)
+            for unit in projection_units
+        ],
+        "domains": [
+            domain.model_dump(mode="json")
+            for domain in plan.domains
+            if domain.id in domain_ids
+        ],
+        "concepts": [
+            {
+                **concept.model_dump(mode="json", exclude_defaults=True),
+                "model_unit_id": concept.model_unit_id,
+            }
+            for concept in concepts
+        ],
+        "relationships": [item.model_dump(mode="json") for item in relationships],
+        "gaps": [gap.model_dump(mode="json") for gap in plan.gaps if gap.id in gap_ids],
+        "related_pages": related_pages,
+        "reference_pages": [
+            {key: item.get(key) for key in ("id", "path", "type", "source", "table")}
+            for item in references
+        ],
+        "scopes": spec["scopes"],
+        "evidence_seeds": spec["evidence_seeds"],
+        "template": str(
+            pathlib.Path(__file__).resolve().parent.parent
+            / "assets/templates"
+            / state["language"]
+            / _validate._TEMPLATE_NAMES[page.type]
+        ),
+        "output": str(work / "drafts" / f"{page.id}.md"),
+        "reference": str(
+            pathlib.Path(__file__).resolve().parent.parent / "references/page.md"
+        ),
+        "language": state["language"],
+        "workdir": str(root),
+    }
+    packet_path = work / "page-packets" / f"{page.id}.json"
+    atomic_json(packet_path, payload)
+    return {
+        "ok": True,
+        "page_id": page.id,
+        "artifact": str(packet_path),
+        "output": payload["output"],
+        "reference": payload["reference"],
+        "language": state["language"],
+    }
 
 
 @_locked
@@ -808,7 +1023,7 @@ def review_prepare(root: pathlib.Path) -> dict:
         plan_review, plan_review_issues = _validate.validate_plan_review(
             work / "plan-review.json",
             _plan_subject_digest(root, state),
-            {unit.id for unit in plan.units},
+            {unit.id for unit in plan.effective_units},
         )
         errors.extend(_errors(plan_review_issues))
         if plan_review is not None and plan_review.verdict != "approved":
@@ -887,6 +1102,7 @@ def review_prepare(root: pathlib.Path) -> dict:
         ),
         "inputs": {
             "plan": str(work / "plan.md"),
+            "plan_ledger": str(work / "plan-ledger.json"),
             "composition": str(work / "composition.md"),
             "composition_review": str(work / "composition-review.json"),
             "evidence": str(work / "evidence"),

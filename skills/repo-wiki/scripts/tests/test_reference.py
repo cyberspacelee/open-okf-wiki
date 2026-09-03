@@ -22,7 +22,6 @@ from _models import (
 )
 from _reference import derive_pages, enrich_data_model
 
-
 MARKER = "<!-- okf-generated:model -->"
 
 
@@ -60,6 +59,7 @@ def captured_tables():
         soft=True,
         **ref,
     )
+
     def col(position, name, kind="bigint"):
         return {
             "position": position,
@@ -78,9 +78,7 @@ def captured_tables():
             "relation_kind": "table",
             "persistence": "permanent",
             "columns": [col(1, "tenant_id"), col(2, "id")],
-            "constraints": [
-                con("customers_pkey", "primary_key", ["tenant_id", "id"])
-            ],
+            "constraints": [con("customers_pkey", "primary_key", ["tenant_id", "id"])],
             "primary_key": ["tenant_id", "id"],
             "foreign_keys": [],
             "indexes": [],
@@ -151,54 +149,102 @@ def model(tmp_path, monkeypatch):
     )
     manifest = _db.load_index(tmp_path, catalog["storage_key"])
     resources = {item["name"]: item["resource"] for item in manifest["tables"]}
-    unit = NS(id="sales-model", domain_ids=["sales"])
-    domain = NS(id="sales", name="Sales", owner_unit_id="sales-model")
-    concepts = [
-        NS(
-            id=concept_id,
-            name=title,
-            owner_unit_id="sales-model",
-            model_unit_id="sales-model",
-            model_basis=NS(
-                basis="opengauss",
-                coverage="full",
-                catalog_tables=[NS(source="database", table=table)],
-            ),
-        )
-        for concept_id, table, title in (
-            ("customer", "customers", "Customer"),
-            ("order", "orders", "Order"),
-        )
-    ]
-    groups = [
-        NS(
-            source="database",
-            role="entity",
-            tables=[table],
-            domain_id="sales",
-            evidence=[],
-            gap_ids=[],
-        )
-        for table in ("customers", "orders")
-    ]
-    plan = KnowledgePlan.model_construct(
-        domains=[domain],
-        concepts=concepts,
-        table_groups=groups,
-        table_replicas=[],
-        units=[unit],
+    plan = KnowledgePlan.model_validate(
+        {
+            "kind": "knowledge-plan",
+            "source_areas": [
+                {
+                    "id": "database.sales",
+                    "source": "database",
+                    "paths": ["."],
+                    "disposition": "domain",
+                    "domain_ids": ["sales"],
+                    "evidence_seeds": ["database/."],
+                }
+            ],
+            "domains": [
+                {
+                    "id": "sales",
+                    "name": "Sales",
+                    "definition": "Owns customer and order persistence.",
+                    "owner_unit_id": "sales-capability",
+                }
+            ],
+            "concepts": [
+                {
+                    "id": concept_id,
+                    "domain_id": "sales",
+                    "kind": "entity",
+                    "name": title,
+                    "definition": f"The Sales {title.lower()} record.",
+                    "owner_unit_id": "sales-capability",
+                    "model_basis": {
+                        "basis": "opengauss",
+                        "catalog_tables": [
+                            {"source": "database", "table": table}
+                        ],
+                    },
+                }
+                for concept_id, table, title in (
+                    ("customer", "customers", "Customer"),
+                    ("order", "orders", "Order"),
+                )
+            ],
+            "table_groups": [
+                {
+                    "source": "database",
+                    "role": "entity",
+                    "tables": ["customers", "orders"],
+                    "domain_id": "sales",
+                }
+            ],
+            "units": [
+                {
+                    "id": "sales-capability",
+                    "kind": "capability",
+                    "question": "What does Sales own?",
+                    "domain_ids": ["sales"],
+                    "concept_ids": ["customer", "order"],
+                    "scopes": [
+                        {"source": "database", "role": "model", "paths": ["."]}
+                    ],
+                    "evidence_seeds": ["database/."],
+                }
+            ],
+        }
     )
-    page = NS(
-        id="sales-data-model",
-        path="sales/data-model.md",
-        type="DataModel",
-        title="Sales data model",
-        units=["sales-model"],
+    composition = CompositionMap.model_validate(
+        {
+            "kind": "composition-map",
+            "reference_roots": [
+                {"source": "database", "path": "reference/database"}
+            ],
+            "pages": [
+                {
+                    "id": "sales-domain",
+                    "path": "sales/sales.md",
+                    "type": "Domain",
+                    "title": "Sales",
+                    "description": "Open before changing Sales boundaries.",
+                    "tags": ["sales"],
+                    "units": ["sales-capability"],
+                    "diagrams": [],
+                },
+                {
+                    "id": "sales-data-model",
+                    "path": "sales/data-model.md",
+                    "type": "DataModel",
+                    "title": "Sales data model",
+                    "description": "Open before changing Sales persistence.",
+                    "tags": ["sales"],
+                    "units": ["model.customer", "model.order"],
+                    "merge_rationale": "Customer and Order form one model.",
+                    "diagrams": [],
+                },
+            ],
+        }
     )
-    composition = CompositionMap.model_construct(
-        reference_roots=[NS(source="database", path="reference/database")],
-        pages=[page],
-    )
+    page = composition.pages[1]
     return tmp_path, catalog, resources, plan, composition, page
 
 
@@ -220,7 +266,7 @@ def test_derive_pages_has_schema_tables_ids_and_links(model):
             "Table",
         ),
     ]
-    assert "### [Sales][sales-data-model]" in pages[0]["body"]
+    assert "### [Sales][sales-domain]" in pages[0]["body"]
     assert "#### entity" in pages[0]["body"]
     assert "[customers][table-database-customers]" in pages[0]["body"]
     assert "[orders][table-database-orders]" in pages[0]["body"]
@@ -232,16 +278,25 @@ def test_derive_pages_has_schema_tables_ids_and_links(model):
         "orders_customer_fk",
         "orders_amount_idx",
         "orders_2026",
-        "[Sales][sales-data-model]",
-        "[Order][sales-data-model]",
+        "[Sales][sales-domain]",
+        "[Order][sales-domain]",
     ):
         assert expected in order["body"]
 
 
 def test_unowned_tables_are_grouped_by_role(model):
     root, catalog, _resources, plan, composition, _page = model
-    plan.table_groups[1].domain_id = None
-    plan.table_groups[1].role = "infrastructure"
+    group = plan.table_groups[0]
+    plan.table_groups = [
+        group.model_copy(update={"tables": ["customers"]}),
+        group.model_copy(
+            update={
+                "tables": ["orders"],
+                "domain_id": None,
+                "role": "infrastructure",
+            }
+        ),
+    ]
     plan.concepts[1].model_basis.catalog_tables = []
 
     pages = derive_pages(
@@ -266,9 +321,7 @@ def test_reference_pages_are_bilingual(model):
         "catalogs": [catalog],
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
-    pages = derive_pages(
-        root, state, plan, composition
-    )
+    pages = derive_pages(root, state, plan, composition)
     assert pages[0]["title"] == "database 数据库 Schema"
     assert "## Domain 与表角色" in pages[0]["body"]
     assert pages[2]["title"] == "orders 数据表"
@@ -333,7 +386,7 @@ def test_reference_renderer_uses_the_selected_templates(model, monkeypatch):
 def test_physical_er_resolves_foreign_keys_across_captured_schemas():
     column = lambda name: {"name": name, "type": "bigint", "nullable": False}
     customer = {
-        "resource": "opengauss://localhost/app/crm/customers",
+        "resource": "database/customers",
         "schema": "crm",
         "name": "customers",
         "columns": [column("id")],
@@ -342,7 +395,7 @@ def test_physical_er_resolves_foreign_keys_across_captured_schemas():
         "indexes": [],
     }
     order = {
-        "resource": "opengauss://localhost/app/sales/orders",
+        "resource": "database/orders",
         "schema": "sales",
         "name": "orders",
         "columns": [column("id"), column("customer_id")],
@@ -362,20 +415,24 @@ def test_physical_er_resolves_foreign_keys_across_captured_schemas():
     }
 
     body, diagram = _reference._physical_er(
-        NS(title="Sales model"), [("crm", customer), ("sales", order)], "en"
+        NS(title="Sales model"),
+        [("database", customer), ("database", order)],
+        "en",
     )
 
     assert body.count("orders_customer_fk") == 1
-    assert diagram["sources"] == ["crm", "sales"]
+    assert diagram["sources"] == ["database"]
 
 
 def test_composition_reserves_a_diagram_slot_for_generated_physical_er(model):
     _root, _catalog, _resources, plan, composition, _page = model
-    plan.units = [
-        NS(id="sales-model", domain_ids=["sales"], scopes=[NS(source="database")])
-    ]
     diagrams = [
-        DiagramSpec(id=f"logical-{index}", kind="er", question="What maps?", sources=["database"])
+        DiagramSpec(
+            id=f"logical-{index}",
+            kind="er",
+            question="What maps?",
+            sources=["database"],
+        )
         for index in range(4)
     ]
     composition.pages = [
@@ -383,7 +440,7 @@ def test_composition_reserves_a_diagram_slot_for_generated_physical_er(model):
             id="sales-data-model",
             path="sales/data-model.md",
             type="DataModel",
-            units=["sales-model"],
+            units=["model.customer", "model.order"],
             diagrams=diagrams,
         )
     ]
@@ -429,11 +486,14 @@ def test_enrich_injects_composite_er_and_filters_nonphysical_fk(model):
         "The diagram contains only validated, enabled, non-soft OpenGauss foreign keys.[^"
         in body
     )
-    assert validate_diagrams(
-        extract(body),
-        [DiagramSpec.model_validate(meta["diagrams"][0])],
-        {"database": {item["id"] for item in meta["sources"]}},
-    ) == []
+    assert (
+        validate_diagrams(
+            extract(body),
+            [DiagramSpec.model_validate(meta["diagrams"][0])],
+            {"database": {item["id"] for item in meta["sources"]}},
+        )
+        == []
+    )
 
 
 def test_enrich_is_bilingual_and_marker_is_exact(model):
@@ -505,16 +565,26 @@ def test_reference_pages_bind_into_candidate_and_manifest(model):
         title="Sales data model",
         description="Open before changing the Sales persistence model.",
         tags=["sales"],
-        units=["sales-model"],
+        units=["model.customer", "model.order"],
+        merge_rationale="Customer and Order form one Sales persistence model.",
+        diagrams=[],
+    )
+    domain_page = CompositionPage.model_construct(
+        id="sales-domain",
+        path="sales/sales.md",
+        type="Domain",
+        title="Sales",
+        description="Open before changing Sales capability boundaries.",
+        tags=["sales"],
+        units=["sales-capability"],
         merge_rationale=None,
         diagrams=[],
     )
     composition = CompositionMap.model_construct(
         kind="composition-map",
         reference_roots=[ReferenceRoot(source="database", path="reference/database")],
-        pages=[page],
+        pages=[domain_page, page],
     )
-    plan.units = [NS(id="sales-model", domain_ids=["sales"], scopes=[])]
     state = {
         "run_id": "run-reference",
         "language": "en",
@@ -526,6 +596,44 @@ def test_reference_pages_bind_into_candidate_and_manifest(model):
     work = root / ".okf-wiki/runs/run-reference/work"
     draft = work / "drafts/sales-data-model.md"
     draft.parent.mkdir(parents=True)
+    (work / "drafts/sales-domain.md").write_text(
+        render(
+            {"coverage": "full", "sources": [{"id": "catalog", "resource": "database/."}]},
+            """## Responsibility and public surface
+
+Sales owns customer and order persistence.[^catalog]
+
+## Invariants and rules
+
+| Rule | Enforcement point | Observable failure |
+|---|---|---|
+| Sales owns its records. | Catalog | Missing ownership |
+
+## Data model overview
+
+Customer and Order form the Sales model.[^catalog]
+
+## State and lifecycle
+
+The fixture captures structure but no state lifecycle.[^catalog]
+
+## Key flows
+
+The fixture captures structure but no operational flow.[^catalog]
+
+## Concepts
+
+Customer and Order are the primary concepts.[^catalog]
+
+## Change points
+
+Start from the Sales data model.[^catalog]
+
+[^catalog]: Frozen OpenGauss Catalog.
+""",
+        ),
+        encoding="utf-8",
+    )
     draft.write_text(
         render(
             {"coverage": "full", "sources": []},
@@ -563,6 +671,7 @@ Use the generated references.
         encoding="utf-8",
     )
     (work / "plan.md").write_text("plan\n", encoding="utf-8")
+    (work / "plan-ledger.json").write_text("{}\n", encoding="utf-8")
     (work / "plan-review.json").write_text("{}\n", encoding="utf-8")
 
     _state._bind_candidate(root, state, plan, composition)
@@ -590,12 +699,17 @@ Use the generated references.
     assert manifest["reference/database/schema.md"]["inputs"] == {
         "catalog:database": catalog["content_hash"]
     }
-    assert manifest["reference/database/sales/tables/orders.md"]["origin"] == "generated"
-    assert len(_publish._nav_manifest(candidate)) == 4
+    assert (
+        manifest["reference/database/sales/tables/orders.md"]["origin"] == "generated"
+    )
+    assert len(_publish._nav_manifest(candidate)) == 5
     expected = {
         item["path"]: {**item, "owner": "workspace"}
         for item in derive_pages(root, state, plan, composition)
     }
+    expected[domain_page.path] = _validate.generated_page_spec(
+        root, state, plan, domain_page
+    )
     expected[page.path] = _validate.generated_page_spec(root, state, plan, page)
     errors = [
         issue

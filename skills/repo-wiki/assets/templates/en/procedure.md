@@ -5,24 +5,20 @@ sources: []
 
 ## Responsibility and boundaries
 
-State the calculation or orchestration this procedure owns and what remains in
-calling or downstream capabilities.
+{{replace: owned calculation/orchestration and caller/downstream boundaries}}
 
 ## Inputs and outputs
 
-Name the domain inputs, produced values or records, and required preconditions.
-Keep field inventories in generated Schema or Table references.
+{{replace: domain inputs, outputs, and preconditions}}
 
 ## Execution and algorithm
 
-Present the ordered stages, grouping rules and load-bearing formulas. Render a
-planned diagram when ordering or branching is easier to verify visually.
+{{replace: ordered stages, grouping rules, formulas, and planned diagram}}
 
 ## Rules and failure modes
 
-Use a compact table for each rule, enforcement point and observable failure.
-Do not repeat shared infrastructure behavior; link its owning page.
+{{replace: compact rule, enforcement point, failure, and owner-link table}}
 
 ## Change points
 
-Route changes to the algorithm, orchestration entry point and affected tests.
+{{replace: algorithm, orchestration, and test change routing}}

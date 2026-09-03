@@ -24,3 +24,9 @@ jobs:
         run: uv run --with pytest --with pydantic --with PyYAML --with "psycopg[binary]" pytest -q skills/repo-wiki/scripts/tests
       - name: CLI end-to-end
         run: uv run skills/repo-wiki/evals/run_cli_e2e.py
+      - name: PowerShell JSON pipeline
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $result = uv run skills/repo-wiki/evals/run_cli_e2e.py | ConvertFrom-Json
+          if (-not $result.passed) { throw "CLI end-to-end JSON reported failure" }

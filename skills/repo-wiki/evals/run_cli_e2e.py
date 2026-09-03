@@ -114,7 +114,6 @@ def knowledge_plan(units: list[dict]) -> dict:
                 "name": "Workspace routing",
                 "definition": "Owns maintainer routing and the API-to-WebUI boundary.",
                 "owner_unit_id": "workspace-routing",
-                "evidence": [api_ref, web_ref],
             }
         ],
         "concepts": [
@@ -125,15 +124,9 @@ def knowledge_plan(units: list[dict]) -> dict:
                 "name": "Routing",
                 "definition": "Selects one maintainer route for a workspace question.",
                 "owner_unit_id": "workspace-routing",
-                "model_unit_id": "workspace-model",
-                "owner_evidence": [api_ref],
-                "behavior_seeds": [api_ref],
                 "model_basis": {
                     "basis": "code",
-                    "coverage": "full",
-                    "catalog_tables": [],
                     "structure_evidence": [api_ref],
-                    "gap_ids": [],
                 },
             },
             {
@@ -143,16 +136,7 @@ def knowledge_plan(units: list[dict]) -> dict:
                 "name": "Source boundary",
                 "definition": "Coordinates the API and WebUI handoff without persistence.",
                 "owner_unit_id": "workspace-routing",
-                "model_unit_id": None,
-                "owner_evidence": [api_ref, web_ref],
-                "behavior_seeds": [api_ref, web_ref],
-                "model_basis": {
-                    "basis": "none",
-                    "coverage": "full",
-                    "catalog_tables": [],
-                    "structure_evidence": [],
-                    "gap_ids": [],
-                },
+                "model_basis": {"basis": "none"},
             },
         ],
         "table_groups": [],
@@ -170,6 +154,26 @@ def knowledge_plan(units: list[dict]) -> dict:
         "units": units,
         "gaps": [],
     }
+
+
+def plan_narrative() -> str:
+    return markdown(
+        {"kind": "knowledge-plan-narrative", "ledger": "plan-ledger.json"},
+        "# Knowledge Plan\n\n"
+        "## Global model\n\n"
+        "The API owns routing and WebUI participates at the source boundary.\n\n"
+        "## Lifecycles and cross-source relationships\n\n"
+        "A maintenance question enters API routing and crosses to WebUI when the "
+        "selected boundary requires it.\n\n"
+        "## Evidence-backed conclusions\n\n"
+        "Both source entry points are present in the frozen revisions. [^api] [^web]\n\n"
+        "## Rejected hypotheses\n\n"
+        "The sources do not prove a durable queue or database-backed handoff.\n\n"
+        "## Unresolved gaps\n\n"
+        "The bounded fixture has no failure behavior to document.\n\n"
+        "[^api]: `API/src/main/java/example/App.java#L1-L2`\n"
+        "[^web]: `WebUI/src/main/java/example/App.java#L1-L2`",
+    )
 
 
 def page(refs: list[tuple[str, str]], logical_link: str, page_type: str) -> str:
@@ -252,6 +256,12 @@ def page(refs: list[tuple[str, str]], logical_link: str, page_type: str) -> str:
             "| Rule | Enforcement point | Observable failure |\n"
             "| --- | --- | --- |\n"
             "| Both sides remain explicit. | Source boundary | Missing handoff |\n\n"
+            "## Data model overview\n\n"
+            f"Routing has a code-derived structural view. {logical_link}\n\n"
+            "## State and lifecycle\n\n"
+            "The bounded fixture exposes entry and handoff, but no durable state.\n\n"
+            "## Key flows\n\n"
+            f"The API-to-WebUI boundary is the primary cross-source flow. {logical_link}\n\n"
             f"## Concepts\n\n{logical_link}\n\n"
             "## Change points\n\nChange both boundary participants and tests.\n\n"
             f"{definitions}"
@@ -292,7 +302,7 @@ def evaluate(base: pathlib.Path) -> dict:
         or started["policy"]["evidence"]["search"]["max_results"] != 1
         or started["policy"]["evidence"]["read"]["max_lines"] != 1
         or started["sources"] != ["API", "WebUI"]
-        or started["next_actions"] != ["repair work/plan.md"]
+        or started["next_actions"] != ["repair work/plan.md and work/plan-ledger.json"]
     ):
         raise RuntimeError(f"Run did not enter Plan: {started}")
     search = run(ws, "evidence", "search", "public", "--source", "API")
@@ -328,35 +338,27 @@ def evaluate(base: pathlib.Path) -> dict:
     write(
         work / "evidence/API/api-entry.md", f"# API entry\n\nEvidence: `{locator}`.\n"
     )
+    write(work / "plan.md", plan_narrative())
     write(
-        work / "plan.md",
-        markdown(
-            {
-                **knowledge_plan(
-                    [
-                        unit(
-                            "workspace-routing",
-                            ["API", "WebUI"],
-                            "capability",
-                            ["routing", "source-boundary"],
-                        ),
-                        unit("workspace-algorithm", ["API"], "flow", ["routing"]),
-                        unit(
-                            "source-boundaries",
-                            ["API", "WebUI"],
-                            "integration",
-                            ["source-boundary"],
-                        ),
-                        unit(
-                            "workspace-model",
-                            ["API", "WebUI"],
-                            "data-model",
-                            ["routing"],
-                        ),
-                    ]
-                )
-            },
-            "# Knowledge Plan\n\nThe API and WebUI expose one cross-Source boundary.",
+        work / "plan-ledger.json",
+        json.dumps(
+            knowledge_plan(
+                [
+                    unit(
+                        "workspace-routing",
+                        ["API", "WebUI"],
+                        "capability",
+                        ["routing", "source-boundary"],
+                    ),
+                    unit("workspace-algorithm", ["API"], "flow", ["routing"]),
+                    unit(
+                        "source-boundaries",
+                        ["API", "WebUI"],
+                        "integration",
+                        ["source-boundary"],
+                    ),
+                ]
+            )
         ),
     )
 
@@ -379,7 +381,7 @@ def evaluate(base: pathlib.Path) -> dict:
                         "rationale": "Entry navigation and the routing algorithm answer different maintenance questions.",
                     },
                     {
-                        "unit_ids": ["workspace-algorithm", "workspace-model"],
+                        "unit_ids": ["workspace-algorithm", "model.routing"],
                         "decision": "keep-separate",
                         "rationale": "Routing behavior and its code-derived model answer different questions.",
                     },
@@ -399,11 +401,7 @@ def evaluate(base: pathlib.Path) -> dict:
     if run(ws, "run", "status")["phase"] != "plan":
         raise RuntimeError("rejected Plan review did not return to planning")
     plan_path = work / "plan.md"
-    write(
-        plan_path,
-        plan_path.read_text(encoding="utf-8")
-        + "\n\n## Gaps\n\nThe bounded fixture has no failure behavior to document.\n",
-    )
+    write(plan_path, plan_path.read_text(encoding="utf-8") + "\n")
     plan_packet = run(ws, "review", "plan")
     if plan_packet.get("previous_review", {}).get("issues", [{}])[0].get("id") != (
         "domain.failure-handling"
@@ -427,7 +425,7 @@ def evaluate(base: pathlib.Path) -> dict:
                         "rationale": "Entry navigation and the routing algorithm answer different maintenance questions.",
                     },
                     {
-                        "unit_ids": ["workspace-algorithm", "workspace-model"],
+                        "unit_ids": ["workspace-algorithm", "model.routing"],
                         "decision": "keep-separate",
                         "rationale": "Routing behavior and its code-derived model answer different questions.",
                     },
@@ -485,7 +483,7 @@ def evaluate(base: pathlib.Path) -> dict:
                         "title": "Routing model",
                         "description": "Open before changing routing structure.",
                         "tags": ["routing", "model"],
-                        "units": ["workspace-model"],
+                        "units": ["model.routing"],
                         "diagrams": [
                             {
                                 "id": "routing-model",
@@ -550,7 +548,7 @@ def evaluate(base: pathlib.Path) -> dict:
             }
         ),
     )
-    if run(ws, "run", "status")["phase"] != "write":
+    if run(ws, "run", "status")["phase"] != "composition":
         raise RuntimeError("rejected Composition review did not return to composition")
     composition_path = work / "composition.md"
     write(
@@ -604,6 +602,28 @@ def evaluate(base: pathlib.Path) -> dict:
     )
     if run(ws, "run", "status")["phase"] != "write":
         raise RuntimeError("approved Composition review did not unlock page writing")
+
+    prepared_packets = {}
+    for page_id in ("architecture", "overview", "procedure", "data-model"):
+        prepared = run(ws, "page", "prepare", page_id)
+        packet = json.loads(pathlib.Path(prepared["artifact"]).read_text())
+        if (
+            packet["page"]["id"] != page_id
+            or pathlib.Path(prepared["output"]).name != f"{page_id}.md"
+        ):
+            raise RuntimeError(f"invalid page packet for {page_id}: {packet}")
+        prepared_packets[page_id] = packet
+    overview_packet = prepared_packets["overview"]
+    if (
+        {item["id"] for item in overview_packet["concepts"]}
+        != {"routing", "source-boundary"}
+        or {item["id"] for item in overview_packet["related_pages"]}
+        != {"architecture", "procedure", "data-model"}
+        or [item["id"] for item in overview_packet["units"]] != ["workspace-routing"]
+        or {item["id"] for item in overview_packet["projections"]}
+        != {"workspace-algorithm", "source-boundaries", "model.routing"}
+    ):
+        raise RuntimeError("Domain page packet did not project its complete domain")
 
     api_ref = "API/src/main/java/example/App.java#L1-L2"
     web_ref = "WebUI/src/main/java/example/App.java#L1-L2"

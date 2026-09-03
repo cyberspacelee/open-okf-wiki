@@ -13,6 +13,7 @@ import random
 import re
 import subprocess
 import sys
+from urllib.parse import quote, unquote
 
 SKILL = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL / "scripts"))
@@ -145,9 +146,10 @@ def table_dispositions(plan: dict) -> list[dict]:
     ]
 
 
-def plan_subject_digest(plan: pathlib.Path, state: dict) -> str:
+def plan_subject_digest(plan: pathlib.Path, ledger: pathlib.Path, state: dict) -> str:
     payload = {
         "plan": hashlib.sha256(plan.read_bytes()).hexdigest(),
+        "plan_ledger": hashlib.sha256(ledger.read_bytes()).hexdigest(),
         "revisions": state["revisions"],
         "catalogs": [
             {"name": item["name"], "content_hash": item["content_hash"]}
@@ -161,18 +163,83 @@ def plan_subject_digest(plan: pathlib.Path, state: dict) -> str:
 
 def composition_subject_digest(
     plan: pathlib.Path,
+    ledger: pathlib.Path,
     plan_review: pathlib.Path,
     composition: pathlib.Path,
     state: dict,
 ) -> str:
     payload = {
-        "plan_subject_digest": plan_subject_digest(plan, state),
+        "plan_subject_digest": plan_subject_digest(plan, ledger, state),
         "plan_review": hashlib.sha256(plan_review.read_bytes()).hexdigest(),
         "composition": hashlib.sha256(composition.read_bytes()).hexdigest(),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def model_unit_id(concept: dict) -> str | None:
+    if concept.get("model_basis", {}).get("basis") == "none":
+        return None
+    concept_id = concept["id"]
+    candidate = f"model.{concept_id}"
+    if len(candidate) <= 64:
+        return candidate
+    digest = hashlib.sha256(concept_id.encode()).hexdigest()[:10]
+    return f"model.{concept_id[:47].rstrip('.-')}.{digest}"
+
+
+def effective_units(plan: dict) -> list[dict]:
+    relationships = plan.get("relationships", [])
+    derived = []
+    for concept in plan.get("concepts", []):
+        unit_id = model_unit_id(concept)
+        if unit_id is None:
+            continue
+        basis = concept.get("model_basis", {})
+        tables = basis.get("catalog_tables", [])
+        evidence = (
+            [f"{item['source']}/{quote(item['table'], safe='')}" for item in tables]
+            if basis.get("basis") == "opengauss"
+            else list(basis.get("structure_evidence", []))
+        )
+        evidence.extend(
+            resource
+            for relation in relationships
+            if concept["id"]
+            in (relation.get("from_concept_id"), relation.get("to_concept_id"))
+            for resource in relation.get("evidence", [])
+        )
+        catalog_scopes = {(item["source"], item["table"]) for item in tables}
+        scopes: dict[str, list[str]] = {}
+        for resource in evidence:
+            source, separator, path = resource.partition("/")
+            if not separator:
+                continue
+            relative = unquote(path.split("#", 1)[0])
+            if (source, relative) not in catalog_scopes:
+                scopes.setdefault(source, []).append(relative)
+        for item in tables:
+            scopes.setdefault(item["source"], []).append(item["table"])
+        derived.append(
+            {
+                "id": unit_id,
+                "kind": "data-model",
+                "question": f"How is {concept['name']} represented, persisted, and related?",
+                "domain_ids": [concept["domain_id"]],
+                "concept_ids": [concept["id"]],
+                "scopes": [
+                    {
+                        "source": source,
+                        "role": "model",
+                        "paths": list(dict.fromkeys(paths)),
+                    }
+                    for source, paths in scopes.items()
+                ],
+                "evidence_seeds": list(dict.fromkeys(evidence)),
+            }
+        )
+    return [*plan.get("units", []), *derived]
 
 
 _TERMINAL_AGENT_STATES = {
@@ -296,8 +363,8 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     parsed_events, commands, spawn_prompts, trace_agents = trace_data(trace_path)
 
     check(
-        "Run uses the domain-concept-model contract without scheduler state",
-        state.get("contract") == "domain-concept-model-coverage"
+        "Run uses the split Plan/ledger contract without scheduler state",
+        state.get("contract") == "domain-plan-ledger-coverage"
         and manifest.get("policy") == state.get("policy")
         and manifest.get("skill_bundle_digest") == state.get("skill_bundle_digest")
         and not any(
@@ -317,8 +384,10 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         f"state_catalogs={state.get('catalogs')}, manifest_catalogs={manifest.get('catalogs')}",
     )
 
-    plan = frontmatter(work / "plan.md")
-    units = plan.get("units", [])
+    plan_doc = parse_file(work / "plan.md")
+    plan = load(work / "plan-ledger.json")
+    authored_units = plan.get("units", [])
+    units = effective_units(plan)
     source_areas = plan.get("source_areas", [])
     domains = plan.get("domains", [])
     concepts = plan.get("concepts", [])
@@ -354,10 +423,9 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
             and (item.get("disposition") != "domain" or item.get("domain_ids"))
             for item in source_areas
         )
-        and all(item.get("evidence") for item in domains)
         and all(
             concept.get("domain_id") in domain_ids
-            and concept.get("owner_evidence")
+            and concept.get("owner_unit_id") in unit_ids
             for concept in concepts
         )
         and all(
@@ -400,20 +468,19 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         and (
             (
                 concept.get("model_basis", {}).get("basis") == "none"
-                and concept.get("model_unit_id") is None
+                and model_unit_id(concept) is None
             )
             or (
-                concept.get("model_unit_id") in unit_ids
-                and units_by_id[concept.get("model_unit_id")].get("kind")
-                == "data-model"
+                model_unit_id(concept) in unit_ids
+                and units_by_id[model_unit_id(concept)].get("kind") == "data-model"
                 and concept.get("id")
-                in units_by_id[concept.get("model_unit_id")].get("concept_ids", [])
+                in units_by_id[model_unit_id(concept)].get("concept_ids", [])
             )
         )
         for concept in concepts
     )
     check(
-        "Domain and Concept owners close through explicit units",
+        "Domain and Concept owners close through authored and derived units",
         owner_model_units_closed,
         f"domains={len(domains)}, concepts={len(concepts)}, units={len(units)}",
     )
@@ -423,9 +490,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         for catalog in catalogs
         for table in catalog.get("tables", [])
     ]
-    disposed_tables = [
-        (item.get("source"), item.get("table")) for item in dispositions
-    ]
+    disposed_tables = [(item.get("source"), item.get("table")) for item in dispositions]
     table_dispositions_closed = (
         len(selected_tables) == len(set(selected_tables))
         and len(disposed_tables) == len(set(disposed_tables))
@@ -450,7 +515,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     def basis_valid(concept: dict) -> bool:
         basis = concept.get("model_basis", {})
         kind = basis.get("basis")
-        coverage = basis.get("coverage")
+        coverage = basis.get("coverage", "full")
         catalog_tables = basis.get("catalog_tables", [])
         structure = basis.get("structure_evidence", [])
         concept_gaps = basis.get("gap_ids", [])
@@ -461,7 +526,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
             return False
         if kind == "none":
             return (
-                concept.get("model_unit_id") is None
+                model_unit_id(concept) is None
                 and not catalog_tables
                 and not structure
                 and coverage == "full"
@@ -473,16 +538,15 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         return all(
             (table.get("source"), table.get("table")) in set(selected_tables)
             and concept.get("id")
-            in dispositions_by_table[
-                (table.get("source"), table.get("table"))
-            ].get("concept_ids", [])
+            in dispositions_by_table[(table.get("source"), table.get("table"))].get(
+                "concept_ids", []
+            )
             for table in catalog_tables
         )
 
     basis_counts = {
         kind: sum(
-            concept.get("model_basis", {}).get("basis") == kind
-            for concept in concepts
+            concept.get("model_basis", {}).get("basis") == kind for concept in concepts
         )
         for kind in ("opengauss", "code", "none")
     }
@@ -496,9 +560,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         all(
             scope.get("role")
             in {"owner", "producer", "contract", "consumer", "feedback", "model"}
-            and scope_has_seed(
-                scope, unit.get("evidence_seeds", []), catalogs
-            )
+            and scope_has_seed(scope, unit.get("evidence_seeds", []), catalogs)
             for scope in unit.get("scopes", [])
         )
         and (
@@ -509,20 +571,45 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         for unit in units
     )
     check(
-        "one living Knowledge Plan owns semantic units without page bindings",
+        "the Plan narrative and ledger separate explanation from routing data",
         plan.get("kind") == "knowledge-plan"
-        and isinstance(units, list)
-        and bool(units)
+        and not plan_doc.errors
+        and plan_doc.meta
+        == {"kind": "knowledge-plan-narrative", "ledger": "plan-ledger.json"}
+        and all(
+            heading in {section.title for section in extract(plan_doc.body).sections}
+            for heading in (
+                (
+                    "全局模型",
+                    "生命周期与跨源关系",
+                    "证据支持的结论",
+                    "被拒绝的假设",
+                    "未解决的缺口",
+                )
+                if state.get("language") == "zh"
+                else (
+                    "Global model",
+                    "Lifecycles and cross-source relationships",
+                    "Evidence-backed conclusions",
+                    "Rejected hypotheses",
+                    "Unresolved gaps",
+                )
+            )
+        )
+        and "[^" in plan_doc.body
+        and isinstance(authored_units, list)
+        and bool(authored_units)
+        and not any(unit.get("kind") == "data-model" for unit in authored_units)
         and all(
             "id" in unit
             and unit.get("domain_ids")
             and "concept_ids" in unit
             and "path" not in unit
             and "owner" not in unit
-            for unit in units
+            for unit in authored_units
         )
         and scope_closed,
-        f"units={len(units)}",
+        f"authored_units={len(authored_units)}, effective_units={len(units)}",
     )
     plan_review_path = work / "plan-review.json"
     plan_review = load(plan_review_path) if plan_review_path.is_file() else {}
@@ -537,7 +624,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         and not has_open_issues(plan_review)
         and (len(units) < 2 or probed_units == {unit["id"] for unit in units})
         and plan_review.get("subject_digest")
-        == plan_subject_digest(work / "plan.md", state),
+        == plan_subject_digest(work / "plan.md", work / "plan-ledger.json", state),
         f"verdict={plan_review.get('verdict')}",
     )
     if scenario == "killbill":
@@ -615,8 +702,8 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
             pages_by_unit.get(concept.get("owner_unit_id"), {}).get("type")
             in {"Domain", "Concept"}
             and (
-                concept.get("model_unit_id") is None
-                or pages_by_unit.get(concept.get("model_unit_id"), {}).get("type")
+                model_unit_id(concept) is None
+                or pages_by_unit.get(model_unit_id(concept), {}).get("type")
                 == "DataModel"
             )
             for concept in concepts
@@ -650,6 +737,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         and composition_review.get("subject_digest")
         == composition_subject_digest(
             work / "plan.md",
+            work / "plan-ledger.json",
             plan_review_path,
             work / "composition.md",
             state,
@@ -662,6 +750,52 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         "authored drafts match Composition pages without generated references",
         drafts == set(pages),
         f"drafts={sorted(drafts)}, pages={sorted(pages)}",
+    )
+    packet_paths = sorted((work / "page-packets").glob("*.json"))
+    page_packets = {path.stem: load(path) for path in packet_paths}
+    domain_concepts = {
+        domain_id: {item["id"] for item in concepts if item["domain_id"] == domain_id}
+        for domain_id in domain_ids
+    }
+    packets_bounded = set(page_packets) == set(pages) and all(
+        packet.get("page", {}).get("id") == page_id
+        and {item.get("id") for item in packet.get("units", [])}
+        == set(pages[page_id].get("units", []))
+        and not ({"source_areas", "table_groups", "table_replicas"} & set(packet))
+        for page_id, packet in page_packets.items()
+    )
+    domain_packets_project_units = all(
+        {item.get("id") for item in page_packets[page_id].get("projections", [])}
+        == {
+            unit["id"]
+            for unit in units
+            if unit["id"] not in page.get("units", [])
+            and set(unit.get("domain_ids", []))
+            & {
+                domain_id
+                for owned_id in page.get("units", [])
+                for domain_id in units_by_id[owned_id].get("domain_ids", [])
+            }
+        }
+        for page_id, page in pages.items()
+        if page.get("type") == "Domain"
+    )
+    domain_packets_complete = all(
+        {item.get("id") for item in page_packets[page_id].get("concepts", [])}
+        == set().union(
+            *(
+                domain_concepts.get(domain_id, set())
+                for unit_id in page.get("units", [])
+                for domain_id in units_by_id[unit_id].get("domain_ids", [])
+            )
+        )
+        for page_id, page in pages.items()
+        if page.get("type") == "Domain"
+    )
+    check(
+        "each writer receives one bounded page packet and Domain projections are complete",
+        packets_bounded and domain_packets_complete and domain_packets_project_units,
+        f"packets={len(page_packets)}, pages={len(pages)}",
     )
     candidate = run_dir / "candidate"
     candidate_pages = [
@@ -705,9 +839,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     check(
         "Publication contains authored Composition pages plus derived references",
         expected_paths <= set(manifest_pages)
-        and {
-            manifest_pages[path].get("page_id") for path in expected_paths
-        }
+        and {manifest_pages[path].get("page_id") for path in expected_paths}
         == set(pages)
         and all(
             any(
@@ -721,7 +853,9 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         and len(reference_types) == len(catalog_sources) + len(selected_tables)
         and {item.get("path") for item in manifest.get("nav", [])}
         == set(manifest_pages)
-        and all(isinstance(item.get("inputs"), dict) for item in manifest_pages.values())
+        and all(
+            isinstance(item.get("inputs"), dict) for item in manifest_pages.values()
+        )
         and all(
             any(key.startswith("catalog:") for key in manifest_pages[path]["inputs"])
             for path in reference_paths

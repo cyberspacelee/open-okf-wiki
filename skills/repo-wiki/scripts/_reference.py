@@ -583,7 +583,7 @@ def _mermaid_token(value: str, prefix: str) -> str:
 
 
 def _database_id(table: dict) -> str:
-    return table["resource"].rsplit("/", 2)[0]
+    return table["resource"].partition("/")[0]
 
 
 def _physical_er(

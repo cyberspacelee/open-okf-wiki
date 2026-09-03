@@ -48,9 +48,7 @@ def test_resolve_url_uses_environment_before_dotenv(tmp_path, monkeypatch):
 )
 def test_resolve_url_only_accepts_complete_opengauss_urls(tmp_path, url):
     (tmp_path / ".env").write_text(f"DB_URL={url}\n")
-    with pytest.raises(
-        DbError, match="opengauss:// URL with host and database"
-    ):
+    with pytest.raises(DbError, match="opengauss:// URL with host and database"):
         resolve_url(tmp_path, "DB_URL")
 
 
@@ -159,7 +157,9 @@ def test_tables_handshakes_and_uses_one_read_only_repeatable_read_snapshot(monke
         "tables": ["orders", "staging"],
     }
     statements = [sql for sql, _params in conn.sql]
-    assert statements[0] == "begin transaction isolation level repeatable read read only"
+    assert (
+        statements[0] == "begin transaction isolation level repeatable read read only"
+    )
     assert "opengauss_version()" in statements[1]
     assert conn.closed
 
@@ -258,9 +258,7 @@ def test_describe_preserves_composite_constraints_indexes_and_partitions(monkeyp
                     "CREATE INDEX orders_amount_idx ON orders USING btree (amount DESC)",
                 )
             ],
-            ("partitions", 10): [
-                ("orders_2026", "p", "r", ["2027-01-01"], None)
-            ],
+            ("partitions", 10): [("orders_2026", "p", "r", ["2027-01-01"], None)],
         }
     )
     monkeypatch.setattr(_db, "_connect", lambda _url: conn)
@@ -392,8 +390,9 @@ def test_catalog_is_manifest_plus_hash_checked_table_shards(tmp_path, monkeypatc
     assert manifest["tables"][0]["content_hash"] == table["content_hash"]
     assert "secret" not in json.dumps(manifest)
     assert "token" not in json.dumps(manifest)
-    assert manifest["resource"].endswith("/Public%20Data")
-    assert table["resource"].endswith("/Order%20Items")
+    assert manifest["resource"] == "appdb/."
+    assert table["resource"] == "appdb/Order%20Items"
+    assert "db.example" not in json.dumps(manifest)
     assert table["page_slug"].startswith("order-items-")
 
     payload = _db.load_catalog(tmp_path, catalog["storage_key"])
@@ -448,9 +447,7 @@ def test_table_commands_emit_names_or_compact_json(tmp_path, monkeypatch, capsys
     assert capsys.readouterr().out == "name: orders\ncolumns: []\n"
 
 
-def test_catalog_tables_keeps_list_shape_and_emits_names(
-    tmp_path, monkeypatch, capsys
-):
+def test_catalog_tables_keeps_list_shape_and_emits_names(tmp_path, monkeypatch, capsys):
     catalog = _capture(tmp_path, monkeypatch)
     monkeypatch.setattr(okf, "workspace_root", lambda: tmp_path)
     monkeypatch.setattr(_state, "read", lambda _root: {"catalogs": [catalog]})

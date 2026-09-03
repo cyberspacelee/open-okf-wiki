@@ -64,12 +64,14 @@ migrated.
 Disk Artifacts are authoritative after restart or context compression:
 
     work/plan.md
+    work/plan-ledger.json
     work/progress.md
     work/evidence/
     work/plan-review.json
     work/composition.md
     work/composition-review.json
     work/reference-map.json
+    work/page-packets/<page-id>.json
     work/drafts/<page-id>.md
     work/review.json
 
@@ -78,6 +80,9 @@ returned in `status.artifacts`; never construct or pass the internal Run ID.
 
 ## Artifact loop
 
+On a first Run, or when phase order is unclear, read the compact
+[end-to-end walkthrough](references/end-to-end.md).
+
 Repeat until `status.status` is `published` or `blocked`:
 
 Treat `status.phase` as a disclosure boundary and `status.next_actions` as the
@@ -85,12 +90,13 @@ commands or repairs to execute:
 
 | Phase | Load and act |
 | --- | --- |
-| `plan` | `plan.md` and `contract.md`; investigate or repair the Plan |
+| `plan` | `plan.md`, `plan-ledger.json` and `contract.md`; investigate or repair the Plan |
 | `plan-review` | Run `review plan`; its reviewer loads the returned reference |
-| `write` | `composition.md` for Composition work, then `page.md` for drafts |
+| `composition` | Create or repair `composition.md` |
 | `composition-review` | Run `review composition`; its reviewer loads the returned reference |
+| `write` | Run `page prepare` for each page, then write drafts from those packets |
 | `review` | Run `review prepare` or `review complete`; its reviewer loads the returned reference |
-| `repair` | The prior review and the named Plan, Composition or page Artifacts |
+| `repair` | Repair the Plan, Composition or page Artifacts named by the final review |
 | `publish` | Run `publication publish` |
 | `blocked` | Resolve the external dependency, then run `run resume` |
 | `done` | Stop, or run `run start` when a refresh was requested |
@@ -141,7 +147,9 @@ ambiguous Source selection or another real external dependency. Resume with
 
 Read [references/plan.md](references/plan.md) and
 [references/contract.md](references/contract.md). One long-lived planner owns
-the cross-Source model and continuously overwrites `work/plan.md`. Organize
+the cross-Source model and continuously overwrites `work/plan.md` and
+`work/plan-ledger.json`. The Markdown Artifact is the readable synthesis; the
+JSON Artifact is the strict machine ledger. Organize
 coverage by Domain and leave page splitting to Composition. Model Basis is selected per Concept, so one Plan may combine
 OpenGauss-backed, code-derived and non-persistent Concepts. Replace the
 initial `work/progress.md` note before Plan review and keep it current before
@@ -232,23 +240,20 @@ duplicate page assignments. That invalidates Plan approval by design: repeat
 Plan review, rebuild Composition, then repeat Composition review with the same
 reviewer.
 
-Then read [references/page.md](references/page.md). For two or more independent
-pages, dispatch one writer per page instead of drafting them in the coordinator.
-Each writer receives the Plan, Composition, relevant evidence-note paths, the
-read-only `status.artifacts.reference_map`,
-exact template under `assets/templates/<status.language>/`, its fixed output
-`work/drafts/<page-id>.md` and `status.language` verbatim. There is no language
-fallback; a missing locale template is a broken skill package.
-Map authored Page Types to templates as follows: `Overview` to `overview.md`,
-`Architecture` to `architecture.md`, `Domain` to `domain.md`, `Concept` to
-`concept.md`, `Flow` to `flow.md`, `Procedure` to `procedure.md`, `Lifecycle`
-to `lifecycle.md` and `DataModel` to `data-model.md`. Schema and Table templates
-belong to deterministic generation and are never writer assignments.
-Resolve these paths once from `<skill>` and `status.artifacts`, then pass those
-exact strings to writers; do not reconstruct runtime paths.
-For every dispatch, copy the literal Composition `pages[].id` into the output
-filename. A Plan unit ID is never a draft ID unless it is also that page's
-declared ID.
+Then read [references/page.md](references/page.md). For every authored page,
+run `okf page prepare <page-id> --json`. The kernel writes one digest-bound
+`work/page-packets/<page-id>.json`; command output names the packet, page
+reference and draft output, while the packet names the exact template. Do not
+construct those paths or give writers the complete Plan, Composition or
+Reference Map.
+
+For two or more independent pages, dispatch one writer per page instead of
+drafting them in the coordinator. Give each writer only its page packet path,
+the exact `reference` returned by the command, relevant evidence-note paths and
+the packet's output path and language. There is no language fallback; a missing
+locale template is a broken skill package. Schema and Table templates belong to
+deterministic generation and are never writer assignments. A Plan unit ID is
+never a draft ID unless it is also that page's declared ID.
 Never infer output language from Source text. Writers reopen frozen Source
 evidence for load-bearing claims. Status derives missing and invalid drafts
 directly from Composition. Send page repairs back to the original writer while
@@ -311,3 +316,11 @@ Publication maintenance commands are explicit and optional:
     okf publication verify --actor human:reviewer --page architecture.md --json
     okf publication rollback --json
     okf publication prune --keep 5 --json
+
+For PowerShell 7, consume native JSON directly instead of embedding Python or
+shell conditionals:
+
+```powershell
+$status = okf run status --json | ConvertFrom-Json
+$status.next_actions
+```

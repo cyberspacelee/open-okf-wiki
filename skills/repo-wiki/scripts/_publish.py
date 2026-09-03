@@ -255,6 +255,28 @@ def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> 
         inputs = {}
         for source in parsed.meta.get("sources", []):
             resource = source.get("resource", "")
+            catalog_match = False
+            for catalog in catalogs:
+                if resource == catalog["resource"]:
+                    inputs[f"catalog:{catalog['name']}"] = catalog["content_hash"]
+                    catalog_match = True
+                    break
+                table = next(
+                    (
+                        item
+                        for item in catalog["tables"]
+                        if item["resource"] == resource
+                    ),
+                    None,
+                )
+                if table is not None:
+                    inputs[f"catalog:{catalog['name']}:{table['name']}"] = table[
+                        "content_hash"
+                    ]
+                    catalog_match = True
+                    break
+            if catalog_match:
+                continue
             item = _validate.parse_resource(resource)
             if item:
                 source_name, rel, _, _ = item
@@ -269,19 +291,6 @@ def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> 
                 if blob:
                     inputs[f"{source_name}/{rel}"] = blob
                 continue
-            for catalog in catalogs:
-                if resource == catalog["resource"]:
-                    inputs[f"catalog:{catalog['name']}"] = catalog["content_hash"]
-                    break
-                table = next(
-                    (item for item in catalog["tables"] if item["resource"] == resource),
-                    None,
-                )
-                if table is not None:
-                    inputs[f"catalog:{catalog['name']}:{table['name']}"] = table[
-                        "content_hash"
-                    ]
-                    break
         record = {
             "page_id": parsed.meta["id"],
             "type": parsed.meta["type"],

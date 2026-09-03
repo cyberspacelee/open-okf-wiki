@@ -40,8 +40,8 @@ span Sources and packages.
 _Avoid_: Source, module, table prefix
 
 **Concept**:
-A domain noun with defined meaning, ownership and, when persistent, one data
-model owner.
+A domain noun with defined meaning, ownership and, when persistent, one
+kernel-derived data model owner.
 _Avoid_: class, table, generic term
 
 **Model Basis**:
@@ -98,8 +98,8 @@ _Avoid_: Target DAG, phase cursor that permits premature exit
 
 **Fixed Artifact**:
 A Markdown or JSON file at a stable path, overwritten as understanding improves.
-Plan, progress, Composition, the derived Reference Map, drafts and review survive
-context compression directly.
+Plan Narrative, Plan Ledger, progress, Composition, Page Packets, the derived
+Reference Map, drafts and review survive context compression directly.
 _Avoid_: Attempt Artifact, checkpoint history
 
 **Handoff**:
@@ -118,15 +118,21 @@ cite.
 _Avoid_: package task, inventory
 
 **Knowledge Plan**:
-The evolving Domain-oriented cross-Source analysis whose coverage ledger
-defines Source Areas, Domains, Concepts, compact table groups, sparse replica
-mappings and relationships before defining stable Knowledge Units, scopes,
-seeds and gaps. It does not choose pages or Wiki paths.
+The evolving, readable Domain-oriented cross-Source analysis in `plan.md`. It
+explains the global model, lifecycles, relationships, conclusions, rejected
+hypotheses and gaps without carrying the machine coverage ledger.
 _Avoid_: page tree, Source shard
+
+**Plan Ledger**:
+The strict machine Artifact in `plan-ledger.json` defining Source Areas,
+Domains, Concepts, compact table groups, sparse replica mappings,
+relationships, authored Knowledge Units, scopes, seeds and gaps.
+_Avoid_: prose synthesis, page tree, duplicated Catalog
 
 **Knowledge Unit**:
 A stable capability, lifecycle, flow, data model, integration or operations
-question requiring evidence-backed coverage.
+question requiring evidence-backed coverage. Data-model units are derived from
+persistent Concepts; other units are authored in the Plan Ledger.
 _Avoid_: package, page, execution task
 
 **Evidence Note**:
@@ -150,6 +156,12 @@ _Avoid_: authored page, database connection
 A read-only derived Artifact mapping every generated Schema and Table Page ID to
 its final path, type, Source and table before page writing begins.
 _Avoid_: Composition input, naming convention
+
+**Page Packet**:
+A digest-bound, kernel-derived projection containing the approved inputs needed
+to write one authored page. It is regenerated from the Plan Ledger and
+Composition and never owns facts.
+_Avoid_: multi-page assignment, new evidence store, writer transcript
 
 **Task Routing Test**:
 A page-boundary check requiring one concrete maintenance change or failure

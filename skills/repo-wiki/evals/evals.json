@@ -9,8 +9,8 @@
       "id": 1,
       "name": "cli-contract-e2e",
       "tier": 1,
-      "prompt": "(no LLM) run_cli_e2e.py exercises the fixed Artifact loop, bounded evidence, Domain/Concept/source-area closure, code and non-persistent model bases, Plan and Composition review gates, authored-page routing, late link binding, deterministic navigation and atomic Publication",
-      "expected_output": "passed true; exit 0 on Windows, Linux and macOS"
+      "prompt": "(no LLM) run_cli_e2e.py exercises the fixed Artifact loop, split Plan narrative/ledger, bounded evidence and page packets, Domain/Concept/source-area closure, derived code model units, Plan and Composition review gates, thick Domain projections without duplicate ownership, authored-page routing, late link binding, deterministic navigation and atomic Publication",
+      "expected_output": "passed true; exit 0 on Windows, Linux and macOS; Windows stdout parses through ConvertFrom-Json"
     },
     {
       "id": 2,
@@ -21,9 +21,10 @@
       "expected_output": "published thin wiki connecting billing domains across API, implementation, commons and platform repositories",
       "assertions": [
         "one long-lived planner integrates all four Sources",
-        "focused evidence workers return notes and independent page writers own drafts",
+        "focused evidence workers return notes and each independent page writer receives one kernel-derived bounded page packet",
         "an independent digest-bound Plan review approves domain recall before Composition",
-        "Plan closes every Source, Domain and Concept and assigns explicit definition and model owner units",
+        "the readable Plan narrative and strict Plan ledger are separately validated and bound by one review digest",
+        "Plan closes every Source, Domain and Concept, assigns explicit definition owners and derives persistent model owner units",
         "each Concept declares opengauss, code or none model basis with matching evidence and coverage gaps",
         "every selected Catalog table has exactly one resolved disposition when a captured Catalog is present",
         "Plan closes every scoped Source with a seed and integration units name producer and consumer roles",
@@ -31,6 +32,7 @@
         "Plan routes the scenario's enterprise change intents and covers or explicitly gaps the invoice/payment/overdue feedback bridge",
         "Plan uses cohesive routable units without imposing a fixed unit count",
         "an independent digest-bound Composition review approves task routing before page fan-out",
+        "Domain page packets project model, state/lifecycle and flow routes without duplicating unit ownership",
         "Composition maps Domain and Concept definition owners and every persistent model owner to the required authored Page Type",
         "Composition routes the Kill Bill intents across cohesive capability-oriented pages instead of imposing a fixed page count or mirroring Maven modules",
         "generated Schema and Table references are excluded from authored drafts and merge-probe coverage while remaining in Candidate review and Publication",

@@ -125,8 +125,10 @@ commit, and citations resolve from Git's object database.
 OpenGauss is optional. Store the URL in the operating-system environment or
 in a workspace-root `.env`; the operating-system value wins. Configuration and
 Run state retain only the variable name, never credentials.
-Only `opengauss://` URLs are accepted. Captured resources use the same public
-scheme; the PostgreSQL wire-protocol conversion is internal.
+Only `opengauss://` connection URLs are accepted. They remain deployment
+configuration and Catalog provenance. Plan, page and publication evidence uses
+stable logical resources such as `appdb/orders`; the PostgreSQL wire-protocol
+conversion is internal.
 
 ```dotenv
 APP_DATABASE_URL=opengauss://user:password@host:5432/database
@@ -156,9 +158,18 @@ uv run $REPO_WIKI_SKILL/scripts/okf.py run status --json
 The host agent runs one explicit loop until Publication or a real external
 block. `run status` derives the next phase from fixed Plan, progress,
 Composition, draft and review Artifacts. One long-lived planner owns the
-cross-Source model; focused workers write bounded evidence notes, independent
-page writers use stable page IDs, and one fresh reviewer checks the complete
-Candidate. Validation and review defects return to the loop.
+cross-Source model in readable `plan.md` plus strict `plan-ledger.json`; focused
+workers write bounded evidence notes. After Composition approval, `page prepare
+<page-id>` creates one bounded packet for each independent writer. One fresh
+reviewer checks the complete Candidate. Validation and review defects return to
+the loop.
+
+PowerShell 7 can consume every JSON command without inline Python:
+
+```powershell
+$status = uv run $env:REPO_WIKI_SKILL/scripts/okf.py run status --json | ConvertFrom-Json
+$status.next_actions
+```
 
 After a distinct reviewer approves the candidate:
 

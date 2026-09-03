@@ -1,6 +1,6 @@
 # Composition Map
 
-Read the complete Plan, then design the Wiki as a whole. A fresh composer also
+Read the complete Plan Narrative and Plan Ledger, then design the Wiki as a whole. A fresh composer also
 reads each relevant evidence note once; the planner that already synthesized
 those notes into the approved Plan does not reread them. This is the first
 stage allowed to choose pages and physical paths.
@@ -65,7 +65,8 @@ Composition makes the Plan's ownership visible through exact unit mapping:
 - each Domain's `owner_unit_id` maps to a Domain page that covers no other
   Domain;
 - a Concept `owner_unit_id` maps to a Domain or Concept page that defines it;
-- every persistent Concept `model_unit_id` maps to a DataModel page;
+- every persistent Concept's derived `model.<concept-id>` unit maps to a
+  DataModel page;
 - a non-persistent Concept has no model page obligation.
 
 Several tightly coupled Concepts may share one owner page when they have the
@@ -98,7 +99,9 @@ page only when it provides a real cross-page map, and keep detailed ownership
 in the linked pages. An Overview routes common task clusters; it need not list
 every leaf when a routed capability page links its related details. Select page
 types and diagrams from the writing contract. Use Domain for capability
-ownership and real invariants, Concept for domain-specific noun semantics,
+ownership and real invariants. Its writer packet projects that Domain's
+Concepts, DataModel, Lifecycle and Flow routes so it can summarize model, state
+and key flows without claiming their units. Use Concept for domain-specific noun semantics,
 Procedure for an internal orchestration, calculation or algorithm, Flow for a
 trigger-to-outcome handoff across participants, and Lifecycle for state
 reachability. A DataModel containing code-backed Concepts plans a logical ER
@@ -113,3 +116,18 @@ Navigation Index materialize the approved path hierarchy before bundle review.
 
 Mandatory Plan ownership prevents an empty Composition. Do not manufacture
 pages outside the approved units or generated OpenGauss references.
+
+## Path contract
+
+Authored paths must match `^[a-z0-9][a-z0-9/_.-]*\.md$`. They are relative
+POSIX paths: no absolute path, backslash, `..`, empty component, doubled slash,
+or component ending in a dot or space. `index.md` and `log.md` are generated
+reserved names. Windows device-name components such as `con`, `prn`, `aux`,
+`nul`, `com1` through `com9` and `lpt1` through `lpt9` are invalid, with or
+without an extension. Page IDs obey the same lowercase stable-ID discipline.
+
+For a multi-page Wiki, ordinary pages live below a capability directory;
+Overview and Architecture are the only root-page exceptions. A Domain landing
+page uses a descriptive lowercase filename such as
+`measurement/measurement.md`; `README.md` is invalid because of uppercase and
+`measurement/index.md` is reserved for generated navigation.

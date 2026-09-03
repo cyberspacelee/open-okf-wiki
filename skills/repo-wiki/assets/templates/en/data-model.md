@@ -5,9 +5,7 @@ sources: []
 
 ## Model basis
 
-State which Concepts use `opengauss` or `code`, their coverage, and any
-Catalog-selection gap. OpenGauss owns physical structure; code evidence owns
-only logical projections and behavior.
+{{replace: Concept model bases, coverage, and Catalog-selection gaps}}
 
 ## Physical model
 
@@ -15,21 +13,16 @@ only logical projections and behavior.
 
 ## Logical relationships
 
-For code-derived models, render the planned logical ER diagram here. For
-OpenGauss-backed models, describe only evidenced semantic relationships that
-are not physical constraints and keep them distinct from the generated view.
+{{replace: planned logical ER or non-physical evidenced semantic relationships}}
 
 ## Ownership and boundaries
 
-State which Source owns each selected entity and where code or service
-boundaries meet persistence.
+{{replace: entity Source ownership and code/service persistence boundaries}}
 
 ## Reference model
 
-Link generated Schema and Table references. Keep column, constraint and index
-inventories in those pages.
+{{replace: generated Schema and Table reference links}}
 
 ## Code-to-data mapping
 
-Use a compact table for the write/read path, lifecycle event and owning code
-concept. Record omitted evidence as gaps.
+{{replace: compact read/write path, lifecycle event, and code-owner table}}

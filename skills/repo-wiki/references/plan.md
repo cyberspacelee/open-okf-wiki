@@ -28,7 +28,8 @@ groups, behaviors, failure paths and handoffs. Create only the knowledge units
 needed to own those findings; Composition decides later whether units become
 separate pages.
 
-Continuously overwrite `work/plan.md`. For long work, keep
+Continuously overwrite `work/plan.md` and `work/plan-ledger.json` as one
+digest-bound Plan. For long work, keep
 `work/progress.md` sufficient to resume without conversation history: completed
 investigations, current findings, rejected hypotheses, gaps and next actions.
 Evidence notes belong under `work/evidence/`; copy conclusions into the Plan
@@ -61,88 +62,135 @@ revisions lack the evidence, it belongs to an unregistered Source, bounded
 navigation failed to establish the claim, or the remaining uncertainty is a
 real semantic boundary.
 
-The Plan is Markdown with this frontmatter:
+`work/plan.md` is the readable synthesis. Its frontmatter is identity-only and
+its five analysis sections are mandatory and non-empty. The evidence-backed
+conclusions section uses ordinary locator footnotes; every ledger Gap ID appears
+in the unresolved-gaps section. For a Chinese workspace, use the exact headings
+`全局模型`, `生命周期与跨源关系`, `证据支持的结论`, `被拒绝的假设` and `未解决的缺口`.
 
 ```yaml
 ---
-kind: knowledge-plan
-source_areas:
-  - id: api-request-domain
-    source: API
-    paths: [api-core/src/main/java/example/request]
-    disposition: domain
-    domain_ids: [requests]
-    evidence_seeds:
-      - API/api-core/src/main/java/example/request/Request.java#L20-L48
-domains:
-  - id: requests
-    name: Requests
-    definition: Owns request admission, state and recovery.
-    owner_unit_id: request-capability
-    evidence:
-      - API/api-core/src/main/java/example/request/Request.java#L20-L48
-concepts:
-  - id: request
-    domain_id: requests
-    kind: entity
-    name: Request
-    definition: A durable unit of accepted work.
-    owner_unit_id: request-capability
-    model_unit_id: request-model
-    owner_evidence:
-      - API/api-core/src/main/java/example/request/Request.java#L20-L48
-    behavior_seeds:
-      - API/api-core/src/main/java/example/request/RequestService.java#L30-L74
-    model_basis:
-      basis: opengauss
-      coverage: full
-      catalog_tables:
-        - source: database
-          table: requests
-      structure_evidence: []
-      gap_ids: []
-table_groups:
-  - source: database
-    domain_id: requests
-    role: entity
-    tables: [requests]
-relationships: []
-units:
-  - id: request-capability
-    kind: capability
-    question: What does the request capability own and enforce?
-    domain_ids: [requests]
-    concept_ids: [request]
-    scopes:
-      - source: API
-        role: owner
-        paths: [api-core/src/main/java/example/request]
-    evidence_seeds:
-      - API/api-core/src/main/java/example/request/Request.java#L20-L48
-  - id: request-lifecycle
-    kind: lifecycle
-    question: How does a request enter failure and recover?
-    domain_ids: [requests]
-    concept_ids: [request]
-    scopes:
-      - source: API
-        role: owner
-        paths: [api-core/src/main/java/example/request]
-    evidence_seeds:
-      - API/api-core/src/main/java/example/request/Request.java#L20-L48
-  - id: request-model
-    kind: data-model
-    question: How is a request persisted and related to other records?
-    domain_ids: [requests]
-    concept_ids: [request]
-    scopes:
-      - source: database
-        role: model
-        paths: [requests]
-    evidence_seeds: [database/requests]
-gaps: []
+kind: knowledge-plan-narrative
+ledger: plan-ledger.json
 ---
+
+# Knowledge Plan
+
+## Global model
+...
+
+## Lifecycles and cross-source relationships
+...
+
+## Evidence-backed conclusions
+... [^request]
+
+## Rejected hypotheses
+...
+
+## Unresolved gaps
+No unresolved gaps.
+
+[^request]: `API/api-core/src/main/java/example/request/Request.java#L20-L48`
 ```
+
+`work/plan-ledger.json` is the canonical machine Artifact. Write strict JSON,
+not YAML-in-Markdown:
+
+```json
+{
+  "kind": "knowledge-plan",
+  "source_areas": [{
+    "id": "api-request-domain",
+    "source": "API",
+    "paths": ["api-core/src/main/java/example/request"],
+    "disposition": "domain",
+    "domain_ids": ["requests"],
+    "evidence_seeds": ["API/api-core/src/main/java/example/request/Request.java#L20-L48"]
+  }],
+  "domains": [{
+    "id": "requests",
+    "name": "Requests",
+    "definition": "Owns request admission, state and recovery.",
+    "owner_unit_id": "request-capability"
+  }],
+  "concepts": [{
+    "id": "request",
+    "domain_id": "requests",
+    "kind": "entity",
+    "name": "Request",
+    "definition": "A durable unit of accepted work.",
+    "owner_unit_id": "request-capability",
+    "model_basis": {
+      "basis": "opengauss",
+      "catalog_tables": [{"source": "database", "table": "requests"}]
+    }
+  }],
+  "table_groups": [{
+    "source": "database",
+    "domain_id": "requests",
+    "role": "entity",
+    "tables": ["requests"]
+  }],
+  "units": [{
+    "id": "request-capability",
+    "kind": "capability",
+    "question": "What does the request capability own and enforce?",
+    "domain_ids": ["requests"],
+    "concept_ids": ["request"],
+    "scopes": [{
+      "source": "API",
+      "role": "owner",
+      "paths": ["api-core/src/main/java/example/request"]
+    }],
+    "evidence_seeds": ["API/api-core/src/main/java/example/request/Request.java#L20-L48"]
+  }]
+}
+```
+
+Omit optional empty arrays. `coverage` defaults to `full`; write it only for
+`partial` Model Basis records. Do not author `data-model` units. The kernel
+derives `model.<concept-id>` from every persistent Concept, its Model Basis and
+its relationships. Do not repeat owner evidence on Domain or Concept records;
+their owner unit seeds are authoritative.
+
+## Exact field contract
+
+All objects reject unknown fields. IDs are lowercase stable slugs, unique in
+their collection and at most 64 characters. Required and optional collections
+are:
+
+| Record | Required fields | Optional fields and defaults |
+| --- | --- | --- |
+| Plan Ledger | `kind`, non-empty `source_areas`, `domains`, `concepts`, `units` | `table_groups`, `table_replicas`, `relationships`, `gaps`: `[]` |
+| Source Area | `id`, `source`, non-empty `paths`, `disposition`, `domain_ids`, non-empty `evidence_seeds` | none |
+| Domain | `id`, `name`, `definition`, `owner_unit_id` | none |
+| Concept | `id`, `domain_id`, `kind`, `name`, `definition`, `owner_unit_id`, `model_basis` | none |
+| Model Basis | `basis` | `coverage`: `full`; `catalog_tables`, `structure_evidence`, `gap_ids`: `[]` |
+| Table Group | `source`, `role`, non-empty `tables` | `domain_id`: absent; `evidence`, `gap_ids`: `[]` |
+| Relationship | `id`, `from_concept_id`, `to_concept_id`, `level`, `cardinality`, non-empty `evidence`, `include_in_er` | none |
+| Authored Unit | `id`, `kind`, `question`, non-empty `domain_ids`, `concept_ids`, non-empty `scopes`, non-empty `evidence_seeds` | none |
+| Gap | `id`, `category`, `claim`, `evidence` | none |
+
+Exact enums:
+
+| Field | Values |
+| --- | --- |
+| Source Area `disposition` | `domain`, `shared`, `test`, `generated`, `excluded` |
+| Concept `kind` | `entity`, `value-object`, `event`, `service`, `policy`, `process`, `read-model` |
+| Authored Unit `kind` | `capability`, `lifecycle`, `flow`, `integration`, `operations` |
+| Scope `role` | `owner`, `model`, `producer`, `contract`, `consumer`, `feedback` |
+| Table Group `role` | `entity`, `association`, `history`, `reference`, `read-model`, `working`, `infrastructure`, `replica`, `excluded`, `unresolved` |
+| Relationship `level` | `declared`, `mapped`, `observed`, `heuristic` |
+| Relationship `cardinality` | `one-to-one`, `one-to-many`, `many-to-one`, `many-to-many`, `unknown` |
+| Gap `category` | `catalog-selection`, `source-coverage`, `model-coverage`, `relationship-confidence`, `other` |
+
+`evidence` on a Gap may be empty; its claim must then state that registered
+evidence is absent or outside the registered Sources for review approval. Every other seed/evidence
+collection marked non-empty above must contain at least one locator. A
+`partial` Model Basis requires `gap_ids`; `full` forbids them. An `excluded`
+Table Group requires evidence, and an `unresolved` group requires `gap_ids`;
+all other group roles forbid `gap_ids`.
 
 Kinds are `capability`, `lifecycle`, `flow`, `data-model`, `integration` and
 `operations`. IDs are stable lowercase semantic keys. Each scoped Source has at
@@ -157,11 +205,11 @@ Close each ledger before Plan review:
 - `source_areas` partitions every eligible deterministic Source region once.
   `disposition` is `domain`, `shared`, `test`, `generated` or `excluded`;
   domain areas name their `domain_ids` and every area has opened seeds.
-- `domains` records a stable definition, evidence and one `owner_unit_id`.
+- `domains` records a stable definition and one `owner_unit_id`.
   Each Domain has its own owner unit; one owner unit cannot own several Domains.
 - `concepts` assigns every Concept to one Domain and one `owner_unit_id`.
-  Persistent Concepts also name one `model_unit_id`; `none` Concepts leave it
-  null.
+  The kernel derives a model unit for persistent Concepts; `none` Concepts have
+  no model unit.
 - `table_groups` classifies every captured table once, grouped by Source,
   Domain and role. Roles are `entity`,
   `association`, `history`, `reference`, `read-model`, `working`,
@@ -233,7 +281,7 @@ separate coverage obligations when they may still compose into one reader page;
 Composition owns that later page merge.
 
 The Grep Test may remove optional depth units, but every Domain and Concept must
-retain an owner unit and every persistent Concept a model unit.
+retain an owner unit; every persistent Concept receives its derived model unit.
 
 Before Plan review, account for every significant domain or subsystem exposed
 by top-level build modules and entry points in `source_areas`, `domains` and

@@ -1,6 +1,6 @@
 # Domain-first compact Catalog planning
 
-Status: accepted
+Status: superseded by ADR 0024
 
 Refines ADR 0022 without changing OKF v0.2. Existing Run state and Plan
 artifacts have no compatibility or migration path.

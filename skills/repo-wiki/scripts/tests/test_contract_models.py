@@ -62,7 +62,6 @@ def knowledge_plan(units=None, **overrides) -> dict:
                 "name": "Answers",
                 "definition": "Owns answers and their lifecycle.",
                 "owner_unit_id": owner,
-                "evidence": ["src/app.py#L1-L2"],
             }
         ],
         "concepts": [
@@ -73,16 +72,7 @@ def knowledge_plan(units=None, **overrides) -> dict:
                 "name": "Answer",
                 "definition": "A response owned by the answers domain.",
                 "owner_unit_id": owner,
-                "model_unit_id": None,
-                "owner_evidence": ["src/app.py#L1-L2"],
-                "behavior_seeds": ["src/app.py#L1-L2"],
-                "model_basis": {
-                    "basis": "none",
-                    "coverage": "full",
-                    "catalog_tables": [],
-                    "structure_evidence": [],
-                    "gap_ids": [],
-                },
+                "model_basis": {"basis": "none"},
             }
         ],
         "table_groups": [],
@@ -174,19 +164,34 @@ def test_plan_requires_domain_and_concept_coverage_and_empty_composition_is_vali
 def test_model_basis_requires_the_authoritative_structure_source():
     data = knowledge_plan()
     concept = data["concepts"][0]
-    concept["model_unit_id"] = "answer-model"
-    data["units"].append(unit("answer-model", kind="data-model"))
     concept["model_basis"] = {
         "basis": "code",
-        "coverage": "full",
-        "catalog_tables": [],
         "structure_evidence": ["src/app.py#L1-L2"],
-        "gap_ids": [],
     }
-    assert KnowledgePlan.model_validate(data).concepts[0].model_basis.basis == "code"
+    plan = KnowledgePlan.model_validate(data)
+    assert plan.concepts[0].model_basis.basis == "code"
+    assert plan.effective_units[-1].id == "model.answer"
 
     concept["model_basis"]["structure_evidence"] = []
     with pytest.raises(ValidationError, match="requires structure evidence"):
+        KnowledgePlan.model_validate(data)
+
+
+def test_persistent_model_units_are_derived_and_their_ids_are_reserved():
+    data = knowledge_plan()
+    data["concepts"][0]["model_basis"] = {
+        "basis": "code",
+        "structure_evidence": ["src/app.py#L1-L2"],
+    }
+    data["units"].append(
+        unit("model.answer", kind="capability", concept_ids=["answer"])
+    )
+    with pytest.raises(ValidationError, match="derived model unit IDs are reserved"):
+        KnowledgePlan.model_validate(data)
+
+    data["units"][-1]["id"] = "authored-model"
+    data["units"][-1]["kind"] = "data-model"
+    with pytest.raises(ValidationError, match="must not be authored"):
         KnowledgePlan.model_validate(data)
 
 
@@ -208,15 +213,10 @@ def test_non_persistent_model_basis_cannot_report_structural_gaps():
 
 def test_opengauss_model_requires_a_matching_table_disposition():
     data = knowledge_plan()
-    data["units"].append(unit("answer-model", kind="data-model"))
     concept = data["concepts"][0]
-    concept["model_unit_id"] = "answer-model"
     concept["model_basis"] = {
         "basis": "opengauss",
-        "coverage": "full",
         "catalog_tables": [{"source": "database", "table": "answers"}],
-        "structure_evidence": [],
-        "gap_ids": [],
     }
     with pytest.raises(ValidationError, match="matching disposition"):
         KnowledgePlan.model_validate(data)
@@ -243,7 +243,7 @@ def test_table_groups_keep_large_catalog_plans_compact():
     ]
 
     plan = KnowledgePlan.model_validate(data)
-    text = render(data, "# Knowledge Plan\n")
+    text = json.dumps(data)
 
     assert len(plan.table_dispositions) == 195
     assert len(text.encode()) < 16 * 1024
@@ -324,16 +324,15 @@ def test_partial_models_and_unresolved_tables_require_structured_gaps():
         }
     ]
     concept = data["concepts"][0]
-    concept["model_unit_id"] = "answer-model"
     concept["model_basis"] = {
         "basis": "code",
         "coverage": "partial",
-        "catalog_tables": [],
         "structure_evidence": ["src/app.py#L1-L2"],
         "gap_ids": ["missing-table"],
     }
-    data["units"].append(unit("answer-model", kind="data-model"))
-    assert KnowledgePlan.model_validate(data).concepts[0].model_basis.coverage == "partial"
+    assert (
+        KnowledgePlan.model_validate(data).concepts[0].model_basis.coverage == "partial"
+    )
 
     concept["model_basis"]["gap_ids"] = []
     with pytest.raises(ValidationError, match="partial model coverage"):
@@ -423,7 +422,12 @@ def test_page_templates_only_seed_writer_owned_frontmatter():
 
 def test_composition_accepts_one_page_and_only_late_binding_fields():
     composition = CompositionMap.model_validate(
-        {"kind": "composition-map", "reference_roots": [], "pages": [page()], "gaps": []}
+        {
+            "kind": "composition-map",
+            "reference_roots": [],
+            "pages": [page()],
+            "gaps": [],
+        }
     )
     moved = CompositionPage.model_validate(
         {**composition.pages[0].model_dump(mode="json"), "path": "guide/answer.md"}
@@ -438,11 +442,19 @@ def test_composition_accepts_one_page_and_only_late_binding_fields():
 def test_composition_rejects_duplicate_ids_paths_and_invalid_representation():
     with pytest.raises(ValidationError, match="ids must be unique"):
         CompositionMap.model_validate(
-            {"kind": "composition-map", "reference_roots": [], "pages": [page(), page(path="other.md")]}
+            {
+                "kind": "composition-map",
+                "reference_roots": [],
+                "pages": [page(), page(path="other.md")],
+            }
         )
     with pytest.raises(ValidationError, match="paths must be unique"):
         CompositionMap.model_validate(
-            {"kind": "composition-map", "reference_roots": [], "pages": [page(), page("other")]}
+            {
+                "kind": "composition-map",
+                "reference_roots": [],
+                "pages": [page(), page("other")],
+            }
         )
     with pytest.raises(ValidationError, match="require a flowchart"):
         CompositionPage.model_validate(page(type="Architecture"))
@@ -523,7 +535,6 @@ def test_composition_keeps_domain_pages_independent_but_allows_domain_depth():
             "name": "Audit",
             "definition": "Owns the independent audit responsibility.",
             "owner_unit_id": "audit-capability",
-            "evidence": ["src/app.py#L1-L2"],
         }
     )
     data["concepts"].append(
@@ -534,16 +545,7 @@ def test_composition_keeps_domain_pages_independent_but_allows_domain_depth():
             "name": "Audit",
             "definition": "Records changes for the audit domain.",
             "owner_unit_id": "audit-capability",
-            "model_unit_id": None,
-            "owner_evidence": ["src/app.py#L1-L2"],
-            "behavior_seeds": ["src/app.py#L1-L2"],
-            "model_basis": {
-                "basis": "none",
-                "coverage": "full",
-                "catalog_tables": [],
-                "structure_evidence": [],
-                "gap_ids": [],
-            },
+            "model_basis": {"basis": "none"},
         }
     )
     knowledge = KnowledgePlan.model_validate(data)
@@ -595,15 +597,10 @@ def test_composition_keeps_domain_pages_independent_but_allows_domain_depth():
 
 def test_code_data_model_requires_authored_er_but_opengauss_does_not():
     data = knowledge_plan()
-    data["units"].append(unit("answer-model", kind="data-model"))
     concept = data["concepts"][0]
-    concept["model_unit_id"] = "answer-model"
     concept["model_basis"] = {
         "basis": "code",
-        "coverage": "full",
-        "catalog_tables": [],
         "structure_evidence": ["src/app.py#L1-L2"],
-        "gap_ids": [],
     }
     knowledge = KnowledgePlan.model_validate(data)
     composition = CompositionMap.model_validate(
@@ -616,7 +613,7 @@ def test_code_data_model_requires_authored_er_but_opengauss_does_not():
                     "answer-model",
                     path="answers/data-model.md",
                     type="DataModel",
-                    units=["answer-model"],
+                    units=["model.answer"],
                 ),
             ],
             "gaps": [],
@@ -728,9 +725,7 @@ def test_integration_scopes_require_roles_and_each_source_once():
         evidence_seeds=["api/src/App.py", "worker/src/Worker.py"],
     )
     assert (
-        KnowledgePlan.model_validate(knowledge_plan([integration]))
-        .units[0]
-        .kind
+        KnowledgePlan.model_validate(knowledge_plan([integration])).units[0].kind
         == "integration"
     )
     with pytest.raises(ValidationError, match="producer and consumer"):
@@ -866,31 +861,30 @@ def test_catalog_resources_stay_inside_selected_table_scope():
     catalogs = [
         {
             "name": "database",
-            "resource": "opengauss://db/public",
+            "resource": "database/.",
             "tables": [
                 {
                     "name": "orders",
                     "page_slug": "orders",
-                    "resource": "opengauss://db/public/orders",
+                    "resource": "database/orders",
                 },
                 {
                     "name": "customers",
                     "page_slug": "customers",
-                    "resource": "opengauss://db/public/customers",
+                    "resource": "database/customers",
                 },
             ],
         }
     ]
     roots = {"database": ["orders"]}
 
-    assert _validate._catalog_in_scope(catalogs, "opengauss://db/public/orders", roots)
-    assert not _validate._catalog_in_scope(
-        catalogs, "opengauss://db/public/customers", roots
-    )
-    assert not _validate._catalog_in_scope(catalogs, "opengauss://db/public", roots)
+    assert _validate._catalog_in_scope(catalogs, "database/orders", roots)
+    assert not _validate._catalog_in_scope(catalogs, "database/customers", roots)
+    assert not _validate._catalog_in_scope(catalogs, "database/.", roots)
     assert _validate._catalog_in_scope(
-        catalogs, "opengauss://db/public/customers", {"database": ["."]}
+        catalogs, "database/customers", {"database": ["."]}
     )
+    assert not _validate._catalog_resource(catalogs, "opengauss://db/public/orders")
 
 
 def test_source_areas_cannot_overlap():

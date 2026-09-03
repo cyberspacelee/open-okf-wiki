@@ -5,20 +5,28 @@ sources: []
 
 ## Responsibility and public surface
 
-State what this capability owns, what it exposes and where its boundary ends.
+{{replace: capability ownership, public surface, and boundary}}
 
 ## Invariants and rules
 
-Use a compact table for each rule, enforcement point and observable failure.
+{{replace: compact rule, enforcement point, and observable failure table}}
+
+## Data model overview
+
+{{replace: key entities and relationships, with links to DataModel and Table pages}}
+
+## State and lifecycle
+
+{{replace: important states and transitions, with links to Lifecycle or Concept pages}}
+
+## Key flows
+
+{{replace: trigger-to-outcome flow summaries, with links to Flow or Procedure pages}}
 
 ## Concepts
 
-Define the Domain's primary Concepts or link their Concept pages. State each
-Concept's owner and Model Basis without copying its fields. Link independent
-Flows and Lifecycles instead of embedding their full execution prose here.
+{{replace: primary Concept definitions, owners, model bases, and detail links}}
 
 ## Change points
 
-Route common maintenance intents to the relevant Concept, model, enforcement or
-extension surface. Render a planned diagram only when it answers one bounded question
-that does not justify a separate Flow or Lifecycle page.
+{{replace: maintenance intent routing to the owning page and evidence entry point}}

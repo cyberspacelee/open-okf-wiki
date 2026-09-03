@@ -41,9 +41,31 @@ def emit(data, as_json: bool) -> None:
 
 
 def emit_issues(
-    issues: list[dict], as_json: bool, *, skipped_checks: list[str] | None = None
+    issues: list[dict],
+    as_json: bool,
+    *,
+    skipped_checks: list[str] | None = None,
+    current_phase: str | None = None,
 ) -> int:
+    if current_phase is not None:
+        issues = [
+            {
+                **item,
+                "phase": item.get("phase") or current_phase,
+                "applicability": (
+                    "blocking"
+                    if (item.get("phase") or current_phase) == current_phase
+                    else "pending"
+                ),
+            }
+            for item in issues
+        ]
     errors = [item for item in issues if item.get("severity") == "error"]
+    blocking_errors = (
+        errors
+        if current_phase is None
+        else [item for item in errors if item.get("applicability") == "blocking"]
+    )
     skipped_checks = skipped_checks or []
     if as_json:
         print(
@@ -51,6 +73,9 @@ def emit_issues(
                 {
                     "complete": not skipped_checks,
                     "errors": len(errors),
+                    "blocking_errors": len(blocking_errors),
+                    "pending_errors": len(errors) - len(blocking_errors),
+                    "current_phase": current_phase,
                     "warnings": len(issues) - len(errors),
                     "total": len(issues),
                     "skipped_checks": skipped_checks,
@@ -63,8 +88,12 @@ def emit_issues(
     else:
         for item in issues[:MAX_ISSUES]:
             line = f":{item['line']}" if item.get("line") else ""
+            applicability = (
+                f" {item['applicability']}" if item.get("applicability") else ""
+            )
             print(
-                f"{item['severity']}[{item['code']}] {item['path']}{line}: {item['message']}"
+                f"{item['severity']}[{item['code']}]{applicability} "
+                f"{item['path']}{line}: {item['message']}"
             )
         if len(issues) > MAX_ISSUES:
             print(f"... and {len(issues) - MAX_ISSUES} more; use --json")
@@ -312,10 +341,12 @@ def cmd_validate(args) -> int:
         result = _validate.validate_candidate(
             root, state, published=state["status"] in ("approved", "published")
         )
+    current_phase = "publish" if args.published else _state.status(root)["phase"]
     return emit_issues(
         [item.to_dict() for item in result.issues],
         args.json,
         skipped_checks=result.skipped_checks,
+        current_phase=current_phase,
     )
 
 
@@ -343,6 +374,16 @@ def cmd_catalog(args) -> int:
         emit_tables(_db.tables_captured(root, catalogs, args.source), args.json)
         return 0
     result = _db.describe_captured(root, catalogs, args.table, args.source)
+    emit(result, args.json)
+    return 0
+
+
+def cmd_page(args) -> int:
+    import _state
+
+    result = _state.page_prepare(workspace_root(), args.page_id)
+    if not result.get("ok"):
+        return emit_issues(result["issues"], args.json)
     emit(result, args.json)
     return 0
 
@@ -599,7 +640,8 @@ def build_parser() -> argparse.ArgumentParser:
     catalog_actions = catalog.add_subparsers(dest="action", required=True)
     catalog_tables = leaf(
         catalog_actions.add_parser(
-            "tables", help="list selected tables from the current run's captured catalog"
+            "tables",
+            help="list selected tables from the current run's captured catalog",
         )
     )
     catalog_tables.add_argument("--source", help="restrict to one catalog source")
@@ -612,6 +654,17 @@ def build_parser() -> argparse.ArgumentParser:
     catalog_describe.add_argument(
         "--source", help="catalog source when the name is shared"
     )
+
+    page = commands.add_parser(
+        "page", help="prepare the bounded context packet for one authored page"
+    )
+    page_actions = page.add_subparsers(dest="action", required=True)
+    page_prepare = leaf(
+        page_actions.add_parser(
+            "prepare", help="derive one page packet from approved artifacts"
+        )
+    )
+    page_prepare.add_argument("page_id", help="authored Composition page id")
 
     propose = commands.add_parser(
         "propose", help="optional post-publish AGENTS/CONTEXT/ADR proposals"
@@ -638,6 +691,7 @@ def main() -> int:
         "validate": cmd_validate,
         "db": cmd_db,
         "catalog": cmd_catalog,
+        "page": cmd_page,
         "propose": cmd_propose,
     }
     try:

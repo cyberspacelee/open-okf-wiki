@@ -5,25 +5,20 @@ sources: []
 
 ## Responsibility map
 
-Name the participating modules or systems and the responsibility each owns.
-Render every planned flowchart here; group modules by Source or trust boundary.
+{{replace: participating modules or systems, ownership, and planned flowcharts}}
 
 ## Boundary contracts
 
-For each boundary, state the allowed direction and the contract that crosses it.
-Link source-owned pages instead of copying them.
+{{replace: boundary direction, crossing contract, and owner-page links}}
 
 ## Failure and change propagation
 
-Use a compact table for the initiating failure or change, propagation path and
-affected validation surface.
+{{replace: compact failure/change propagation and validation-surface table}}
 
 ## Recorded decisions
 
-Link existing ADRs and summarize only their recorded rationale.
+{{replace: existing ADR links and recorded rationale}}
 
 ## Observed patterns
 
-Describe recurring implementation structure with Locators. Label it as an
-observation rather than an intentional decision when no ADR or equivalent
-decision record exists.
+{{replace: observed implementation patterns with locators and intent labels}}

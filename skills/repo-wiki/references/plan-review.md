@@ -1,6 +1,6 @@
 # Knowledge Plan Review
 
-Review the exact Knowledge Plan named by the `review plan` packet in an
+Review the exact Plan Narrative and Plan Ledger named by the `review plan` packet in an
 independent context. Use bounded evidence navigation commands
 from the packet workdir; the packet's Source names are routing hints. Do not
 read run internals or Catalog JSON files, write Composition or choose pages.
@@ -12,9 +12,10 @@ path and is not an input packet file.
 First verify mandatory coverage closure:
 
 - every eligible Source region has one non-overlapping Source Area disposition;
-- every Domain has a definition, evidence and its own owner unit that names it;
+- every Domain has a definition and its own seeded owner unit that names it;
 - every Concept belongs to one Domain and has a definition owner that names it;
-- each persistent Concept has exactly one model unit and a valid `opengauss` or
+- each persistent Concept has exactly one kernel-derived `model.<concept-id>`
+  unit and a valid `opengauss` or
   `code` Model Basis; a `none` Concept has neither;
 - every captured OpenGauss table occurs in exactly one `table_groups` entry,
   grouped by Source, Domain and role, with every `excluded` claim evidenced and
@@ -36,6 +37,10 @@ First verify mandatory coverage closure:
   evidenced non-heuristic logical relationships enter a logical ER view.
 
 Then perform the routing sweep:
+
+- verify the Narrative explains the global model, lifecycles and cross-Source
+  relationships, evidence-backed conclusions, rejected hypotheses and every
+  unresolved Gap instead of repeating the ledger;
 
 - verify the Plan was developed from Domain boundaries and coverage, without a
   target unit count or proposed page inventory;

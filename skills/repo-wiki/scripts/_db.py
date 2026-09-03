@@ -469,14 +469,6 @@ def _extract_dbname(url: str) -> str:
     return urlsplit(url).path.rsplit("/", 1)[-1] or "unknown"
 
 
-def _canonical_database(url: str, schema: str) -> str:
-    parsed = urlsplit(url)
-    host = parsed.hostname or "localhost"
-    port = f":{parsed.port}" if parsed.port else ""
-    database = quote(parsed.path.strip("/"), safe="")
-    return f"opengauss://{host}{port}/{database}/{quote(schema, safe='')}"
-
-
 def _hash_json(value: dict) -> str:
     raw = json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
@@ -623,10 +615,10 @@ def capture_catalog(root: pathlib.Path, source, *, inspect=_inspect_catalog) -> 
     schema = source.schema or "public"
     selected = list(source.tables)
     fingerprint, described = inspect(url, schema, selected)
-    schema_resource = _canonical_database(url, schema)
+    schema_resource = f"{source.name}/."
     for item in described:
         item["page_slug"] = _page_slug(item["name"])
-        item["resource"] = f"{schema_resource}/{quote(item['name'], safe='')}"
+        item["resource"] = f"{source.name}/{quote(item['name'], safe='')}"
 
     table_entries = []
     for item in described:

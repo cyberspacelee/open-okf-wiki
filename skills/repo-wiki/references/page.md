@@ -1,9 +1,11 @@
 # Page Writer
 
-Write exactly one composed page to `work/drafts/<page-id>.md`. Read the Plan,
-Composition, assigned knowledge units, relevant evidence notes and the exact
-template path supplied with the assignment. Select the language from Run state
-with no fallback. The page inherits the union of its units' scopes.
+Write exactly one composed page to the `output` in the JSON packet returned by
+`okf page prepare <page-id> --json`. Read that packet, its `reference`, its
+exact `template`, and only the relevant evidence notes named in the assignment.
+Do not load the full Plan Ledger, Composition or Reference Map. Select the
+language from `packet.language` with no fallback. The packet supplies the
+page's inherited scopes and evidence seeds.
 Reopen frozen Source evidence for every load-bearing claim; Plan and evidence
 notes are synthesis inputs, not provenance.
 
@@ -14,8 +16,9 @@ marker byte-for-byte and do not place an authored ER diagram in the generated
 block. A DataModel containing code-backed Concepts implements its planned
 logical ER diagram in the authored relationship section; a mixed-basis page
 keeps that view separate from its generated OpenGauss facts.
-Use the read-only Reference Map supplied with the assignment for logical links
-to generated pages; never derive an ID or path from a Source or table name.
+Use `packet.reference_pages` for logical links to generated pages and
+`packet.related_pages` for authored routes; never derive an ID or path from a
+Source or table name.
 
 Write all reader-visible prose, headings, table cells and diagram labels in the
 Workspace language. Preserve exact code identifiers and established domain
@@ -78,10 +81,15 @@ Each diagram's adjacent conclusion cites every Source listed by its Diagram
 Spec; a page-level citation elsewhere does not support the diagram.
 
 Retain every heading supplied by the selected localized template and replace
-its instruction text with evidence-backed content. Preserve required generated
+every `{{replace: ...}}` marker with evidence-backed content. An untouched
+marker fails validation. Preserve required generated
 markers. A template section that asks for a compact table must contain a
 Markdown table, not a bullet list. Domain pages contain business capability
-invariants; engineering parameters such as lock duration, batch size and
+invariants and compact data-model, state/lifecycle and key-flow overviews. Use
+`packet.projections`, `packet.concepts`, `packet.relationships` and
+`packet.related_pages` to reopen evidence and link to
+detailed owners; do not copy their full facts or add their units to the Domain
+page. Engineering parameters such as lock duration, batch size and
 idempotency mechanics belong to their Procedure or operations owner. Concept
 pages define domain-specific nouns and semantic relationships. Procedure pages
 carry ordered stages, grouping and formulas; Flow trigger/outcome sections

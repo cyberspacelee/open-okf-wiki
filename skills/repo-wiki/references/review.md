@@ -1,7 +1,7 @@
 # Wiki Bundle Review
 
 Review the exact bundle returned by `review prepare` in a fresh context. Read
-the Candidate, Plan, Composition, writing contract and relevant evidence notes.
+the Candidate, Plan Narrative, Plan Ledger, Composition, writing contract and relevant evidence notes.
 Reopen frozen Source evidence for decision-changing claims. Do not use the
 producer's conversation history.
 
@@ -32,6 +32,8 @@ Judge the Wiki globally:
 - Grep Test for optional depth pages, page boundaries, duplicate concepts and
   routing quality;
 - page type, representation, hierarchy implied by paths and cross-links;
+- Domain pages provide accurate compact model, state/lifecycle and key-flow
+  overviews without duplicating detail-page ownership;
 - root and directory Navigation Indexes route every composed page through the
   intended capability hierarchy with no orphan or page-type directory;
 - citation support, invented rationale, scope bleed and terminology;

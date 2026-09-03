@@ -1,6 +1,6 @@
 # Composition Review
 
-Review the exact Plan and Composition named by the `review composition` packet
+Review the exact Plan Narrative, Plan Ledger and Composition named by the `review composition` packet
 in the same independent context that approved the Plan. Read the approved Plan
 review and read-only Reference Map named by the packet, but do not reopen Source
 evidence or write pages. The packet's
@@ -13,7 +13,7 @@ Apply the Task Routing Test before page fan-out:
 - generated Schema and Table references are absent from authored `pages`;
 - each Domain owner unit maps to a Domain page that covers no other Domain,
   each Concept owner unit maps to one Domain or Concept page, and each
-  persistent Concept model unit maps to a DataModel page;
+  persistent Concept's derived model unit maps to a DataModel page;
 - OpenGauss-backed Concepts leave physical ER generation to the kernel;
   every DataModel containing code-backed Concepts plans a separate logical ER
   diagram;
@@ -31,7 +31,9 @@ Apply the Task Routing Test before page fan-out:
 - multi-page Wikis nest ordinary pages below capability directories, never
   page-type directories; specialized families use a second-level cluster when
   otherwise mixed with shared infrastructure;
-- Domain pages own capability boundaries and invariants, Procedure pages own
+- Domain pages own capability boundaries and invariants and route compact
+  model, state/lifecycle and key-flow overviews to the owning detail pages;
+  Procedure pages own
   internal algorithms/orchestration, and Flow pages own end-to-end handoffs;
 - an architecture map routes common task clusters and links to details instead
   of duplicating their ownership; it need not enumerate every leaf when routed

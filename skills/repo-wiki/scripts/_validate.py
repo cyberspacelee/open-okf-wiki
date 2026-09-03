@@ -26,6 +26,8 @@ from _models import (
     ConceptFrontmatter,
     DraftFrontmatter,
     KnowledgePlan,
+    KnowledgeUnit,
+    PlanNarrative,
     PlanReviewReport,
     ReviewReport,
     RunPolicy,
@@ -77,6 +79,22 @@ _TABLE_SECTIONS = {
     ("zh", "DataModel"): "代码与数据映射",
 }
 _TABLE_SEPARATOR = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*$", re.MULTILINE)
+_PLAN_SECTIONS = {
+    "en": (
+        "Global model",
+        "Lifecycles and cross-source relationships",
+        "Evidence-backed conclusions",
+        "Rejected hypotheses",
+        "Unresolved gaps",
+    ),
+    "zh": (
+        "全局模型",
+        "生命周期与跨源关系",
+        "证据支持的结论",
+        "被拒绝的假设",
+        "未解决的缺口",
+    ),
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -86,6 +104,7 @@ class Issue:
     path: str
     message: str
     line: int | None = None
+    phase: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -93,6 +112,7 @@ class Issue:
             "code": self.code,
             "path": self.path,
             "line": self.line,
+            "phase": self.phase,
             "message": self.message,
         }
 
@@ -113,20 +133,31 @@ def issue(
     path: str,
     message: str,
     line: int | None = None,
+    phase: str | None = None,
 ) -> Issue:
-    return Issue(severity, code, path, message, line)
+    return Issue(severity, code, path, message, line, phase)
+
+
+def _at_phase(items: list[Issue], phase: str) -> list[Issue]:
+    return [dataclasses.replace(item, phase=item.phase or phase) for item in items]
 
 
 def validation_result(
     issues: list[Issue], skipped_checks: list[str] | None = None
 ) -> ValidationResult:
     unique = {
-        (item.severity, item.code, item.path, item.line, item.message): item
+        (item.severity, item.code, item.path, item.line, item.phase, item.message): item
         for item in issues
     }
     ordered = sorted(
         unique.values(),
-        key=lambda item: (item.path, item.line or 0, item.code, item.message),
+        key=lambda item: (
+            item.path,
+            item.line or 0,
+            item.phase or "",
+            item.code,
+            item.message,
+        ),
     )
     return ValidationResult(ordered, sorted(set(skipped_checks or [])))
 
@@ -205,7 +236,9 @@ def _catalog_source(catalogs: list[dict], resource: str) -> str | None:
     return located[0] if located else None
 
 
-def _catalog_locator(catalogs: list[dict], resource: str) -> tuple[str, set[str]] | None:
+def _catalog_locator(
+    catalogs: list[dict], resource: str
+) -> tuple[str, set[str]] | None:
     for catalog in catalogs:
         if resource == catalog["resource"]:
             return catalog["name"], {"."}
@@ -333,6 +366,100 @@ def _model_issues(
         ]
 
 
+def _plan_narrative_issues(
+    root: pathlib.Path,
+    state: dict,
+    path: pathlib.Path,
+    plan: KnowledgePlan,
+) -> list[Issue]:
+    parsed = parse_file(path)
+    structure = extract(parsed.body)
+    issues = []
+    required = _PLAN_SECTIONS[state["language"]]
+    sections = {item.title: item for item in structure.sections if item.level == 2}
+    for title in required:
+        section = sections.get(title)
+        if section is None:
+            issues.append(
+                issue(
+                    "error",
+                    "plan-section-missing",
+                    str(path),
+                    f"required Plan section is missing: {title}",
+                )
+            )
+        elif not section.content.strip():
+            issues.append(
+                issue(
+                    "error",
+                    "plan-section-empty",
+                    str(path),
+                    f"required Plan section is empty: {title}",
+                    section.start_line,
+                )
+            )
+
+    evidence_section = sections.get(required[2])
+    evidence_refs = (
+        {ref for ref, _line in extract(evidence_section.content).footnote_refs}
+        if evidence_section is not None
+        else set()
+    )
+    if not evidence_refs:
+        issues.append(
+            issue(
+                "error",
+                "plan-evidence-missing",
+                str(path),
+                "evidence-backed conclusions require at least one locator footnote",
+                evidence_section.start_line if evidence_section else None,
+            )
+        )
+    refs = {ref for ref, _line in structure.footnote_refs}
+    definitions = structure.footnote_defs
+    if refs != set(definitions):
+        issues.append(
+            issue(
+                "error",
+                "plan-citation-join-invalid",
+                str(path),
+                "Plan footnote references and definitions must match exactly",
+            )
+        )
+    catalogs = load_indexes(root, state["catalogs"])
+    for source_id, definition in definitions.items():
+        resource = definition.strip().strip("`")
+        if _catalog_locator(catalogs, resource) is not None:
+            continue
+        resolved = _resolve_resource(root, state, resource)
+        if resolved is None:
+            issues.append(
+                issue(
+                    "error",
+                    "plan-evidence-unresolved",
+                    str(path),
+                    f"{source_id}: {resource}",
+                )
+            )
+            continue
+        issues.extend(_check_range(*resolved, resource))
+
+    gap_section = sections.get(required[4])
+    if gap_section is not None:
+        for gap in plan.gaps:
+            if gap.id not in gap_section.content:
+                issues.append(
+                    issue(
+                        "error",
+                        "plan-gap-undocumented",
+                        str(path),
+                        f"Plan narrative must discuss gap {gap.id}",
+                        gap_section.start_line,
+                    )
+                )
+    return issues
+
+
 def _path_in_scope(path: str, roots: list[str]) -> bool:
     return any(
         root in ("", ".")
@@ -387,15 +514,6 @@ def _validate_scopes(
                     )
                 )
             continue
-        if scope.role == "model":
-            issues.append(
-                issue(
-                    "error",
-                    "scope-role-invalid",
-                    str(path),
-                    f"{scope.source}: role model is reserved for OpenGauss scopes",
-                )
-            )
         pin = _workspace.pin_dir(root, state["run_id"], scope.source)
         for scope_path in scope.paths:
             candidate = pin if scope_path == "." else pin / scope_path
@@ -449,7 +567,7 @@ def _validate_knowledge_plan(
     catalogs = load_indexes(root, state["catalogs"])
     issues = [
         problem
-        for unit in plan.units
+        for unit in plan.effective_units
         for problem in _validate_scopes(root, state, catalogs, unit, path)
     ]
     workspace = _workspace.load(root)
@@ -518,7 +636,9 @@ def _validate_knowledge_plan(
         for resource in area.evidence_seeds:
             catalog_locator = _catalog_locator(catalogs, resource)
             parsed = parse_resource(resource)
-            evidence_source = catalog_locator[0] if catalog_locator else parsed[0] if parsed else None
+            evidence_source = (
+                catalog_locator[0] if catalog_locator else parsed[0] if parsed else None
+            )
             if evidence_source != area.source:
                 issues.append(
                     issue("error", "evidence-outside-source-area", str(path), resource)
@@ -526,7 +646,9 @@ def _validate_knowledge_plan(
             elif catalog_locator:
                 if not _catalog_in_scope(catalogs, resource, roots):
                     issues.append(
-                        issue("error", "evidence-outside-source-area", str(path), resource)
+                        issue(
+                            "error", "evidence-outside-source-area", str(path), resource
+                        )
                     )
             elif parsed and not _path_in_scope(parsed[1], area.paths):
                 issues.append(
@@ -538,9 +660,7 @@ def _validate_knowledge_plan(
         for catalog in catalogs
         for table in catalog["tables"]
     }
-    disposed_tables = {
-        (item.source, item.table) for item in plan.table_dispositions
-    }
+    disposed_tables = {(item.source, item.table) for item in plan.table_dispositions}
     if selected_tables != disposed_tables:
         issues.append(
             issue(
@@ -561,7 +681,7 @@ def _validate_knowledge_plan(
                 )
             )
 
-    units = {unit.id: unit for unit in plan.units}
+    units = {unit.id: unit for unit in plan.effective_units}
     for concept in plan.concepts:
         if concept.model_basis.basis != "code":
             continue
@@ -586,11 +706,7 @@ def _validate_knowledge_plan(
     evidence = []
     for area in plan.source_areas:
         evidence.extend(area.evidence_seeds)
-    for domain in plan.domains:
-        evidence.extend(domain.evidence)
     for concept in plan.concepts:
-        evidence.extend(concept.owner_evidence)
-        evidence.extend(concept.behavior_seeds)
         evidence.extend(concept.model_basis.structure_evidence)
     for disposition in plan.table_dispositions:
         evidence.extend(disposition.evidence)
@@ -637,7 +753,7 @@ def _validate_composition(
                     f"{reference_root}: conflicts with {sorted(set(conflicts))}",
                 )
             )
-    units = {unit.id: unit for unit in plan.units}
+    units = {unit.id: unit for unit in plan.effective_units}
     pages_by_unit = {
         unit_id: page for page in composition.pages for unit_id in page.units
     }
@@ -684,9 +800,11 @@ def _validate_composition(
             )
         inherited_sources = {
             scope.source
-            for unit_id in page.units
-            if unit_id in units
-            for scope in units[unit_id].scopes
+            for unit in [
+                *(units[unit_id] for unit_id in page.units if unit_id in units),
+                *page_projection_units(plan, page),
+            ]
+            for scope in unit.scopes
         }
         for diagram in page.diagrams:
             unknown = set(diagram.sources) - inherited_sources
@@ -700,9 +818,7 @@ def _validate_composition(
                     )
                 )
         modeled = [
-            concept
-            for concept in plan.concepts
-            if concept.model_unit_id in page.units
+            concept for concept in plan.concepts if concept.model_unit_id in page.units
         ]
         if (
             page.type == "DataModel"
@@ -730,7 +846,7 @@ def _validate_composition(
                     f"{page.id}: code-derived DataModel pages require an authored ER diagram",
                 )
             )
-    active_units = {unit.id for unit in plan.units}
+    active_units = {unit.id for unit in plan.effective_units}
     mapped = [unit for page in composition.pages for unit in page.units]
     if set(mapped) != active_units or len(mapped) != len(set(mapped)):
         issues.append(
@@ -774,9 +890,7 @@ def _validate_composition(
                         f"{concept.id}: model unit must map to a DataModel page",
                     )
                 )
-    catalog_sources = {
-        disposition.source for disposition in plan.table_dispositions
-    }
+    catalog_sources = {disposition.source for disposition in plan.table_dispositions}
     reference_sources = {root.source for root in composition.reference_roots}
     if reference_sources != catalog_sources:
         issues.append(
@@ -791,13 +905,14 @@ def _validate_composition(
 
 
 def page_spec(plan: KnowledgePlan, page) -> dict:
-    units = {unit.id: unit for unit in plan.units}
+    units = {unit.id: unit for unit in plan.effective_units}
     scopes = []
+    evidence_seeds = []
     seen = set()
-    for unit_id in page.units:
-        unit = units.get(unit_id)
-        if unit is None:
-            continue
+    selected_units = [units[unit_id] for unit_id in page.units if unit_id in units]
+    selected_units.extend(page_projection_units(plan, page))
+    for unit in selected_units:
+        evidence_seeds.extend(unit.evidence_seeds)
         for scope in unit.scopes:
             value = (scope.source, scope.role, tuple(scope.paths))
             if value not in seen:
@@ -807,8 +922,24 @@ def page_spec(plan: KnowledgePlan, page) -> dict:
     return {
         **page.model_dump(mode="json"),
         "scopes": scopes,
+        "evidence_seeds": list(dict.fromkeys(evidence_seeds)),
         "owner": next(iter(sources)) if len(sources) == 1 else "workspace",
     }
+
+
+def page_projection_units(plan: KnowledgePlan, page) -> list[KnowledgeUnit]:
+    if page.type != "Domain":
+        return []
+    units = {unit.id: unit for unit in plan.effective_units}
+    owned = {unit_id for unit_id in page.units if unit_id in units}
+    domain_ids = {
+        domain_id for unit_id in owned for domain_id in units[unit_id].domain_ids
+    }
+    return [
+        unit
+        for unit in plan.effective_units
+        if unit.id not in owned and set(unit.domain_ids) & domain_ids
+    ]
 
 
 def generated_page_spec(
@@ -881,16 +1012,32 @@ def _validate_page_draft(
 
 
 def validate_plan_artifact(
-    root: pathlib.Path, state: dict, path: pathlib.Path
+    root: pathlib.Path,
+    state: dict,
+    path: pathlib.Path,
 ) -> tuple[KnowledgePlan | None, list[Issue]]:
     if not path.is_file():
         return None, [
             issue("error", "plan-missing", str(path), "write the Knowledge Plan")
         ]
-    value, issues = _model_issues(path, KnowledgePlan, markdown=True)
-    if value:
-        issues.extend(_validate_knowledge_plan(root, state, value, path))
-    return value, issues
+    narrative, issues = _model_issues(path, PlanNarrative, markdown=True)
+    ledger_path = path.with_name("plan-ledger.json")
+    if not ledger_path.is_file():
+        issues.append(
+            issue(
+                "error",
+                "plan-ledger-missing",
+                str(ledger_path),
+                "write the Knowledge Plan machine ledger",
+            )
+        )
+        return None, issues
+    plan, ledger_issues = _model_issues(ledger_path, KnowledgePlan)
+    issues.extend(ledger_issues)
+    if narrative and plan:
+        issues.extend(_validate_knowledge_plan(root, state, plan, ledger_path))
+        issues.extend(_plan_narrative_issues(root, state, path, plan))
+    return plan, issues
 
 
 def validate_progress_artifact(path: pathlib.Path) -> list[Issue]:
@@ -1231,7 +1378,9 @@ def render_generated_page(
     body = parsed.body
     if spec["type"] == "DataModel":
         if plan is None or page is None:
-            raise ValueError("DataModel rendering requires its Plan and Composition page")
+            raise ValueError(
+                "DataModel rendering requires its Plan and Composition page"
+            )
         import _reference
 
         meta, body = _reference.enrich_data_model(root, state, plan, page, meta, body)
@@ -1383,7 +1532,9 @@ def validate_page(
     source_citations: dict[str, set[str]] = {}
     for source in frontmatter.sources:
         locator = parse_resource(source.resource)
-        source_name = locator[0] if locator else _catalog_source(catalogs, source.resource)
+        source_name = (
+            locator[0] if locator else _catalog_source(catalogs, source.resource)
+        )
         if source_name:
             source_citations.setdefault(source_name, set()).add(source.id)
     for code, message, line in validate_diagrams(
@@ -1512,20 +1663,28 @@ def validate_candidate(
     plan_path = work / "plan.md"
     composition_path = work / "composition.md"
     plan, plan_issues = validate_plan_artifact(root, state, plan_path)
+    ledger_path = work / "plan-ledger.json"
     plan_digest = (
-        _state._plan_subject_digest(root, state) if plan_path.is_file() else None
+        _state._plan_subject_digest(root, state)
+        if plan_path.is_file() and ledger_path.is_file()
+        else None
     )
     plan_review, plan_review_issues = validate_plan_review(
         work / "plan-review.json",
         plan_digest,
-        {unit.id for unit in plan.units} if plan is not None else None,
+        {unit.id for unit in plan.effective_units} if plan is not None else None,
     )
     composition, composition_issues = validate_composition_artifact(
         composition_path, plan
     )
     composition_inputs_exist = all(
         path.is_file()
-        for path in (plan_path, work / "plan-review.json", composition_path)
+        for path in (
+            plan_path,
+            ledger_path,
+            work / "plan-review.json",
+            composition_path,
+        )
     )
     composition_digest = (
         _state._composition_subject_digest(root, state)
@@ -1540,10 +1699,10 @@ def validate_candidate(
     all_pages = sorted(candidate.rglob("*.md")) if candidate.exists() else []
     pages = [path for path in all_pages if path.name not in ("index.md", "log.md")]
     issues = [
-        *plan_issues,
-        *plan_review_issues,
-        *composition_issues,
-        *composition_review_issues,
+        *_at_phase(plan_issues, "plan"),
+        *_at_phase(plan_review_issues, "plan-review"),
+        *_at_phase(composition_issues, "composition"),
+        *_at_phase(composition_review_issues, "composition-review"),
     ]
     skipped = []
     if plan is None:
@@ -1573,6 +1732,7 @@ def validate_candidate(
                 "plan-review-rejected",
                 str(work / "plan-review.json"),
                 "Knowledge Plan review must be approved",
+                phase="plan-review",
             )
         )
     if composition_review is not None and composition_review.verdict != "approved":
@@ -1582,6 +1742,7 @@ def validate_candidate(
                 "composition-review-rejected",
                 str(work / "composition-review.json"),
                 "Composition review must be approved",
+                phase="composition-review",
             )
         )
     page_set = {path.relative_to(candidate).as_posix() for path in pages}
@@ -1595,7 +1756,12 @@ def validate_candidate(
                 generated = _reference.derive_pages(root, state, plan, composition)
             except (DbError, ValueError) as exc:
                 issues.append(
-                    issue("error", "reference-generation-invalid", str(candidate), str(exc))
+                    issue(
+                        "error",
+                        "reference-generation-invalid",
+                        str(candidate),
+                        str(exc),
+                    )
                 )
                 generated = []
             for page in generated:
@@ -1631,24 +1797,34 @@ def validate_candidate(
             else:
                 expected = page.model_dump(mode="json")
         issues.extend(
-            validate_page(
-                root,
-                state,
-                path,
-                owner=expected.get("owner") if expected else None,
-                expected=expected,
-                published=published,
+            _at_phase(
+                validate_page(
+                    root,
+                    state,
+                    path,
+                    owner=expected.get("owner") if expected else None,
+                    expected=expected,
+                    published=published,
+                ),
+                "review",
             )
         )
-    issues.extend(validate_navigation(candidate, state["language"]))
+    issues.extend(
+        _at_phase(validate_navigation(candidate, state["language"]), "review")
+    )
     allowed = {path.relative_to(candidate).as_posix() for path in all_pages}
     linked_pages = [path for path in all_pages if path.name != "log.md"]
-    issues.extend(_link_issues(candidate, linked_pages, allowed))
+    issues.extend(_at_phase(_link_issues(candidate, linked_pages, allowed), "review"))
     if plan is not None and composition is not None:
-        issues.extend(validate_drafts(root, state, plan, composition, work / "drafts"))
+        issues.extend(
+            _at_phase(
+                validate_drafts(root, state, plan, composition, work / "drafts"),
+                "write",
+            )
+        )
     else:
-        issues.extend(validate_unbound_drafts(work / "drafts"))
-    return validation_result(issues, skipped)
+        issues.extend(_at_phase(validate_unbound_drafts(work / "drafts"), "write"))
+    return validation_result(_at_phase(issues, "review"), skipped)
 
 
 def _link_issues(
