@@ -155,7 +155,7 @@ def knowledge_plan(units: list[dict]) -> dict:
                 },
             },
         ],
-        "table_dispositions": [],
+        "table_groups": [],
         "relationships": [
             {
                 "id": "routing-selects-boundary",

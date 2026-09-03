@@ -118,6 +118,33 @@ def frontmatter(path: pathlib.Path) -> dict:
     return parsed.meta
 
 
+def table_dispositions(plan: dict) -> list[dict]:
+    concepts_by_table: dict[tuple[str, str], list[str]] = {}
+    for concept in plan.get("concepts", []):
+        for table in concept.get("model_basis", {}).get("catalog_tables", []):
+            key = (table.get("source"), table.get("table"))
+            concepts_by_table.setdefault(key, []).append(concept.get("id"))
+    replicas = {
+        (item["table"]["source"], item["table"]["table"]): item
+        for item in plan.get("table_replicas", [])
+    }
+    return [
+        {
+            "source": group.get("source"),
+            "table": table,
+            "role": group.get("role"),
+            "domain_id": group.get("domain_id"),
+            "concept_ids": concepts_by_table.get((group.get("source"), table), []),
+            "evidence": group.get("evidence", []),
+            "replica_of": replicas.get((group.get("source"), table), {}).get(
+                "replica_of"
+            ),
+        }
+        for group in plan.get("table_groups", [])
+        for table in group.get("tables", [])
+    ]
+
+
 def plan_subject_digest(plan: pathlib.Path, state: dict) -> str:
     payload = {
         "plan": hashlib.sha256(plan.read_bytes()).hexdigest(),
@@ -259,6 +286,10 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     manifest = load(bundle / ".okf-manifest.json")
     run_dir = ws / ".okf-wiki/runs" / manifest["run_id"]
     state = load(run_dir / "state.json")
+    catalogs = [
+        load(ws / ".okf-wiki/catalogs" / item["storage_key"] / "catalog.json")
+        for item in state.get("catalogs", [])
+    ]
     work = run_dir / "work"
     trace_path = ws / "host-run.log"
     trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
@@ -276,13 +307,22 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         f"contract={state.get('contract')}, policy={state.get('policy')}, "
         f"keys={sorted(state)}",
     )
+    check(
+        "Run state and publication keep Catalogs as content-addressed pointers",
+        all(
+            set(item) == {"name", "content_hash", "storage_key"}
+            for item in state.get("catalogs", [])
+        )
+        and manifest.get("catalogs") == state.get("catalogs"),
+        f"state_catalogs={state.get('catalogs')}, manifest_catalogs={manifest.get('catalogs')}",
+    )
 
     plan = frontmatter(work / "plan.md")
     units = plan.get("units", [])
     source_areas = plan.get("source_areas", [])
     domains = plan.get("domains", [])
     concepts = plan.get("concepts", [])
-    dispositions = plan.get("table_dispositions", [])
+    dispositions = table_dispositions(plan)
     relationships = plan.get("relationships", [])
     gaps = plan.get("gaps", [])
     run_sources = {
@@ -380,7 +420,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
 
     selected_tables = [
         (catalog.get("name"), table.get("name"))
-        for catalog in state.get("catalogs", [])
+        for catalog in catalogs
         for table in catalog.get("tables", [])
     ]
     disposed_tables = [
@@ -392,9 +432,12 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         and set(disposed_tables) == set(selected_tables)
         and all(item.get("role") != "unresolved" for item in dispositions)
         and all(
+            item.get("role") != "excluded" or item.get("evidence")
+            for item in dispositions
+        )
+        and all(
             (item.get("domain_id") is None or item.get("domain_id") in domain_ids)
             and set(item.get("concept_ids", [])) <= concept_ids
-            and item.get("evidence")
             for item in dispositions
         )
     )
@@ -454,7 +497,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
             scope.get("role")
             in {"owner", "producer", "contract", "consumer", "feedback", "model"}
             and scope_has_seed(
-                scope, unit.get("evidence_seeds", []), state.get("catalogs", [])
+                scope, unit.get("evidence_seeds", []), catalogs
             )
             for scope in unit.get("scopes", [])
         )
@@ -545,12 +588,29 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     pages_by_unit = {
         unit_id: page for page in pages.values() for unit_id in page.get("units", [])
     }
+    domain_owner_units = [domain.get("owner_unit_id") for domain in domains]
+    domain_owner_pages = [
+        pages_by_unit.get(owner_unit_id, {}).get("id")
+        for owner_unit_id in domain_owner_units
+    ]
+    domain_page_domains = [
+        {
+            domain_id
+            for unit_id in page.get("units", [])
+            for domain_id in units_by_id.get(unit_id, {}).get("domain_ids", [])
+        }
+        for page in pages.values()
+        if page.get("type") == "Domain"
+    ]
     check(
         "Composition materializes every Domain, Concept and model owner",
         all(
             pages_by_unit.get(domain.get("owner_unit_id"), {}).get("type") == "Domain"
             for domain in domains
         )
+        and len(domain_owner_units) == len(set(domain_owner_units))
+        and len(domain_owner_pages) == len(set(domain_owner_pages))
+        and all(len(domain_ids) == 1 for domain_ids in domain_page_domains)
         and all(
             pages_by_unit.get(concept.get("owner_unit_id"), {}).get("type")
             in {"Domain", "Concept"}

@@ -50,10 +50,16 @@ structure, `code` for a logical model recovered from frozen code, or `none` for
 a non-persistent Concept.
 _Avoid_: Workspace-wide database mode, confidence score
 
+**Table Group**:
+The Plan's compact classification of captured OpenGauss table names that share
+one Source, role and optional owning Domain. The kernel expands groups and
+derives Concept links and Catalog locators when validating or rendering.
+_Avoid_: per-table Plan ledger, page assignment, name-prefix guess
+
 **Table Disposition**:
-The Plan's one-time classification of every captured OpenGauss table, recording
-its role, owning Domain and Concepts or a concrete coverage Gap.
-_Avoid_: page assignment, name-prefix guess
+The kernel's in-memory, per-table view derived from Table Groups, Concept model
+bases and sparse replica mappings. It is not an authored or persisted Artifact.
+_Avoid_: Plan field, duplicated Catalog metadata
 
 **Physical Relationship**:
 A relationship declared by captured OpenGauss constraints, including ordered
@@ -112,9 +118,10 @@ cite.
 _Avoid_: package task, inventory
 
 **Knowledge Plan**:
-The evolving cross-Source analysis whose coverage ledger defines Source Areas,
-Domains, Concepts, table dispositions and relationships before defining stable
-Knowledge Units, scopes, seeds and gaps. It does not choose Wiki paths.
+The evolving Domain-oriented cross-Source analysis whose coverage ledger
+defines Source Areas, Domains, Concepts, compact table groups, sparse replica
+mappings and relationships before defining stable Knowledge Units, scopes,
+seeds and gaps. It does not choose pages or Wiki paths.
 _Avoid_: page tree, Source shard
 
 **Knowledge Unit**:

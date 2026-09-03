@@ -8,7 +8,14 @@ from datetime import datetime
 from typing import Literal
 from urllib.parse import unquote, urlparse
 
-from _db import DbError, catalog_record, catalog_storage_key, load_catalog, load_index
+from _db import (
+    DbError,
+    catalog_record,
+    catalog_storage_key,
+    load_catalog,
+    load_index,
+    load_indexes,
+)
 from _diagram import validate as validate_diagrams
 from _files import directory_digest
 from _frontmatter import parse_file, render
@@ -189,17 +196,17 @@ def _resolve_resource(
     return (content, lo, hi) if content is not None else None
 
 
-def _catalog_resource(state: dict, resource: str) -> bool:
-    return _catalog_locator(state, resource) is not None
+def _catalog_resource(catalogs: list[dict], resource: str) -> bool:
+    return _catalog_locator(catalogs, resource) is not None
 
 
-def _catalog_source(state: dict, resource: str) -> str | None:
-    located = _catalog_locator(state, resource)
+def _catalog_source(catalogs: list[dict], resource: str) -> str | None:
+    located = _catalog_locator(catalogs, resource)
     return located[0] if located else None
 
 
-def _catalog_locator(state: dict, resource: str) -> tuple[str, set[str]] | None:
-    for catalog in state["catalogs"]:
+def _catalog_locator(catalogs: list[dict], resource: str) -> tuple[str, set[str]] | None:
+    for catalog in catalogs:
         if resource == catalog["resource"]:
             return catalog["name"], {"."}
         for table in catalog["tables"]:
@@ -208,8 +215,10 @@ def _catalog_locator(state: dict, resource: str) -> tuple[str, set[str]] | None:
     return None
 
 
-def _catalog_in_scope(state: dict, resource: str, roots: dict[str, list[str]]) -> bool:
-    located = _catalog_locator(state, resource)
+def _catalog_in_scope(
+    catalogs: list[dict], resource: str, roots: dict[str, list[str]]
+) -> bool:
+    located = _catalog_locator(catalogs, resource)
     if located is None:
         return False
     source, selectors = located
@@ -334,7 +343,7 @@ def _path_in_scope(path: str, roots: list[str]) -> bool:
 
 
 def _validate_scopes(
-    root: pathlib.Path, state: dict, item, path: pathlib.Path
+    root: pathlib.Path, state: dict, catalogs: list[dict], item, path: pathlib.Path
 ) -> list[Issue]:
     import _workspace
 
@@ -360,7 +369,7 @@ def _validate_scopes(
                     )
                 )
             catalog = next(
-                (entry for entry in state["catalogs"] if entry["name"] == scope.source),
+                (entry for entry in catalogs if entry["name"] == scope.source),
                 None,
             )
             allowed = {"."}
@@ -401,10 +410,10 @@ def _validate_scopes(
                 )
     seeded_sources = set()
     for resource in item.evidence_seeds:
-        catalog_locator = _catalog_locator(state, resource)
+        catalog_locator = _catalog_locator(catalogs, resource)
         if catalog_locator is not None:
             seeded_sources.add(catalog_locator[0])
-            if not _catalog_in_scope(state, resource, roots):
+            if not _catalog_in_scope(catalogs, resource, roots):
                 issues.append(
                     issue("error", "evidence-outside-scope", str(path), resource)
                 )
@@ -437,10 +446,11 @@ def _validate_knowledge_plan(
 ) -> list[Issue]:
     import _workspace
 
+    catalogs = load_indexes(root, state["catalogs"])
     issues = [
         problem
         for unit in plan.units
-        for problem in _validate_scopes(root, state, unit, path)
+        for problem in _validate_scopes(root, state, catalogs, unit, path)
     ]
     workspace = _workspace.load(root)
     actual_sources = set(workspace.sources)
@@ -455,6 +465,20 @@ def _validate_knowledge_plan(
             )
         )
 
+    domains_by_owner = {}
+    for domain in plan.domains:
+        domains_by_owner.setdefault(domain.owner_unit_id, []).append(domain.id)
+    for owner_unit_id, domain_ids in domains_by_owner.items():
+        if len(domain_ids) > 1:
+            issues.append(
+                issue(
+                    "error",
+                    "domain-owner-unit-shared",
+                    str(path),
+                    f"{owner_unit_id}: each Domain requires its own owner unit, found {sorted(domain_ids)}",
+                )
+            )
+
     for area in plan.source_areas:
         source = workspace.sources.get(area.source)
         if source is None:
@@ -462,7 +486,7 @@ def _validate_knowledge_plan(
         roots = {area.source: area.paths}
         if source.kind == "opengauss":
             catalog = next(
-                (entry for entry in state["catalogs"] if entry["name"] == area.source),
+                (entry for entry in catalogs if entry["name"] == area.source),
                 None,
             )
             allowed = {"."}
@@ -492,7 +516,7 @@ def _validate_knowledge_plan(
                         )
                     )
         for resource in area.evidence_seeds:
-            catalog_locator = _catalog_locator(state, resource)
+            catalog_locator = _catalog_locator(catalogs, resource)
             parsed = parse_resource(resource)
             evidence_source = catalog_locator[0] if catalog_locator else parsed[0] if parsed else None
             if evidence_source != area.source:
@@ -500,7 +524,7 @@ def _validate_knowledge_plan(
                     issue("error", "evidence-outside-source-area", str(path), resource)
                 )
             elif catalog_locator:
-                if not _catalog_in_scope(state, resource, roots):
+                if not _catalog_in_scope(catalogs, resource, roots):
                     issues.append(
                         issue("error", "evidence-outside-source-area", str(path), resource)
                     )
@@ -511,7 +535,7 @@ def _validate_knowledge_plan(
 
     selected_tables = {
         (catalog["name"], table["name"])
-        for catalog in state["catalogs"]
+        for catalog in catalogs
         for table in catalog["tables"]
     }
     disposed_tables = {
@@ -575,7 +599,7 @@ def _validate_knowledge_plan(
     for gap in plan.gaps:
         evidence.extend(gap.evidence)
     for resource in sorted(set(evidence)):
-        if _catalog_locator(state, resource) is not None:
+        if _catalog_locator(catalogs, resource) is not None:
             continue
         resolved = _resolve_resource(root, state, resource)
         if resolved is None:
@@ -641,6 +665,21 @@ def _validate_composition(
                     "page-type-directory",
                     str(path),
                     f"{page.path}: use a capability directory, not a page-type directory",
+                )
+            )
+        page_domains = {
+            domain_id
+            for unit_id in page.units
+            if unit_id in units
+            for domain_id in units[unit_id].domain_ids
+        }
+        if page.type == "Domain" and len(page_domains) > 1:
+            issues.append(
+                issue(
+                    "error",
+                    "domain-page-cross-domain",
+                    str(path),
+                    f"{page.id}: Domain pages cannot merge {sorted(page_domains)}",
                 )
             )
         inherited_sources = {
@@ -794,6 +833,7 @@ def generated_page_spec(
 def _validate_page_draft(
     root: pathlib.Path, state: dict, spec: dict, path: pathlib.Path
 ) -> list[Issue]:
+    catalogs = load_indexes(root, state["catalogs"])
     issues = validate_page(
         root,
         state,
@@ -811,10 +851,10 @@ def _validate_page_draft(
     cited_sources = set()
     for source in parsed.meta.get("sources", []):
         resource = source.get("resource", "") if isinstance(source, dict) else ""
-        catalog_locator = _catalog_locator(state, resource)
+        catalog_locator = _catalog_locator(catalogs, resource)
         if catalog_locator is not None:
             cited_sources.add(catalog_locator[0])
-            if not _catalog_in_scope(state, resource, roots):
+            if not _catalog_in_scope(catalogs, resource, roots):
                 issues.append(
                     issue("error", "evidence-outside-scope", str(path), resource)
                 )
@@ -1207,6 +1247,7 @@ def validate_page(
     expected: dict | None = None,
     published: bool = False,
 ) -> list[Issue]:
+    catalogs = load_indexes(root, state["catalogs"])
     parsed = parse_file(path)
     if parsed.errors:
         return [
@@ -1342,7 +1383,7 @@ def validate_page(
     source_citations: dict[str, set[str]] = {}
     for source in frontmatter.sources:
         locator = parse_resource(source.resource)
-        source_name = locator[0] if locator else _catalog_source(state, source.resource)
+        source_name = locator[0] if locator else _catalog_source(catalogs, source.resource)
         if source_name:
             source_citations.setdefault(source_name, set()).add(source.id)
     for code, message, line in validate_diagrams(
@@ -1373,7 +1414,7 @@ def validate_page(
             )
         )
     for source in frontmatter.sources:
-        if _catalog_resource(state, source.resource):
+        if _catalog_resource(catalogs, source.resource):
             continue
         resolved = _resolve_resource(root, state, source.resource)
         if resolved is None:

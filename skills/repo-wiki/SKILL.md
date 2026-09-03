@@ -1,6 +1,6 @@
 ---
 name: repo-wiki
-description: Generate or refresh an evidence-anchored Domain Wiki and human-reviewed onboarding proposals. Use for codebase Wikis, repository-wide architecture documentation, onboarding documentation, AGENTS.md or CONTEXT.md proposals, and resuming an existing Wiki run; do not use for a standalone architecture diagram.
+description: Generate or refresh an evidence-anchored Domain Wiki and its human-reviewed post-publication AGENTS.md or CONTEXT.md onboarding proposals. Use for codebase Wikis, repository-wide architecture documentation, and resuming an existing Wiki run; do not use for ordinary onboarding-file edits or a standalone architecture diagram.
 ---
 
 # Repo Wiki
@@ -50,8 +50,11 @@ frozen code evidence.
 
 After `run start`, inspect captured database evidence without reconnecting:
 
-    okf catalog show --json
+    okf catalog tables --source database --json
     okf catalog describe orders --source database --json
+
+Use these query commands as the database interface. Do not read Run state or
+captured Catalog JSON files, including paths exposed in packets.
 
 When status reports a published or abandoned Run, `okf run start` begins a
 refresh from the already registered Sources. To discard a supported active or
@@ -138,9 +141,8 @@ ambiguous Source selection or another real external dependency. Resume with
 
 Read [references/plan.md](references/plan.md) and
 [references/contract.md](references/contract.md). One long-lived planner owns
-the cross-Source model and continuously overwrites `work/plan.md`. Its coverage
-ledger closes Source Areas, Domains, Concepts and captured tables before Plan
-review. Model Basis is selected per Concept, so one Plan may combine
+the cross-Source model and continuously overwrites `work/plan.md`. Organize
+coverage by Domain and leave page splitting to Composition. Model Basis is selected per Concept, so one Plan may combine
 OpenGauss-backed, code-derived and non-persistent Concepts. Replace the
 initial `work/progress.md` note before Plan review and keep it current before
 context compression and after merging worker results.

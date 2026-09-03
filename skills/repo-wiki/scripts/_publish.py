@@ -235,6 +235,7 @@ def _write_generated(bundle: pathlib.Path, files: dict[str, str]) -> None:
 
 
 def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> dict:
+    import _db
     import _validate
     import _workspace
     from _models import CompositionMap
@@ -245,7 +246,7 @@ def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> 
     parsed_composition = parse_file(work / "composition.md")
     composition = CompositionMap.model_validate(parsed_composition.meta, strict=True)
     authored = {page.path: page for page in composition.pages}
-    catalogs = state.get("catalogs", [])
+    catalogs = _db.load_indexes(root, state.get("catalogs", []))
     result = {}
     for page in _content_pages(candidate):
         relative = page.relative_to(candidate).as_posix()

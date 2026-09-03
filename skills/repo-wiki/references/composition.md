@@ -5,6 +5,10 @@ reads each relevant evidence note once; the planner that already synthesized
 those notes into the approved Plan does not reread them. This is the first
 stage allowed to choose pages and physical paths.
 
+Start from the approved Domains and their task-routing needs. Choose as many
+authored pages as those maintenance surfaces require; the Plan supplies
+coverage obligations, not a page target.
+
 Write `work/composition.md` with one entry per authored page plus Reference
 Roots for generated pages:
 
@@ -49,21 +53,25 @@ must omit it.
 Declare exactly one `reference_roots` entry for each OpenGauss Source and none
 for Git or files Sources. Its `path` is a unique bundle directory that does not
 overlap an authored page path. The kernel generates the Source's Schema page,
-every captured Table page and their links under that root; do not add those
-generated pages to `pages` or assign their identifiers by hand. After
+every captured Table page and their links under that root. Domain-owned tables
+are placed under `<root>/<domain-id>/tables/`; tables without Domain ownership
+are grouped under `<root>/roles/<role>/tables/`. Do not add those generated
+pages to `pages` or assign their identifiers by hand. After
 Composition validation, read their stable IDs and paths only from the derived
 Reference Map named by status and the review packet.
 
 Composition makes the Plan's ownership visible through exact unit mapping:
 
-- a Domain `owner_unit_id` maps to a Domain page;
+- each Domain's `owner_unit_id` maps to a Domain page that covers no other
+  Domain;
 - a Concept `owner_unit_id` maps to a Domain or Concept page that defines it;
 - every persistent Concept `model_unit_id` maps to a DataModel page;
 - a non-persistent Concept has no model page obligation.
 
 Several tightly coupled Concepts may share one owner page when they have the
-same reader task and change surface. Separate owner fields are unnecessary;
-Plan unit assignment is the authority.
+same Domain, reader task and change surface. Large Domains may use several
+Concept or question-focused pages without a page-count cap. Separate owner
+fields are unnecessary; Plan unit assignment is the authority.
 
 Apply the Task Routing Test: a maintainer arriving with one concrete change or
 failure question lands on one page. Split units when they have independent

@@ -149,8 +149,9 @@ def model(tmp_path, monkeypatch):
             captured_tables(),
         ),
     )
-    resources = {item["name"]: item["resource"] for item in catalog["tables"]}
-    unit = NS(id="sales-model")
+    manifest = _db.load_index(tmp_path, catalog["storage_key"])
+    resources = {item["name"]: item["resource"] for item in manifest["tables"]}
+    unit = NS(id="sales-model", domain_ids=["sales"])
     domain = NS(id="sales", name="Sales", owner_unit_id="sales-model")
     concepts = [
         NS(
@@ -169,22 +170,22 @@ def model(tmp_path, monkeypatch):
             ("order", "orders", "Order"),
         )
     ]
-    dispositions = [
+    groups = [
         NS(
             source="database",
-            table=table,
             role="entity",
+            tables=[table],
             domain_id="sales",
-            concept_ids=[concept.id],
-            evidence=[resources[table]],
-            replica_of=None,
+            evidence=[],
+            gap_ids=[],
         )
-        for table, concept in zip(("customers", "orders"), concepts, strict=True)
+        for table in ("customers", "orders")
     ]
     plan = KnowledgePlan.model_construct(
         domains=[domain],
         concepts=concepts,
-        table_dispositions=dispositions,
+        table_groups=groups,
+        table_replicas=[],
         units=[unit],
     )
     page = NS(
@@ -210,15 +211,17 @@ def test_derive_pages_has_schema_tables_ids_and_links(model):
         ("schema-database", "reference/database/schema.md", "Schema"),
         (
             "table-database-customers",
-            "reference/database/tables/customers.md",
+            "reference/database/sales/tables/customers.md",
             "Table",
         ),
         (
             "table-database-orders",
-            "reference/database/tables/orders.md",
+            "reference/database/sales/tables/orders.md",
             "Table",
         ),
     ]
+    assert "### [Sales][sales-data-model]" in pages[0]["body"]
+    assert "#### entity" in pages[0]["body"]
     assert "[customers][table-database-customers]" in pages[0]["body"]
     assert "[orders][table-database-orders]" in pages[0]["body"]
     assert all(item["units"] == [] for item in pages)
@@ -233,6 +236,23 @@ def test_derive_pages_has_schema_tables_ids_and_links(model):
         "[Order][sales-data-model]",
     ):
         assert expected in order["body"]
+
+
+def test_unowned_tables_are_grouped_by_role(model):
+    root, catalog, _resources, plan, composition, _page = model
+    plan.table_groups[1].domain_id = None
+    plan.table_groups[1].role = "infrastructure"
+    plan.concepts[1].model_basis.catalog_tables = []
+
+    pages = derive_pages(
+        root, {"language": "en", "catalogs": [catalog]}, plan, composition
+    )
+
+    assert pages[2]["path"] == (
+        "reference/database/roles/infrastructure/tables/orders.md"
+    )
+    assert "### No Domain ownership" in pages[0]["body"]
+    assert "#### infrastructure" in pages[0]["body"]
 
 
 def test_reference_pages_are_bilingual(model):
@@ -351,7 +371,9 @@ def test_physical_er_resolves_foreign_keys_across_captured_schemas():
 
 def test_composition_reserves_a_diagram_slot_for_generated_physical_er(model):
     _root, _catalog, _resources, plan, composition, _page = model
-    plan.units = [NS(id="sales-model", scopes=[NS(source="database")])]
+    plan.units = [
+        NS(id="sales-model", domain_ids=["sales"], scopes=[NS(source="database")])
+    ]
     diagrams = [
         DiagramSpec(id=f"logical-{index}", kind="er", question="What maps?", sources=["database"])
         for index in range(4)
@@ -492,7 +514,7 @@ def test_reference_pages_bind_into_candidate_and_manifest(model):
         reference_roots=[ReferenceRoot(source="database", path="reference/database")],
         pages=[page],
     )
-    plan.units = [NS(id="sales-model", scopes=[])]
+    plan.units = [NS(id="sales-model", domain_ids=["sales"], scopes=[])]
     state = {
         "run_id": "run-reference",
         "language": "en",
@@ -551,31 +573,24 @@ Use the generated references.
     assert len(reference_map["pages"]) == 3
     assert reference_map["pages"][2]["table"] == "orders"
     authored = (candidate / "sales/data-model.md").read_text(encoding="utf-8")
-    assert "](/reference/database/tables/orders.md)" in authored
+    assert "](/reference/database/sales/tables/orders.md)" in authored
     assert "%% okf-id: physical-schema" in authored
     schema = parse_file(candidate / "reference/database/schema.md")
     assert schema.meta["type"] == "Schema"
     assert "## Constraint and storage summary" in schema.body
 
     manifest = _publish._page_manifest(root, candidate, state)
+    catalog_tables = _db.load_index(root, catalog["storage_key"])["tables"]
     assert manifest["sales/data-model.md"]["inputs"] == {
         f"catalog:database:{name}": next(
-            item["content_hash"] for item in catalog["tables"] if item["name"] == name
+            item["content_hash"] for item in catalog_tables if item["name"] == name
         )
         for name in resources
     }
     assert manifest["reference/database/schema.md"]["inputs"] == {
-        "catalog:database": catalog["content_hash"],
-        **{
-            f"catalog:database:{name}": next(
-                item["content_hash"]
-                for item in catalog["tables"]
-                if item["name"] == name
-            )
-            for name in resources
-        },
+        "catalog:database": catalog["content_hash"]
     }
-    assert manifest["reference/database/tables/orders.md"]["origin"] == "generated"
+    assert manifest["reference/database/sales/tables/orders.md"]["origin"] == "generated"
     assert len(_publish._nav_manifest(candidate)) == 4
     expected = {
         item["path"]: {**item, "owner": "workspace"}

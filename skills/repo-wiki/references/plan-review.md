@@ -3,21 +3,29 @@
 Review the exact Knowledge Plan named by the `review plan` packet in an
 independent context. Use bounded evidence navigation commands
 from the packet workdir; the packet's Source names are routing hints. Do not
-read run internals, write Composition or choose pages.
+read run internals or Catalog JSON files, write Composition or choose pages.
+Inspect OpenGauss evidence only through `okf catalog tables --source <name>
+--json` and `okf catalog describe <table> --source <name> --json`.
 The packet is the command's JSON output; `artifact` names this report's output
 path and is not an input packet file.
 
 First verify mandatory coverage closure:
 
 - every eligible Source region has one non-overlapping Source Area disposition;
-- every Domain has a definition, evidence and an owner unit that names it;
+- every Domain has a definition, evidence and its own owner unit that names it;
 - every Concept belongs to one Domain and has a definition owner that names it;
 - each persistent Concept has exactly one model unit and a valid `opengauss` or
   `code` Model Basis; a `none` Concept has neither;
-- every captured OpenGauss table has one disposition, with every `replica` and
-  `excluded` claim evidenced and every `unresolved` item rejected;
+- every captured OpenGauss table occurs in exactly one `table_groups` entry,
+  grouped by Source, Domain and role, with every `excluded` claim evidenced and
+  every `unresolved` group rejected;
+- table existence is established by the captured Catalog and its locator is
+  kernel-derived; group evidence supports only the role or Domain judgment;
+- `table_replicas` contains only proven replicas, gives every table in a
+  `replica` group exactly one mapping, gives other roles none, maps both tables
+  explicitly and provides evidence;
 - every Catalog table named by an `opengauss` Concept exists in its captured
-  Source, and every selected Concept table maps back through a disposition;
+  Source, and every selected Concept table maps back through a table group;
 - OpenGauss facts own physical structure; code evidence adds behavior rather
   than replacing columns, keys, constraints, indexes or partitions;
 - a configured but unselected relevant table produces a partial code model and
@@ -29,6 +37,8 @@ First verify mandatory coverage closure:
 
 Then perform the routing sweep:
 
+- verify the Plan was developed from Domain boundaries and coverage, without a
+  target unit count or proposed page inventory;
 - derive at least two concrete maintainer probes from every compound unit's
   named stages or domains: "where would I change X?" and "where would I debug
   failure Y?";

@@ -7,8 +7,8 @@ The Wiki closes four mandatory ledgers before optional depth is considered:
 - every eligible Source region has one Source Area disposition;
 - every discovered business responsibility belongs to one Domain;
 - every primary domain noun belongs to one Domain and has one definition owner;
-- every captured OpenGauss table has one table disposition and, when relevant,
-  links to its Concepts.
+- every captured OpenGauss table belongs to one Source/Domain/role table group
+  and, when relevant, links to its Concepts through Model Basis records.
 
 Every persistent Concept also has one data-model owner. The Grep Test controls
 only optional depth such as a separate Procedure, Flow or Lifecycle page. It
@@ -57,6 +57,13 @@ business ownership.
 For a Catalog Source, `.` selects the whole captured catalog; otherwise paths
 select exact table names/page slugs, and evidence from a sibling table is out of
 scope.
+Agents query live selection with `okf db tables` and `okf db describe <table>` before
+registration, then frozen capture with `okf catalog tables` and `okf catalog
+describe <table>` after `run start`. They do not read Run state or Catalog JSON
+files.
+Catalog table-existence locators are derived by the kernel; table-group evidence
+records only classification or Domain ownership, while Concept links derive
+from `model_basis.catalog_tables`.
 Locators are plain paths with an optional line range:
 
     service/src/main/java/example/Request.java#L42-L68
@@ -76,12 +83,14 @@ planning progress is one living Markdown file that is overwritten in place.
 The kernel creates its initial marker; Plan review remains closed until the
 coordinator replaces that marker with findings, gaps and next actions.
 
-Plan owns the coverage ledger, stable knowledge units, evidence scopes, seeds
-and gaps. Domains and Concepts use unit IDs to declare their unique definition
-and data-model owners. Composition assigns units to stable authored Page IDs,
-metadata, diagrams and final paths, and assigns each OpenGauss Source one
-Reference Root. The kernel deterministically derives Schema and Table pages
-from the captured Catalog, Plan dispositions and those roots. It first exposes
+Plan owns the Domain-oriented coverage ledger, compact table groups, sparse
+replica mappings, stable knowledge units, evidence scopes, seeds and gaps.
+Domains and Concepts use unit IDs to declare their unique definition and
+data-model owners; every Domain has a distinct owner unit. Plan has no page
+inventory or target page count. Composition assigns units to stable authored
+Page IDs, metadata, diagrams and final paths, and assigns each OpenGauss Source
+one Reference Root. The kernel deterministically derives Schema and Table pages
+from the captured Catalog, Plan table groups and those roots. It first exposes
 their IDs and paths in the read-only derived `work/reference-map.json`; agents
 never edit that Artifact or reconstruct its naming rules.
 Independent Plan review binds domain recall to the frozen Sources. Independent

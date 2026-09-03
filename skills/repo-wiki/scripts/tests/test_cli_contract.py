@@ -26,3 +26,10 @@ def test_documented_runtime_commands_match_the_parser():
 def test_run_start_rejects_removed_scheduler_identity(flag):
     with pytest.raises(SystemExit):
         okf.build_parser().parse_args(["run", "start", flag, "legacy"])
+
+
+def test_catalog_tables_replaces_catalog_show():
+    parsed = okf.build_parser().parse_args(["catalog", "tables", "--source", "db"])
+    assert parsed.action == "tables"
+    with pytest.raises(SystemExit):
+        okf.build_parser().parse_args(["catalog", "show"])

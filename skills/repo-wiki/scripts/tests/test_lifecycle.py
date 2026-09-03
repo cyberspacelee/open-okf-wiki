@@ -4,6 +4,7 @@ import pathlib
 import subprocess
 from datetime import datetime
 
+import _db
 import _publish
 import _state
 import _validate
@@ -121,7 +122,7 @@ def plan_meta(units: list[dict] | None = None) -> dict:
             }
         ],
         "concepts": concepts,
-        "table_dispositions": [],
+        "table_groups": [],
         "relationships": [],
         "units": units,
         "gaps": [],
@@ -159,6 +160,29 @@ def test_code_model_evidence_must_be_inside_the_model_unit_scope(tmp_path):
     _plan, issues = _validate.validate_plan_artifact(root, _state.read(root), path)
 
     assert "model-evidence-outside-scope" in {issue.code for issue in issues}
+
+
+def test_each_domain_requires_a_dedicated_owner_unit(tmp_path):
+    root = workspace(tmp_path)
+    run = start(root)
+    value = plan_meta()
+    value["source_areas"][0]["domain_ids"].append("audit")
+    value["units"][0]["domain_ids"].append("audit")
+    value["domains"].append(
+        {
+            "id": "audit",
+            "name": "Audit",
+            "definition": "Owns an independent audit responsibility.",
+            "owner_unit_id": value["units"][0]["id"],
+            "evidence": ["src/app.py#L1-L2"],
+        }
+    )
+    path = run / "work/plan.md"
+    write(path, render(value, "# Knowledge Plan\n"))
+
+    _plan, issues = _validate.validate_plan_artifact(root, _state.read(root), path)
+
+    assert "domain-owner-unit-shared" in {issue.code for issue in issues}
 
 
 def composition() -> str:
@@ -919,6 +943,92 @@ def test_block_resume_and_legacy_state_rejection(tmp_path):
     write(path, json.dumps(state))
     with pytest.raises(_state.StateError, match="domain-concept-model-coverage"):
         _state.read(root)
+
+
+def test_legacy_embedded_catalog_tables_are_rejected(tmp_path):
+    root = workspace(tmp_path)
+    run = start(root)
+    path = run / "state.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["catalogs"] = [
+        {
+            "name": "database",
+            "content_hash": "a" * 64,
+            "storage_key": "database-aaaaaaaaaaaaaaaa",
+            "tables": [],
+        }
+    ]
+    write(path, json.dumps(state))
+
+    with pytest.raises(_state.StateError, match="thin Catalog pointers"):
+        _state.read(root)
+
+
+def test_thin_catalog_state_validates_grouped_table_coverage(tmp_path, monkeypatch):
+    root = workspace(tmp_path)
+    _workspace.add_opengauss_source(
+        root, "database", "DATABASE_URL", "public", ["orders", "orders_tmp"]
+    )
+    monkeypatch.setenv("DATABASE_URL", "opengauss://localhost/app")
+    capture = _db.capture_catalog
+
+    def capture_fake(capture_root, source):
+        tables = [
+            {
+                "schema": "public",
+                "name": name,
+                "comment": "",
+                "relation_kind": "table",
+                "persistence": "permanent",
+                "columns": [],
+                "constraints": [],
+                "primary_key": [],
+                "foreign_keys": [],
+                "indexes": [],
+                "partitions": [],
+            }
+            for name in source.tables
+        ]
+        return capture(
+            capture_root,
+            source,
+            inspect=lambda *_args: (
+                {"opengauss_version": "3.0.0", "database": "app"},
+                tables,
+            ),
+        )
+
+    monkeypatch.setattr(_db, "capture_catalog", capture_fake)
+    _state.start_run(root)
+    run = _state.run_dir(root, _state.read(root)["run_id"])
+    state = _state.read(root)
+    catalog = _db.load_index(root, state["catalogs"][0]["storage_key"])
+    value = plan_meta()
+    value["source_areas"].append(
+        {
+            "id": "database.catalog",
+            "source": "database",
+            "paths": ["."],
+            "disposition": "shared",
+            "domain_ids": [],
+            "evidence_seeds": [catalog["resource"]],
+        }
+    )
+    value["table_groups"] = [
+        {
+            "source": "database",
+            "role": "working",
+            "tables": ["orders", "orders_tmp"],
+        }
+    ]
+    path = run / "work/plan.md"
+    write(path, render(value, "# Knowledge Plan\n"))
+
+    plan_value, issues = _validate.validate_plan_artifact(root, state, path)
+
+    assert plan_value is not None
+    assert not issues
+    assert set(state["catalogs"][0]) == {"name", "content_hash", "storage_key"}
 
 
 def test_run_abandon(tmp_path):

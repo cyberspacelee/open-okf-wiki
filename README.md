@@ -140,10 +140,10 @@ uv run $REPO_WIKI_SKILL/scripts/okf.py db describe orders --url-env APP_DATABASE
 uv run $REPO_WIKI_SKILL/scripts/okf.py source add opengauss --name appdb --url-env APP_DATABASE_URL --schema public --table orders --table customers
 ```
 
-After `run start`, `catalog show` / `catalog describe` read the captured
+After `run start`, `catalog tables` / `catalog describe` read the captured
 catalog (table and column comments included) without reconnecting. Workers
-use those commands or the dispatch packet's `catalogs` paths — not
-`state.json` or the full `catalog.json`.
+use those commands, not `state.json`, `catalog.json` or Catalog paths from a
+dispatch packet.
 
 Start the Run, then ask the coding agent to use the `repo-wiki` skill and resume
 from status. Run IDs are internal and require no user-supplied session:

@@ -3,7 +3,7 @@ import pathlib
 
 import _validate
 import pytest
-from _frontmatter import parse_file
+from _frontmatter import parse_file, render
 from _models import (
     CompositionMap,
     CompositionPage,
@@ -85,7 +85,7 @@ def knowledge_plan(units=None, **overrides) -> dict:
                 },
             }
         ],
-        "table_dispositions": [],
+        "table_groups": [],
         "relationships": [],
         "units": units,
         "gaps": [],
@@ -221,19 +221,96 @@ def test_opengauss_model_requires_a_matching_table_disposition():
     with pytest.raises(ValidationError, match="matching disposition"):
         KnowledgePlan.model_validate(data)
 
-    data["table_dispositions"] = [
+    data["table_groups"] = [
         {
             "source": "database",
-            "table": "answers",
             "role": "entity",
+            "tables": ["answers"],
             "domain_id": "answers",
-            "concept_ids": ["answer"],
-            "evidence": ["opengauss://database/public/answers"],
-            "gap_ids": [],
-            "replica_of": None,
         }
     ]
     assert KnowledgePlan.model_validate(data).table_dispositions[0].role == "entity"
+
+
+def test_table_groups_keep_large_catalog_plans_compact():
+    data = knowledge_plan()
+    data["table_groups"] = [
+        {
+            "source": "database",
+            "role": "working",
+            "tables": [f"work_table_{index:03d}_tmp" for index in range(195)],
+        }
+    ]
+
+    plan = KnowledgePlan.model_validate(data)
+    text = render(data, "# Knowledge Plan\n")
+
+    assert len(plan.table_dispositions) == 195
+    assert len(text.encode()) < 16 * 1024
+    assert text.count("\n") < 300
+
+
+def test_table_groups_must_combine_matching_classifications():
+    data = knowledge_plan()
+    data["table_groups"] = [
+        {
+            "source": "database",
+            "domain_id": "answers",
+            "role": "entity",
+            "tables": ["answers"],
+        },
+        {
+            "source": "database",
+            "domain_id": "answers",
+            "role": "entity",
+            "tables": ["answer_details"],
+        },
+    ]
+
+    with pytest.raises(ValidationError, match="must combine"):
+        KnowledgePlan.model_validate(data)
+
+
+def test_excluded_table_groups_require_classification_evidence():
+    data = knowledge_plan()
+    data["table_groups"] = [
+        {"source": "database", "role": "excluded", "tables": ["legacy"]}
+    ]
+
+    with pytest.raises(ValidationError, match="classification evidence"):
+        KnowledgePlan.model_validate(data)
+
+
+def test_replica_mappings_are_sparse_complete_and_evidenced():
+    data = knowledge_plan()
+    data["table_groups"] = [
+        {
+            "source": "primary",
+            "role": "entity",
+            "tables": ["answers"],
+            "domain_id": "answers",
+        },
+        {
+            "source": "analytics",
+            "role": "replica",
+            "tables": ["answers_copy"],
+            "domain_id": "answers",
+        },
+    ]
+    data["table_replicas"] = [
+        {
+            "table": {"source": "analytics", "table": "answers_copy"},
+            "replica_of": {"source": "primary", "table": "answers"},
+            "evidence": ["src/app.py#L1-L2"],
+        }
+    ]
+
+    plan = KnowledgePlan.model_validate(data)
+    assert plan.table_dispositions[1].replica_of.table == "answers"
+
+    data["table_replicas"] = []
+    with pytest.raises(ValidationError, match="exactly one replica mapping"):
+        KnowledgePlan.model_validate(data)
 
 
 def test_partial_models_and_unresolved_tables_require_structured_gaps():
@@ -433,6 +510,89 @@ def test_composition_diagram_sources_are_inherited_from_unit_scopes():
     assert [item.code for item in issues] == ["diagram-source-outside-scope"]
 
 
+def test_composition_keeps_domain_pages_independent_but_allows_domain_depth():
+    units = [
+        unit(),
+        unit("audit-capability", domain_ids=["audit"], concept_ids=["audit"]),
+    ]
+    data = knowledge_plan(units)
+    data["source_areas"][0]["domain_ids"].append("audit")
+    data["domains"].append(
+        {
+            "id": "audit",
+            "name": "Audit",
+            "definition": "Owns the independent audit responsibility.",
+            "owner_unit_id": "audit-capability",
+            "evidence": ["src/app.py#L1-L2"],
+        }
+    )
+    data["concepts"].append(
+        {
+            "id": "audit",
+            "domain_id": "audit",
+            "kind": "service",
+            "name": "Audit",
+            "definition": "Records changes for the audit domain.",
+            "owner_unit_id": "audit-capability",
+            "model_unit_id": None,
+            "owner_evidence": ["src/app.py#L1-L2"],
+            "behavior_seeds": ["src/app.py#L1-L2"],
+            "model_basis": {
+                "basis": "none",
+                "coverage": "full",
+                "catalog_tables": [],
+                "structure_evidence": [],
+                "gap_ids": [],
+            },
+        }
+    )
+    knowledge = KnowledgePlan.model_validate(data)
+    merged = CompositionMap.model_validate(
+        {
+            "kind": "composition-map",
+            "reference_roots": [],
+            "pages": [
+                page(
+                    path="domains/combined.md",
+                    units=["answer-lifecycle", "audit-capability"],
+                    merge_rationale="Both responsibilities were placed together.",
+                )
+            ],
+            "gaps": [],
+        }
+    )
+    assert "domain-page-cross-domain" in {
+        item.code
+        for item in _validate._validate_composition(
+            knowledge, merged, pathlib.Path("composition.md")
+        )
+    }
+
+    same_domain = knowledge_plan(
+        [unit(), unit("answer-details", concept_ids=["answer"])]
+    )
+    knowledge = KnowledgePlan.model_validate(same_domain)
+    split = CompositionMap.model_validate(
+        {
+            "kind": "composition-map",
+            "reference_roots": [],
+            "pages": [
+                page(path="answers/domain.md"),
+                page(
+                    "answer-details",
+                    path="answers/details.md",
+                    type="Concept",
+                    units=["answer-details"],
+                ),
+            ],
+            "gaps": [],
+        }
+    )
+    assert not _validate._validate_composition(
+        knowledge, split, pathlib.Path("composition.md")
+    )
+
+
 def test_code_data_model_requires_authored_er_but_opengauss_does_not():
     data = knowledge_plan()
     data["units"].append(unit("answer-model", kind="data-model"))
@@ -507,6 +667,56 @@ def test_plan_review_merge_probes_cover_every_unit(tmp_path):
         path, "a" * 64, {"answer", "details", "failure"}
     )
     assert [item.code for item in issues] == ["merge-probe-incomplete"]
+
+
+def test_merge_probe_reviews_have_no_hidden_512_item_ceiling():
+    item_ids = [f"item-{index:03d}" for index in range(513)]
+    plan_probes = [
+        {
+            "unit_ids": item_ids[index : index + 2],
+            "decision": "keep-separate",
+            "rationale": "The routed items have independent change surfaces.",
+        }
+        for index in range(len(item_ids) - 1)
+    ]
+    page_probes = [
+        {
+            "page_ids": probe["unit_ids"],
+            "decision": probe["decision"],
+            "rationale": probe["rationale"],
+        }
+        for probe in plan_probes
+    ]
+
+    plan_review = PlanReviewReport.model_validate(
+        {
+            "subject_digest": "a" * 64,
+            "verdict": "approved",
+            "merge_probes": plan_probes,
+            "issues": [],
+        }
+    )
+    composition_review = CompositionReviewReport.model_validate(
+        {
+            "subject_digest": "a" * 64,
+            "verdict": "approved",
+            "merge_probes": page_probes,
+            "issues": [],
+        }
+    )
+
+    assert not _validate._merge_probe_issues(
+        pathlib.Path("plan-review.json"),
+        plan_review.merge_probes,
+        "unit_ids",
+        set(item_ids),
+    )
+    assert not _validate._merge_probe_issues(
+        pathlib.Path("composition-review.json"),
+        composition_review.merge_probes,
+        "page_ids",
+        set(item_ids),
+    )
 
 
 def test_integration_scopes_require_roles_and_each_source_once():
@@ -653,35 +863,33 @@ def test_bundle_review_routes_content_and_structural_repairs():
 
 
 def test_catalog_resources_stay_inside_selected_table_scope():
-    state = {
-        "catalogs": [
-            {
-                "name": "database",
-                "resource": "opengauss://db/public",
-                "tables": [
-                    {
-                        "name": "orders",
-                        "page_slug": "orders",
-                        "resource": "opengauss://db/public/orders",
-                    },
-                    {
-                        "name": "customers",
-                        "page_slug": "customers",
-                        "resource": "opengauss://db/public/customers",
-                    },
-                ],
-            }
-        ]
-    }
+    catalogs = [
+        {
+            "name": "database",
+            "resource": "opengauss://db/public",
+            "tables": [
+                {
+                    "name": "orders",
+                    "page_slug": "orders",
+                    "resource": "opengauss://db/public/orders",
+                },
+                {
+                    "name": "customers",
+                    "page_slug": "customers",
+                    "resource": "opengauss://db/public/customers",
+                },
+            ],
+        }
+    ]
     roots = {"database": ["orders"]}
 
-    assert _validate._catalog_in_scope(state, "opengauss://db/public/orders", roots)
+    assert _validate._catalog_in_scope(catalogs, "opengauss://db/public/orders", roots)
     assert not _validate._catalog_in_scope(
-        state, "opengauss://db/public/customers", roots
+        catalogs, "opengauss://db/public/customers", roots
     )
-    assert not _validate._catalog_in_scope(state, "opengauss://db/public", roots)
+    assert not _validate._catalog_in_scope(catalogs, "opengauss://db/public", roots)
     assert _validate._catalog_in_scope(
-        state, "opengauss://db/public/customers", {"database": ["."]}
+        catalogs, "opengauss://db/public/customers", {"database": ["."]}
     )
 
 

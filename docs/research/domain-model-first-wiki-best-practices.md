@@ -195,11 +195,12 @@ concepts:
     lifecycle: accounting-document-lifecycle
     confidence: confirmed
 
-table_dispositions:
-  - table: test.test_accounting_document_tmp
-    disposition: working
-    domain: accounting
-    evidence: [catalog:..., source/...#Lx-Ly]
+table_groups:
+  - source: test
+    role: working
+    domain_id: accounting
+    tables: [test_accounting_document_tmp, test_accounting_balance_tmp]
+    evidence: [source/...#Lx-Ly]
 ```
 
 Domain 不是表前缀、目录、service 或 schema 的别名。表前缀、package、owner、共同事务/状态机、读写关系是候选信号；最终 Domain/Concept 边界必须由多类证据共同支持。C4 也明确区分业务 capability/组织 grouping 与 software system/container/component，避免把任意目录结构直接提升为架构层级。[C4 software system](https://c4model.com/abstractions/software-system)、[C4 abstractions](https://c4model.com/abstractions)

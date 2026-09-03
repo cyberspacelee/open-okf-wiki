@@ -323,16 +323,10 @@ def cmd_db(args) -> int:
     import _db
 
     url = _db.resolve_url(workspace_root(), args.url_env)
-    result = (
-        _db.tables(url, args.schema)
-        if args.action == "tables"
-        else _db.describe(
-            url,
-            args.table,
-            args.schema,
-        )
-    )
-    emit(result, args.json)
+    if args.action == "tables":
+        emit_tables(_db.tables(url, args.schema), args.json)
+        return 0
+    emit(_db.describe(url, args.table, args.schema), args.json)
     return 0
 
 
@@ -345,12 +339,22 @@ def cmd_catalog(args) -> int:
     if state is None:
         raise _state.StateError("no run")
     catalogs = state.get("catalogs") or []
-    if args.action == "show":
-        emit(_db.show_captured(root, catalogs, args.source), args.json)
+    if args.action == "tables":
+        emit_tables(_db.tables_captured(root, catalogs, args.source), args.json)
         return 0
     result = _db.describe_captured(root, catalogs, args.table, args.source)
     emit(result, args.json)
     return 0
+
+
+def emit_tables(result: dict | list[dict], as_json: bool) -> None:
+    if as_json:
+        emit(result, True)
+        return
+    groups = result if isinstance(result, list) else [result]
+    for group in groups:
+        for table in group["tables"]:
+            print(table)
 
 
 def cmd_propose(args) -> int:
@@ -593,12 +597,12 @@ def build_parser() -> argparse.ArgumentParser:
         "catalog", help="read a captured catalog without connecting to the database"
     )
     catalog_actions = catalog.add_subparsers(dest="action", required=True)
-    catalog_show = leaf(
+    catalog_tables = leaf(
         catalog_actions.add_parser(
-            "show", help="list selected tables from the current run's captured catalog"
+            "tables", help="list selected tables from the current run's captured catalog"
         )
     )
-    catalog_show.add_argument("--source", help="restrict to one catalog source")
+    catalog_tables.add_argument("--source", help="restrict to one catalog source")
     catalog_describe = leaf(
         catalog_actions.add_parser(
             "describe", help="describe one captured table, including comments"

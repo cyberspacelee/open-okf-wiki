@@ -3,8 +3,10 @@ import shutil
 from types import SimpleNamespace
 
 import _db
+import _state
 import _validate
 import _workspace
+import okf
 import pytest
 from _db import DbError, describe, load_env, resolve_url, tables
 
@@ -150,20 +152,12 @@ def test_tables_handshakes_and_uses_one_read_only_repeatable_read_snapshot(monke
     )
     monkeypatch.setattr(_db, "_connect", lambda _url: conn)
 
-    assert tables("opengauss://localhost/app") == [
-        {
-            "name": "orders",
-            "comment": "customer orders",
-            "relation_kind": "table",
-            "persistence": "permanent",
-        },
-        {
-            "name": "staging",
-            "comment": "",
-            "relation_kind": "table",
-            "persistence": "temporary",
-        },
-    ]
+    assert tables("opengauss://localhost/app") == {
+        "database": "app",
+        "schema": "public",
+        "count": 2,
+        "tables": ["orders", "staging"],
+    }
     statements = [sql for sql, _params in conn.sql]
     assert statements[0] == "begin transaction isolation level repeatable read read only"
     assert "opengauss_version()" in statements[1]
@@ -389,8 +383,9 @@ def test_catalog_is_manifest_plus_hash_checked_table_shards(tmp_path, monkeypatc
     catalog = _capture(tmp_path, monkeypatch)
     directory = _db.catalog_dir(tmp_path, catalog["storage_key"])
     manifest = json.loads((directory / "catalog.json").read_text())
-    table = catalog["tables"][0]
+    table = manifest["tables"][0]
 
+    assert set(catalog) == {"name", "content_hash", "storage_key"}
     assert not (directory / "index.json").exists()
     assert "columns" not in manifest["tables"][0]
     assert manifest["tables"][0]["path"].startswith("tables/")
@@ -404,8 +399,21 @@ def test_catalog_is_manifest_plus_hash_checked_table_shards(tmp_path, monkeypatc
     payload = _db.load_catalog(tmp_path, catalog["storage_key"])
     assert payload["tables"][0]["columns"][0]["type"] == "bigint"
     assert _db.load_index(tmp_path, catalog["storage_key"]) == manifest
-    assert _db.show_captured(tmp_path, [catalog]) == [manifest]
-    assert _db.describe_captured(tmp_path, [catalog], "Order Items")["comment"] == "line items"
+    expected_tables = [
+        {
+            "source": "appdb",
+            "schema": "Public Data",
+            "count": 1,
+            "tables": ["Order Items"],
+        }
+    ]
+    assert _db.tables_captured(tmp_path, [catalog]) == expected_tables
+    assert (
+        _db.describe_captured(tmp_path, [catalog], "Order Items")["comment"]
+        == "line items"
+    )
+    with pytest.raises(DbError, match="Captured catalog 'missing' not found"):
+        _db.tables_captured(tmp_path, [catalog], "missing")
 
     shard = directory / manifest["tables"][0]["path"]
     changed = json.loads(shard.read_text())
@@ -415,12 +423,80 @@ def test_catalog_is_manifest_plus_hash_checked_table_shards(tmp_path, monkeypatc
         _db.load_table(tmp_path, catalog["storage_key"], table["page_slug"])
 
 
+def test_table_commands_emit_names_or_compact_json(tmp_path, monkeypatch, capsys):
+    summary = {
+        "database": "app",
+        "schema": "public",
+        "count": 2,
+        "tables": ["customers", "orders"],
+    }
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_db, "resolve_url", lambda _root, _env: "opengauss://db/app")
+    monkeypatch.setattr(_db, "tables", lambda _url, _schema: summary)
+
+    assert okf.cmd_db(okf.build_parser().parse_args(["db", "tables"])) == 0
+    assert capsys.readouterr().out == "customers\norders\n"
+
+    assert okf.cmd_db(okf.build_parser().parse_args(["db", "tables", "--json"])) == 0
+    assert json.loads(capsys.readouterr().out) == summary
+
+    monkeypatch.setattr(
+        _db, "describe", lambda _url, table, _schema: {"name": table, "columns": []}
+    )
+    args = okf.build_parser().parse_args(["db", "describe", "orders"])
+    assert okf.cmd_db(args) == 0
+    assert capsys.readouterr().out == "name: orders\ncolumns: []\n"
+
+
+def test_catalog_tables_keeps_list_shape_and_emits_names(
+    tmp_path, monkeypatch, capsys
+):
+    catalog = _capture(tmp_path, monkeypatch)
+    monkeypatch.setattr(okf, "workspace_root", lambda: tmp_path)
+    monkeypatch.setattr(_state, "read", lambda _root: {"catalogs": [catalog]})
+
+    args = okf.build_parser().parse_args(["catalog", "tables", "--source", "appdb"])
+    assert okf.cmd_catalog(args) == 0
+    assert capsys.readouterr().out == "Order Items\n"
+
+    args = okf.build_parser().parse_args(
+        ["catalog", "tables", "--source", "appdb", "--json"]
+    )
+    assert okf.cmd_catalog(args) == 0
+    assert json.loads(capsys.readouterr().out) == [
+        {
+            "source": "appdb",
+            "schema": "Public Data",
+            "count": 1,
+            "tables": ["Order Items"],
+        }
+    ]
+
+
 def test_catalog_hash_aggregates_table_hashes(tmp_path, monkeypatch):
     first = _capture(tmp_path, monkeypatch, "first")
     second = _capture(tmp_path, monkeypatch, "second")
-    assert first["tables"][0]["content_hash"] != second["tables"][0]["content_hash"]
+    first_table = _db.load_index(tmp_path, first["storage_key"])["tables"][0]
+    second_table = _db.load_index(tmp_path, second["storage_key"])["tables"][0]
+    assert first_table["content_hash"] != second_table["content_hash"]
     assert first["content_hash"] != second["content_hash"]
     assert first["storage_key"] != second["storage_key"]
+
+
+def test_catalog_state_record_size_does_not_grow_with_table_count():
+    payload = {
+        "name": "database",
+        "tables": [{"name": f"table_{index:03d}"} for index in range(195)],
+    }
+    content_hash = "a" * 64
+    record = _db.catalog_record(
+        payload,
+        content_hash,
+        _db.catalog_storage_key(payload["name"], content_hash),
+    )
+
+    assert set(record) == {"name", "content_hash", "storage_key"}
+    assert len(json.dumps(record).encode()) < 256
 
 
 def test_catalog_record_hash_must_match_the_stored_manifest(tmp_path, monkeypatch):

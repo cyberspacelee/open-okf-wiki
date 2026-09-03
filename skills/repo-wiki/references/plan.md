@@ -2,11 +2,13 @@
 
 Own the complete cross-Source investigation and coverage ledger. One planner
 maintains the shared model; focused evidence workers answer bounded questions
-and return note paths, locators, gaps and unanswered questions.
+and return the note path plus findings and gaps counts.
 
 Call `okf evidence outline . --source <name> --json` once for every Git/files
-Source and use captured Catalog commands for every OpenGauss Source. The outline command
-is the Source Index interface; do not open internal Index files. Navigate from build
+Source. For every OpenGauss Source, call `okf catalog tables --source <name>
+--json`, then `okf catalog describe <table> --source <name> --json` as needed.
+These commands are the Catalog interface; do not open Run state or Catalog JSON
+files. The outline command is the Source Index interface; do not open internal Index files. Navigate from build
 modules and source sets into relevant package clusters. Account for Source roles,
 domain nouns, state transitions, commands, persistence, events, failure paths,
 extension points and cross-Source contracts. When all three are present,
@@ -19,6 +21,12 @@ specific meaning, ownership and behavior, not every class or table.
 When a causal lifecycle crosses units, require one unit question or explicit
 gap to name the handoff and feedback path; separate presence-only units do not
 establish the relationship.
+
+Plan by Domain, not by a desired page inventory. Establish each Domain's
+responsibility and boundaries, then close its Concepts, model basis, table
+groups, behaviors, failure paths and handoffs. Create only the knowledge units
+needed to own those findings; Composition decides later whether units become
+separate pages.
 
 Continuously overwrite `work/plan.md`. For long work, keep
 `work/progress.md` sufficient to resume without conversation history: completed
@@ -93,15 +101,11 @@ concepts:
           table: requests
       structure_evidence: []
       gap_ids: []
-table_dispositions:
+table_groups:
   - source: database
-    table: requests
-    role: entity
     domain_id: requests
-    concept_ids: [request]
-    evidence: [database/requests]
-    gap_ids: []
-    replica_of: null
+    role: entity
+    tables: [requests]
 relationships: []
 units:
   - id: request-capability
@@ -154,14 +158,24 @@ Close each ledger before Plan review:
   `disposition` is `domain`, `shared`, `test`, `generated` or `excluded`;
   domain areas name their `domain_ids` and every area has opened seeds.
 - `domains` records a stable definition, evidence and one `owner_unit_id`.
+  Each Domain has its own owner unit; one owner unit cannot own several Domains.
 - `concepts` assigns every Concept to one Domain and one `owner_unit_id`.
   Persistent Concepts also name one `model_unit_id`; `none` Concepts leave it
   null.
-- `table_dispositions` classifies every captured table once as `entity`,
+- `table_groups` classifies every captured table once, grouped by Source,
+  Domain and role. Roles are `entity`,
   `association`, `history`, `reference`, `read-model`, `working`,
-  `infrastructure`, `replica`, `excluded` or `unresolved`. A name suffix is a
-  search hint, not evidence for the role. A `replica` requires `replica_of`
-  evidence; same-name tables are only candidates until proven.
+  `infrastructure`, `replica`, `excluded` or `unresolved`. `domain_id` is
+  omitted when no Domain owns the group. Optional `evidence` explains the
+  role or Domain judgment; it never repeats the table-existence locator that
+  the kernel derives from `source` and `tables`. `gap_ids` appears only on an
+  `unresolved` group. A name suffix is a search hint, not evidence for the role.
+  Concept links are derived from each Concept's `model_basis.catalog_tables`
+  and are not repeated in a table group.
+- `table_replicas` is omitted unless a real replica exists. Each entry maps one
+  `{source, table}` to its `replica_of` `{source, table}` and supplies evidence;
+  every table in a `replica` group has exactly one entry and other roles have
+  none. Same-name tables are only candidates until proven.
 - `relationships` records Concept relationships as `declared`, `mapped`,
   `observed` or `heuristic`. Only evidence-backed `declared`, `mapped` or
   `observed` relationships may set `include_in_er: true`; physical ER remains
@@ -184,7 +198,7 @@ selection, record `coverage: partial` and reference a `catalog-selection` Gap.
 A capture failure is an external blocker before planning, never a code fallback.
 Gap categories are `catalog-selection`, `source-coverage`, `model-coverage`,
 `relationship-confidence` and `other`; each Gap has a stable ID, claim and
-available evidence. `unresolved` dispositions must reference a Gap and must be
+available evidence. `unresolved` groups must reference a Gap and must be
 resolved before approval.
 
 Put all paths for one Source in one scope record. Roles are `owner`, `model`,
@@ -218,9 +232,6 @@ remain useful independently? Merge duplicate change surfaces in the Plan. Keep
 separate coverage obligations when they may still compose into one reader page;
 Composition owns that later page merge.
 
-Plan defines what requires coverage. Page IDs, types, titles, paths, diagrams,
-Reference Roots and hierarchy belong to Composition. The number of units follows
-independently owned knowledge and coverage closure rather than a semantic cap.
 The Grep Test may remove optional depth units, but every Domain and Concept must
 retain an owner unit and every persistent Concept a model unit.
 

@@ -156,6 +156,14 @@ def read(root: pathlib.Path) -> dict | None:
         or "tasks" in state
     ):
         raise StateError(f"legacy or unsupported run state; {CONTRACT} is required")
+    catalogs = state.get("catalogs")
+    if not isinstance(catalogs, list) or any(
+        not isinstance(item, dict)
+        or set(item) != {"name", "content_hash", "storage_key"}
+        or not all(isinstance(item[key], str) and item[key] for key in item)
+        for item in catalogs
+    ):
+        raise StateError("legacy or unsupported run state; thin Catalog pointers are required")
     try:
         RunPolicy.model_validate(state.get("policy"), strict=True)
     except ValidationError as exc:

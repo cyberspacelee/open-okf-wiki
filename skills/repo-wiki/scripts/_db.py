@@ -160,12 +160,15 @@ def _table_rows(conn, schema: str) -> list[dict]:
     ]
 
 
-def tables(url: str, schema: str = "public") -> list[dict]:
-    with _snapshot(url) as (conn, _fingerprint):
-        return [
-            {key: value for key, value in row.items() if key != "oid"}
-            for row in _table_rows(conn, schema)
-        ]
+def tables(url: str, schema: str = "public") -> dict:
+    with _snapshot(url) as (conn, fingerprint):
+        names = [row["name"] for row in _table_rows(conn, schema)]
+        return {
+            "database": fingerprint["database"],
+            "schema": schema,
+            "count": len(names),
+            "tables": names,
+        }
 
 
 def _column_rows(conn, relation_oid: int) -> tuple[list[dict], dict[int, str]]:
@@ -491,20 +494,11 @@ def catalog_dir(root: pathlib.Path, storage_key: str) -> pathlib.Path:
 
 
 def catalog_record(payload: dict, content_hash: str, storage_key: str) -> dict:
-    """Slim catalog identity stored in run state and the publication manifest."""
+    """Catalog identity stored in state; table metadata stays in catalog.json."""
     return {
         "name": payload["name"],
-        "schema": payload["schema"],
-        "resource": payload["resource"],
         "content_hash": content_hash,
         "storage_key": storage_key,
-        "tables": [
-            {
-                key: table[key]
-                for key in ("name", "page_slug", "resource", "content_hash")
-            }
-            for table in payload["tables"]
-        ],
     }
 
 
@@ -518,7 +512,7 @@ def _read_json(path: pathlib.Path, description: str) -> dict:
     return value
 
 
-def _load_manifest(root: pathlib.Path, storage_key: str) -> dict:
+def load_index(root: pathlib.Path, storage_key: str) -> dict:
     manifest = _read_json(
         catalog_dir(root, storage_key) / "catalog.json",
         f"captured catalog {storage_key}",
@@ -531,7 +525,7 @@ def _load_manifest(root: pathlib.Path, storage_key: str) -> dict:
 
 
 def load_catalog(root: pathlib.Path, storage_key: str) -> dict:
-    manifest = _load_manifest(root, storage_key)
+    manifest = load_index(root, storage_key)
     payload = {key: value for key, value in manifest.items() if key != "tables"}
     payload["tables"] = []
     for item in manifest["tables"]:
@@ -545,12 +539,12 @@ def load_catalog(root: pathlib.Path, storage_key: str) -> dict:
     return payload
 
 
-def load_index(root: pathlib.Path, storage_key: str) -> dict:
-    return _load_manifest(root, storage_key)
+def load_indexes(root: pathlib.Path, records: list[dict]) -> list[dict]:
+    return [load_index(root, record["storage_key"]) for record in records]
 
 
 def load_table(root: pathlib.Path, storage_key: str, page_slug: str) -> dict:
-    manifest = _load_manifest(root, storage_key)
+    manifest = load_index(root, storage_key)
     item = next(
         (
             table
@@ -570,14 +564,27 @@ def load_table(root: pathlib.Path, storage_key: str, page_slug: str) -> dict:
     return value
 
 
-def show_captured(
+def tables_captured(
     root: pathlib.Path, catalogs: list[dict], source: str | None = None
 ) -> list[dict]:
-    return [
-        load_index(root, record["storage_key"])
-        for record in catalogs
-        if not source or record.get("name") == source
+    records = [
+        record for record in catalogs if not source or record.get("name") == source
     ]
+    if source and not records:
+        raise DbError(f"Captured catalog '{source}' not found")
+    result = []
+    for record in records:
+        manifest = load_index(root, record["storage_key"])
+        names = sorted(table["name"] for table in manifest["tables"])
+        result.append(
+            {
+                "source": manifest["name"],
+                "schema": manifest["schema"],
+                "count": len(names),
+                "tables": names,
+            }
+        )
+    return result
 
 
 def describe_captured(
@@ -587,10 +594,14 @@ def describe_captured(
     source: str | None = None,
 ) -> dict:
     matches = []
-    for record in catalogs:
-        if source and record.get("name") != source:
-            continue
-        for item in record.get("tables", []):
+    records = [
+        record for record in catalogs if not source or record.get("name") == source
+    ]
+    if source and not records:
+        raise DbError(f"Captured catalog '{source}' not found")
+    for record in records:
+        manifest = load_index(root, record["storage_key"])
+        for item in manifest.get("tables", []):
             if item.get("name") == table or item.get("page_slug") == table:
                 matches.append(load_table(root, record["storage_key"], item["page_slug"]))
     if not matches:
@@ -644,7 +655,7 @@ def capture_catalog(root: pathlib.Path, source, *, inspect=_inspect_catalog) -> 
     directory = catalog_dir(root, storage_key)
     capture = directory / "catalog.json"
     if capture.is_file():
-        existing = _load_manifest(root, storage_key)
+        existing = load_index(root, storage_key)
         if existing.get("content_hash") != content_hash:
             raise DbError(f"catalog storage key collision: {storage_key}")
     directory.mkdir(parents=True, exist_ok=True)

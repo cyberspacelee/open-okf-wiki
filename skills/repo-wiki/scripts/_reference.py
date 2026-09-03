@@ -59,8 +59,14 @@ def _page_by_unit(composition: CompositionMap) -> dict[str, object]:
     }
 
 
-def _catalogs(state: dict) -> dict[str, dict]:
-    return {item["name"]: item for item in state.get("catalogs", [])}
+def _catalogs(root: pathlib.Path, state: dict) -> dict[str, dict]:
+    return {
+        record["name"]: {
+            **_db.load_index(root, record["storage_key"]),
+            "storage_key": record["storage_key"],
+        }
+        for record in state.get("catalogs", [])
+    }
 
 
 def _source(source_id: str, resource: str) -> dict:
@@ -297,11 +303,15 @@ def _schema_body(
 ) -> tuple[str, list[dict]]:
     zh = language == "zh"
     grouped = {role: [] for role in _ROLES}
+    domain_groups = {}
     evidence = []
     for table in tables:
         disposition = dispositions[(source, table["name"])]
         role = disposition.role
         grouped[role].append((table, disposition))
+        domain_groups.setdefault(disposition.domain_id, {}).setdefault(role, []).append(
+            (table, disposition)
+        )
         evidence.extend(disposition.evidence)
     sources, source_ids = _source_map(catalog_resource, evidence)
 
@@ -344,41 +354,52 @@ def _schema_body(
         f"{sum(len(table.get('partitions', [])) for table in tables)} | {persistence} |",
     ]
     table_links = []
-    for role in _ROLES:
-        entries = grouped[role]
-        if not entries:
-            continue
-        table_links.extend(
-            [
-                f"### {role}",
-                "",
-                (
-                    "| 数据表 | Domain | Concept | 来源 | 注释 |"
-                    if zh
-                    else "| Table | Domain | Concepts | Origin | Comment |"
-                ),
-                "|---|---|---|---|---|",
-            ]
+    ordered_groups = sorted(
+        domain_groups,
+        key=lambda domain_id: (domain_id is None, domain_id or ""),
+    )
+    for domain_id in ordered_groups:
+        domain_label = (
+            _mapped_links([domain_id], domains, pages, "owner_unit_id")
+            if domain_id is not None
+            else ("无 Domain 归属" if zh else "No Domain ownership")
         )
-        for table, disposition in entries:
-            domain_ids = [disposition.domain_id] if disposition.domain_id else []
-            domain = _mapped_links(domain_ids, domains, pages, "owner_unit_id")
-            concept_links = _mapped_links(
-                disposition.concept_ids,
-                concepts,
-                pages,
-                "owner_unit_id",
+        table_links.extend([f"### {domain_label}", ""])
+        for role in _ROLES:
+            entries = domain_groups[domain_id].get(role, [])
+            if not entries:
+                continue
+            table_links.extend(
+                [
+                    f"#### {role}",
+                    "",
+                    (
+                        "| 数据表 | Domain | Concept | 来源 | 注释 |"
+                        if zh
+                        else "| Table | Domain | Concepts | Origin | Comment |"
+                    ),
+                    "|---|---|---|---|---|",
+                ]
             )
-            origin = "-"
-            if disposition.replica_of is not None:
-                target = (disposition.replica_of.source, disposition.replica_of.table)
-                origin = f"[{target[0]}.{target[1]}][{table_pages[target]}]"
-            table_links.append(
-                f"| [{table['name']}][{_table_id(source, table['page_slug'])}]"
-                f" | {domain} | {concept_links} | {origin} | "
-                f"{_md(table.get('comment'))}{_refs(disposition.evidence, source_ids)} |"
-            )
-        table_links.append("")
+            for table, disposition in entries:
+                domain_ids = [disposition.domain_id] if disposition.domain_id else []
+                domain = _mapped_links(domain_ids, domains, pages, "owner_unit_id")
+                concept_links = _mapped_links(
+                    disposition.concept_ids,
+                    concepts,
+                    pages,
+                    "owner_unit_id",
+                )
+                origin = "-"
+                if disposition.replica_of is not None:
+                    target = (disposition.replica_of.source, disposition.replica_of.table)
+                    origin = f"[{target[0]}.{target[1]}][{table_pages[target]}]"
+                table_links.append(
+                    f"| [{table['name']}][{_table_id(source, table['page_slug'])}]"
+                    f" | {domain} | {concept_links} | {origin} | "
+                    f"{_md(table.get('comment'))}{_refs(disposition.evidence, source_ids)} |"
+                )
+            table_links.append("")
 
     body = _render_template(
         language,
@@ -412,13 +433,13 @@ def derive_pages(
 ) -> list[dict]:
     language = state["language"]
     zh = language == "zh"
-    catalogs = _catalogs(state)
+    catalogs = _catalogs(root, state)
     dispositions, domains, concepts, pages = _table_context(plan, composition)
     table_pages = {
         (catalog["name"], table["name"]): _table_id(
             catalog["name"], table["page_slug"]
         )
-        for catalog in state.get("catalogs", [])
+        for catalog in catalogs.values()
         for table in catalog["tables"]
     }
     generated = []
@@ -464,10 +485,11 @@ def derive_pages(
             }
         )
         for table in tables:
+            disposition = dispositions[(reference_root.source, table["name"])]
             body, table_sources = _table_body(
                 language,
                 table,
-                dispositions[(reference_root.source, table["name"])],
+                disposition,
                 domains,
                 concepts,
                 pages,
@@ -477,7 +499,11 @@ def derive_pages(
             generated.append(
                 {
                     "id": _table_id(reference_root.source, table["page_slug"]),
-                    "path": f"{reference_root.path}/tables/{table['page_slug']}.md",
+                    "path": (
+                        f"{reference_root.path}/{disposition.domain_id}/tables/{table['page_slug']}.md"
+                        if disposition.domain_id
+                        else f"{reference_root.path}/roles/{disposition.role}/tables/{table['page_slug']}.md"
+                    ),
                     "type": "Table",
                     "title": f"{table['name']} 数据表" if zh else table["name"],
                     "description": (
@@ -685,7 +711,7 @@ def enrich_data_model(
     concepts = [
         concept for concept in plan.concepts if concept.model_unit_id in unit_ids
     ]
-    catalogs = _catalogs(state)
+    catalogs = _catalogs(root, state)
     table_records = []
     source_ids = {}
     seen_tables = set()
@@ -727,7 +753,7 @@ def enrich_data_model(
     ]
     table_entries = {
         (catalog["name"], item["name"]): item
-        for catalog in state.get("catalogs", [])
+        for catalog in catalogs.values()
         for item in catalog["tables"]
     }
     for concept in concepts:

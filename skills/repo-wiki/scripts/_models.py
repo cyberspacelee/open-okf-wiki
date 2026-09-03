@@ -290,7 +290,7 @@ class KnowledgeUnit(BaseModel):
 class UnitMergeProbe(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    unit_ids: list[StableId] = Field(min_length=2, max_length=8)
+    unit_ids: list[StableId] = Field(min_length=2)
     decision: Literal["merge", "keep-separate"]
     rationale: ClaimText
 
@@ -424,38 +424,70 @@ class DomainConcept(BaseModel):
         return self
 
 
+TableRole = Literal[
+    "entity",
+    "association",
+    "history",
+    "reference",
+    "read-model",
+    "working",
+    "infrastructure",
+    "replica",
+    "excluded",
+    "unresolved",
+]
+
+
+class TableGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source: ShortText
+    role: TableRole
+    tables: list[NonEmpty] = Field(min_length=1)
+    domain_id: StableId | None = None
+    evidence: list[ScopePath] = Field(default_factory=list)
+    gap_ids: list[StableId] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def role_has_required_context(self):
+        if len(self.tables) != len(set(self.tables)):
+            raise ValueError("table names must be unique within a group")
+        if self.role == "unresolved" and not self.gap_ids:
+            raise ValueError("unresolved table groups require at least one gap id")
+        if self.role != "unresolved" and self.gap_ids:
+            raise ValueError("gap_ids are only valid for unresolved table groups")
+        if self.role == "excluded" and not self.evidence:
+            raise ValueError("excluded table groups require classification evidence")
+        return self
+
+
+class TableReplica(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    table: CatalogTableRef
+    replica_of: CatalogTableRef
+    evidence: list[ScopePath] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def target_is_distinct(self):
+        if self.table == self.replica_of:
+            raise ValueError("replica_of must reference another catalog table")
+        return self
+
+
 class TableDisposition(BaseModel):
+    """Expanded in-memory table classification; never authored in Plan YAML."""
+
     model_config = ConfigDict(extra="forbid", strict=True)
 
     source: ShortText
     table: NonEmpty
-    role: Literal[
-        "entity",
-        "association",
-        "history",
-        "reference",
-        "read-model",
-        "working",
-        "infrastructure",
-        "replica",
-        "excluded",
-        "unresolved",
-    ]
-    domain_id: StableId | None
+    role: TableRole
+    domain_id: StableId | None = None
     concept_ids: list[StableId]
-    evidence: list[ScopePath] = Field(min_length=1)
-    gap_ids: list[StableId]
-    replica_of: CatalogTableRef | None
-
-    @model_validator(mode="after")
-    def role_has_required_context(self):
-        if self.role == "replica" and self.replica_of is None:
-            raise ValueError("replica tables require replica_of")
-        if self.role != "replica" and self.replica_of is not None:
-            raise ValueError("replica_of is only valid for replica tables")
-        if self.role == "unresolved" and not self.gap_ids:
-            raise ValueError("unresolved tables require at least one gap id")
-        return self
+    evidence: list[ScopePath] = Field(default_factory=list)
+    gap_ids: list[StableId] = Field(default_factory=list)
+    replica_of: CatalogTableRef | None = None
 
 
 class DomainRelationship(BaseModel):
@@ -485,7 +517,8 @@ class KnowledgePlan(BaseModel):
     source_areas: list[SourceArea] = Field(min_length=1)
     domains: list[Domain] = Field(min_length=1)
     concepts: list[DomainConcept] = Field(min_length=1)
-    table_dispositions: list[TableDisposition]
+    table_groups: list[TableGroup]
+    table_replicas: list[TableReplica] = Field(default_factory=list)
     relationships: list[DomainRelationship]
     units: list[KnowledgeUnit] = Field(min_length=1)
     gaps: list[KnowledgeGap]
@@ -506,6 +539,16 @@ class KnowledgePlan(BaseModel):
         tables = [(item.source, item.table) for item in self.table_dispositions]
         if len(tables) != len(set(tables)):
             raise ValueError("each catalog table must have exactly one disposition")
+        group_keys = [
+            (item.source, item.domain_id, item.role) for item in self.table_groups
+        ]
+        if len(group_keys) != len(set(group_keys)):
+            raise ValueError("table groups must combine each source, domain and role")
+        replica_tables = [
+            (item.table.source, item.table.table) for item in self.table_replicas
+        ]
+        if len(replica_tables) != len(set(replica_tables)):
+            raise ValueError("each replica table must have exactly one replica mapping")
         area_paths = [
             (area.source, path)
             for area in self.source_areas
@@ -529,6 +572,9 @@ class KnowledgePlan(BaseModel):
         dispositions = {
             (item.source, item.table): item for item in self.table_dispositions
         }
+        for table in replica_tables:
+            if table not in dispositions:
+                raise ValueError("replica mapping must reference a disposed replica table")
         for area in self.source_areas:
             if unknown := set(area.domain_ids) - set(domains):
                 raise ValueError(f"source area references unknown domains: {sorted(unknown)}")
@@ -582,6 +628,8 @@ class KnowledgePlan(BaseModel):
                     disposition.table,
                 ):
                     raise ValueError("replica_of must reference another disposed catalog table")
+            if (disposition.role == "replica") != (disposition.replica_of is not None):
+                raise ValueError("replica table groups require exactly one replica mapping per table")
         for relationship in self.relationships:
             if (
                 relationship.from_concept_id not in concepts
@@ -589,6 +637,38 @@ class KnowledgePlan(BaseModel):
             ):
                 raise ValueError("relationship endpoints must reference known concepts")
         return self
+
+    @property
+    def table_dispositions(self) -> list[TableDisposition]:
+        concept_ids: dict[tuple[str, str], list[str]] = {}
+        for concept in self.concepts:
+            for table in concept.model_basis.catalog_tables:
+                concept_ids.setdefault((table.source, table.table), []).append(concept.id)
+        replicas = {
+            (item.table.source, item.table.table): item for item in self.table_replicas
+        }
+        return [
+            TableDisposition(
+                source=group.source,
+                table=table,
+                role=group.role,
+                domain_id=group.domain_id,
+                concept_ids=concept_ids.get((group.source, table), []),
+                evidence=(
+                    [*group.evidence, *replicas[(group.source, table)].evidence]
+                    if (group.source, table) in replicas
+                    else group.evidence
+                ),
+                gap_ids=group.gap_ids,
+                replica_of=(
+                    replicas[(group.source, table)].replica_of
+                    if (group.source, table) in replicas
+                    else None
+                ),
+            )
+            for group in self.table_groups
+            for table in group.tables
+        ]
 
 
 class PlanReviewIssue(BaseModel):
@@ -629,7 +709,7 @@ class PlanReviewReport(BaseModel):
 
     subject_digest: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     verdict: Literal["approved", "changes_requested"]
-    merge_probes: list[UnitMergeProbe] = Field(max_length=64)
+    merge_probes: list[UnitMergeProbe]
     issues: list[PlanReviewIssue] = Field(default_factory=list, max_length=64)
 
     @model_validator(mode="after")
@@ -688,7 +768,7 @@ class CompositionPage(BaseModel):
 class PageMergeProbe(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    page_ids: list[StableId] = Field(min_length=2, max_length=8)
+    page_ids: list[StableId] = Field(min_length=2)
     decision: Literal["merge", "keep-separate"]
     rationale: ClaimText
 
@@ -802,7 +882,7 @@ class ReviewReport(BaseModel):
 
 
 class CompositionReviewReport(ReviewReport):
-    merge_probes: list[PageMergeProbe] = Field(max_length=64)
+    merge_probes: list[PageMergeProbe]
 
     @model_validator(mode="after")
     def merge_probes_match_open_issues(self):

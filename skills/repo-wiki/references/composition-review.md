@@ -11,9 +11,9 @@ Apply the Task Routing Test before page fan-out:
 - every OpenGauss Source has exactly one collision-free Reference Root and no
   Git/files Source has one;
 - generated Schema and Table references are absent from authored `pages`;
-- each Domain owner unit maps to a Domain page, each Concept owner unit maps to
-  one Domain or Concept page, and each persistent Concept model unit maps to a
-  DataModel page;
+- each Domain owner unit maps to a Domain page that covers no other Domain,
+  each Concept owner unit maps to one Domain or Concept page, and each
+  persistent Concept model unit maps to a DataModel page;
 - OpenGauss-backed Concepts leave physical ER generation to the kernel;
   every DataModel containing code-backed Concepts plans a separate logical ER
   diagram;
@@ -38,7 +38,8 @@ Apply the Task Routing Test before page fan-out:
   capability pages expose those links;
 - every Plan unit is assigned once and cross-page handoffs remain visible;
 - authored pages remove copied inventories and duplication, while generated
-  reference coverage remains complete; neither targets a page count.
+  reference coverage remains complete and Table paths preserve Domain or
+  unowned-role grouping; neither targets a page count.
 
 Sweep every page and report all independently supportable issues in one report;
 do not stop after the first routing or cohesion failure. Skip only a check whose
