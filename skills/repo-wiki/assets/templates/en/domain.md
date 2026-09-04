@@ -1,7 +1,10 @@
 ---
 coverage: full
-sources: []
 ---
+
+## Purpose and system context
+
+{{replace: the business problem, why this domain exists, and its position in the wider workflow}}
 
 ## Responsibility and public surface
 

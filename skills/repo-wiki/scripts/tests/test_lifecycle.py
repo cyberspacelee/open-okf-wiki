@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import pathlib
@@ -12,6 +13,7 @@ import _workspace
 import pytest
 from _files import compact_json_size, directory_digest
 from _frontmatter import parse_file, render
+from _markdown import extract
 from _models import RunPolicy
 
 
@@ -43,7 +45,7 @@ def workspace(
 
 def start(root: pathlib.Path) -> pathlib.Path:
     result = _state.start_run(root)
-    assert result["contract"] == "domain-plan-ledger-coverage"
+    assert result["contract"] == "compiled-plan-evidence-registry"
     assert result["language"] in ("en", "zh")
     assert result["sources"] == ["src"]
     assert result["phase"] == "plan"
@@ -63,8 +65,14 @@ def unit(
         "question": f"How does {unit_id} work?",
         "domain_ids": ["answers"],
         "concept_ids": [concept_id or unit_id],
-        "scopes": [{"source": "src", "role": "owner", "paths": [source_path]}],
-        "evidence_seeds": [f"src/{source_path}#L1-L2"],
+        "participants": [
+            {
+                "source": "src",
+                "roles": ["owner"],
+                "paths": [source_path],
+                "evidence": [f"src/{source_path}#L1-L2"],
+            }
+        ],
     }
 
 
@@ -79,7 +87,7 @@ def plan_meta(units: list[dict] | None = None) -> dict:
             concept_units.setdefault(concept_id, item)
     concepts = []
     for concept_id, owner in concept_units.items():
-        source_path = owner["scopes"][0]["paths"][0]
+        source_path = owner["participants"][0]["paths"][0]
         concepts.append(
             {
                 "id": concept_id,
@@ -92,7 +100,7 @@ def plan_meta(units: list[dict] | None = None) -> dict:
             }
         )
     return {
-        "kind": "knowledge-plan",
+        "kind": "knowledge-plan-intent",
         "source_areas": [
             {
                 "id": "src.answers",
@@ -100,7 +108,6 @@ def plan_meta(units: list[dict] | None = None) -> dict:
                 "paths": ["."],
                 "disposition": "domain",
                 "domain_ids": ["answers"],
-                "evidence_seeds": ["src/app.py#L1-L2"],
             }
         ],
         "domains": [
@@ -108,11 +115,13 @@ def plan_meta(units: list[dict] | None = None) -> dict:
                 "id": "answers",
                 "name": "Answers",
                 "definition": "Owns answer behavior and its service boundary.",
-                "owner_unit_id": units[0]["id"],
+                "owner_unit_id": next(
+                    item["id"] for item in units if item["kind"] == "capability"
+                ),
             }
         ],
         "concepts": concepts,
-        "table_groups": [],
+        "catalog_groups": [],
         "relationships": [],
         "units": units,
         "gaps": [],
@@ -143,7 +152,11 @@ def plan(language: str = "en", extra: str = "") -> str:
             "[^entry]: `src/app.py#L1-L2`\n"
         )
     return render(
-        {"kind": "knowledge-plan-narrative", "ledger": "plan-ledger.json"},
+        {
+            "kind": "knowledge-plan-narrative",
+            "intent": "plan-intent.json",
+            "ledger": "plan-ledger.json",
+        },
         body + extra,
     )
 
@@ -157,7 +170,9 @@ def write_plan(
 ) -> None:
     work = run / "work"
     write(work / "plan.md", plan(language, extra))
-    write(work / "plan-ledger.json", json.dumps(value or plan_meta()))
+    write(work / "plan-intent.json", json.dumps(value or plan_meta()))
+    (work / "plan-ledger.json").unlink(missing_ok=True)
+    _state.plan_compile(run.parents[2])
 
 
 def test_code_model_unit_is_derived_from_structure_evidence(tmp_path):
@@ -184,14 +199,19 @@ def test_each_domain_requires_a_dedicated_owner_unit(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
     value = plan_meta()
+    owner = next(
+        item
+        for item in value["units"]
+        if item["id"] == value["domains"][0]["owner_unit_id"]
+    )
     value["source_areas"][0]["domain_ids"].append("audit")
-    value["units"][0]["domain_ids"].append("audit")
+    owner["domain_ids"].append("audit")
     value["domains"].append(
         {
             "id": "audit",
             "name": "Audit",
             "definition": "Owns an independent audit responsibility.",
-            "owner_unit_id": value["units"][0]["id"],
+            "owner_unit_id": owner["id"],
         }
     )
     path = run / "work/plan.md"
@@ -236,23 +256,22 @@ def composition() -> str:
 
 
 def draft(resource: str, related_id: str, related_title: str) -> str:
+    evidence_id = f"ev-{hashlib.sha256(resource.encode()).hexdigest()[:16]}"
     return render(
-        {
-            "coverage": "full",
-            "sources": [{"id": "entry", "resource": resource}],
-        },
+        {"coverage": "full"},
+        "## Purpose and system context\n\n"
+        f"This fixture owns one bounded system responsibility.[^{evidence_id}]\n\n"
         "## Responsibility and public surface\n\n"
-        "The captured entry point defines this responsibility.[^entry]\n\n"
+        f"The captured entry point defines this responsibility.[^{evidence_id}]\n\n"
         "## Invariants and rules\n\n"
         "| Rule | Enforcement point | Observable failure |\n"
         "| --- | --- | --- |\n"
         "| The entry point remains authoritative. | Captured function | Call failure |\n\n"
         "## Data model overview\n\nNo persistent model exists for this fixture.\n\n"
         "## State and lifecycle\n\nThe answer has no persisted state lifecycle.\n\n"
-        "## Key flows\n\nThe entry point produces the answer directly.[^entry]\n\n"
+        f"## Key flows\n\nThe entry point produces the answer directly.[^{evidence_id}]\n\n"
         f"## Concepts\n\nSee [{related_title}][{related_id}].\n\n"
-        "## Change points\n\nChange the captured entry point and its tests.[^entry]\n\n"
-        "[^entry]: Frozen source entry point.\n",
+        f"## Change points\n\nChange the captured entry point and its tests.[^{evidence_id}]\n",
     )
 
 
@@ -396,11 +415,17 @@ def approve_plan(root: pathlib.Path, run: pathlib.Path) -> None:
 
 
 def approve_composition(root: pathlib.Path, run: pathlib.Path) -> None:
+    prepared = _state.composition_prepare(root)
+    assert prepared["ok"]
     packet = _state.composition_review_prepare(root)
     assert packet["ok"]
     composition_review(
         run / "work/composition-review.json", packet["subject_digest"], "approved"
     )
+    for page_id in (
+        item["id"] for item in parse_file(run / "work/composition.md").meta["pages"]
+    ):
+        assert _state.page_prepare(root, page_id)["ok"]
 
 
 def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
@@ -437,6 +462,8 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
         repaired_plan_packet["subject_digest"],
         "approved",
     )
+    assert _state.status(root)["next_actions"] == ["composition prepare"]
+    assert _state.composition_prepare(root)["ok"]
     assert _state.status(root)["next_actions"] == ["review composition"]
     composition_packet = _state.composition_review_prepare(root)
     composition_review(
@@ -464,12 +491,18 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
         repaired_composition_packet["subject_digest"],
         "approved",
     )
+    assert _state.page_prepare(root, "answer")["ok"]
+    assert _state.page_prepare(root, "architecture")["ok"]
     assert _state.status(root)["next_actions"] == ["review prepare"]
     packet = _state.review_prepare(root)
     assert packet["ok"]
-    assert "](/system/service-boundary.md)" in (
-        run / "candidate/guides/answer.md"
-    ).read_text(encoding="utf-8")
+    bound_answer = parse_file(run / "candidate/guides/answer.md")
+    assert "](/system/service-boundary.md)" in bound_answer.body
+    assert bound_answer.meta["sources"][0]["id"].startswith("ev-")
+    assert set(extract(bound_answer.body).footnote_defs) == {
+        bound_answer.meta["sources"][0]["id"]
+    }
+    assert parse_file(run / "work/drafts/answer.md").meta == {"coverage": "full"}
     assert (run / "candidate/index.md").is_file()
     assert (run / "candidate/guides/index.md").is_file()
 
@@ -481,7 +514,7 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
     write(
         answer,
         answer.read_text(encoding="utf-8")
-        + "\nFailure behavior is explicit.[^entry]\n",
+        + f"\nFailure behavior is explicit.[^ev-{hashlib.sha256('src/app.py#L1-L2'.encode()).hexdigest()[:16]}]\n",
     )
     assert _state.status(root)["next_actions"] == ["review prepare"]
     second = _state.review_prepare(root)
@@ -538,7 +571,10 @@ def test_plan_without_domain_concept_ledger_is_rejected(tmp_path):
     status = _state.status(root)
 
     assert status["phase"] == "plan"
-    assert {item["code"] for item in status["issues"]} == {"schema-invalid"}
+    assert {item["code"] for item in status["issues"]} == {
+        "plan-intent-missing",
+        "schema-invalid",
+    }
 
 
 def test_status_derives_plan_composition_and_draft_repairs(tmp_path):
@@ -549,6 +585,8 @@ def test_status_derives_plan_composition_and_draft_repairs(tmp_path):
     write(run / "work/progress.md", "# Progress\n\nPlan complete; review is next.\n")
     assert _state.status(root)["issues"][0]["code"] == "plan-review-missing"
     approve_plan(root, run)
+    assert _state.status(root)["issues"][0]["code"] == "composition-prepare-required"
+    assert _state.composition_prepare(root)["ok"]
     assert _state.status(root)["issues"][0]["code"] == "composition-missing"
     write(run / "work/composition.md", composition())
     status = _state.status(root)
@@ -597,12 +635,17 @@ def test_status_derives_plan_composition_and_draft_repairs(tmp_path):
     }
 
 
-def test_page_prepare_derives_one_bounded_domain_packet(tmp_path):
+def test_page_prepare_derives_one_bounded_domain_packet(tmp_path, monkeypatch):
     root = workspace(tmp_path)
     run = start(root)
     write_work(run)
     approve_plan(root, run)
     approve_composition(root, run)
+
+    def unexpected_read(*_args, **_kwargs):
+        raise AssertionError("valid prepared evidence must be reused")
+
+    monkeypatch.setattr(_state, "_evidence_cache_payload", unexpected_read)
 
     result = _state.page_prepare(root, "answer")
     packet = json.loads(pathlib.Path(result["artifact"]).read_text(encoding="utf-8"))
@@ -617,10 +660,15 @@ def test_page_prepare_derives_one_bounded_domain_packet(tmp_path):
         "architecture",
     }
     assert [item["id"] for item in packet["related_pages"]] == ["architecture"]
-    assert packet["evidence_seeds"] == [
+    assert [item["seed"] for item in packet["evidence"]] == [
         "src/app.py#L1-L2",
         "src/architecture.py#L1-L2",
     ]
+    assert all(item["id"].startswith("ev-") for item in packet["evidence"])
+    assert all(
+        pathlib.Path(item["cache_path"]).is_file() for item in packet["evidence"]
+    )
+    assert packet["draft_frontmatter"] == {"coverage": "full"}
     assert packet["template"].endswith("assets/templates/en/domain.md")
     assert packet["output"].endswith("work/drafts/answer.md")
     assert "plan" not in packet
@@ -631,14 +679,49 @@ def test_page_prepare_derives_one_bounded_domain_packet(tmp_path):
     assert invalid["issues"][0]["code"] == "page-id-invalid"
 
 
+def test_page_packet_cache_tampering_is_rejected(tmp_path):
+    root = workspace(tmp_path)
+    run = start(root)
+    write_work(run)
+    approve_plan(root, run)
+    approve_composition(root, run)
+    packet = json.loads((run / "work/page-packets/answer.json").read_text())
+    cache = pathlib.Path(packet["evidence"][0]["cache_path"])
+    value = json.loads(cache.read_text())
+    value["content"]["text"] = "tampered"
+    write(cache, json.dumps(value))
+
+    assert "page-evidence-cache-invalid" in {
+        item["code"] for item in _state.status(root)["issues"]
+    }
+
+
+def test_draft_can_only_cite_prepared_evidence_ids(tmp_path):
+    root = workspace(tmp_path)
+    run = start(root)
+    write_work(run)
+    approve_plan(root, run)
+    approve_composition(root, run)
+    path = run / "work/drafts/answer.md"
+    write(path, path.read_text().replace("[^ev-", "[^ev-unknown-", 1))
+
+    assert "draft-evidence-id-invalid" in {
+        item["code"] for item in _state.status(root)["issues"]
+    }
+
+
 def test_plan_narrative_requires_analysis_sections_and_resolved_evidence(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
-    write(run / "work/plan-ledger.json", json.dumps(plan_meta()))
+    write(run / "work/plan-intent.json", json.dumps(plan_meta()))
     write(
         run / "work/plan.md",
         render(
-            {"kind": "knowledge-plan-narrative", "ledger": "plan-ledger.json"},
+            {
+                "kind": "knowledge-plan-narrative",
+                "intent": "plan-intent.json",
+                "ledger": "plan-ledger.json",
+            },
             "# Knowledge Plan\n\n## Global model\n\nOnly a summary.\n",
         ),
     )
@@ -652,16 +735,17 @@ def test_plan_narrative_requires_analysis_sections_and_resolved_evidence(tmp_pat
     assert "plan-evidence-missing" in codes
 
 
-def test_plan_rejects_a_scoped_source_without_its_own_seed(tmp_path):
+def test_plan_rejects_participant_evidence_from_another_source(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
     broken = unit("answer", "app.py", "capability")
-    broken["evidence_seeds"] = ["missing/app.py#L1-L2"]
+    broken["participants"][0]["evidence"] = ["missing/app.py#L1-L2"]
     write_plan(run, plan_meta([broken]))
 
     status = _state.status(root)
 
-    assert {item["code"] for item in status["issues"]} == {
+    assert {item["code"] for item in status["issues"]} >= {
+        "unit-participant-evidence-source-invalid",
         "evidence-unresolved",
         "scope-source-unseeded",
     }
@@ -813,7 +897,7 @@ def test_active_run_rejects_a_changed_skill_bundle(tmp_path):
 def test_one_unit_plan_can_publish_one_page(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
-    write_plan(run, plan_meta([unit("answer", "app.py", "flow")]))
+    write_plan(run, plan_meta([unit("answer", "app.py", "capability")]))
     write(
         run / "work/composition.md",
         render(
@@ -885,22 +969,24 @@ def test_chinese_partial_page_uses_localized_gap_heading(tmp_path):
     write(
         run / "work/drafts/answer.md",
         render(
-            {
-                "coverage": "partial",
-                "sources": [{"id": "entry", "resource": "src/app.py#L1-L2"}],
-            },
-            "## 职责与公开边界\n\n入口定义答案行为。[^entry]\n\n"
+            {"coverage": "partial"},
+            "## 业务目的与系统位置\n\n"
+            "该领域负责回答这一项业务职责。[^ev-"
+            f"{hashlib.sha256('src/app.py#L1-L2'.encode()).hexdigest()[:16]}]\n\n"
+            "## 职责与公开边界\n\n入口定义答案行为。[^ev-"
+            f"{hashlib.sha256('src/app.py#L1-L2'.encode()).hexdigest()[:16]}]\n\n"
             "## 不变量与规则\n\n"
             "| 规则 | 执行位置 | 可观察失败 |\n"
             "| --- | --- | --- |\n"
             "| 入口保持唯一。 | 应用函数 | 调用失败 |\n\n"
             "## 数据模型概览\n\n该夹具没有持久化模型。\n\n"
             "## 状态与生命周期\n\n答案没有持久化状态生命周期。\n\n"
-            "## 关键流程\n\n入口直接生成答案。[^entry]\n\n"
+            "## 关键流程\n\n入口直接生成答案。[^ev-"
+            f"{hashlib.sha256('src/app.py#L1-L2'.encode()).hexdigest()[:16]}]\n\n"
             "## 领域概念\n\n答案是该能力的输出。\n\n"
-            "## 变更入口\n\n修改入口及其测试。[^entry]\n\n"
-            "## 缺口\n\n异常路径尚未捕获。\n\n"
-            "[^entry]: 冻结的源码入口。\n",
+            "## 变更入口\n\n修改入口及其测试。[^ev-"
+            f"{hashlib.sha256('src/app.py#L1-L2'.encode()).hexdigest()[:16]}]\n\n"
+            "## 缺口\n\n异常路径尚未捕获。\n",
         ),
     )
     approve_composition(root, run)
@@ -1010,7 +1096,7 @@ def test_block_resume_and_legacy_state_rejection(tmp_path):
     state = json.loads(path.read_text(encoding="utf-8"))
     state["contract"] = "artifact-loop-routing-closure"
     write(path, json.dumps(state))
-    with pytest.raises(_state.StateError, match="domain-plan-ledger-coverage"):
+    with pytest.raises(_state.StateError, match="compiled-plan-evidence-registry"):
         _state.read(root)
 
 
@@ -1083,6 +1169,25 @@ def test_thin_catalog_state_validates_grouped_table_coverage(tmp_path, monkeypat
     run = _state.run_dir(root, _state.read(root)["run_id"])
     state = _state.read(root)
     catalog = _db.load_index(root, state["catalogs"][0]["storage_key"])
+    broken = plan_meta()
+    broken["catalog_groups"] = [
+        {"source": "database", "role": "working", "tables": ["orders"]}
+    ]
+    broken["units"][0]["participants"][0]["evidence"] = ["src/missing.py#L1-L2"]
+    write_plan(run, broken)
+
+    inspection = _state.plan_inspect(root)
+
+    assert {item["code"] for item in inspection["diagnostics"]} >= {
+        "catalog-table-unclassified",
+        "evidence-unresolved",
+        "source-area-coverage-invalid",
+    }
+    assert inspection["skipped_checks"] == [
+        "compiled-ledger-validation",
+        "plan-narrative-alignment",
+    ]
+
     value = plan_meta()
     value["source_areas"].append(
         {
@@ -1091,21 +1196,20 @@ def test_thin_catalog_state_validates_grouped_table_coverage(tmp_path, monkeypat
             "paths": ["."],
             "disposition": "shared",
             "domain_ids": [],
-            "evidence_seeds": [catalog["resource"]],
         }
     )
-    value["table_groups"] = [
+    value["catalog_groups"] = [
         {
             "source": "database",
             "domain_id": "answers",
             "role": "entity",
             "tables": ["orders"],
+            "concept_ids": ["answer"],
         },
         {"source": "database", "role": "working", "tables": ["orders_tmp"]},
     ]
     value["concepts"][0]["model_basis"] = {
         "basis": "opengauss",
-        "catalog_tables": [{"source": "database", "table": "orders"}],
     }
     path = run / "work/plan.md"
     write_plan(run, value)
@@ -1120,7 +1224,7 @@ def test_thin_catalog_state_validates_grouped_table_coverage(tmp_path, monkeypat
     assert model_unit.evidence_seeds == ["database/orders"]
     assert model_unit.scopes[0].model_dump() == {
         "source": "database",
-        "role": "model",
+        "roles": ["model"],
         "paths": ["orders"],
     }
     assert set(state["catalogs"][0]) == {"name", "content_hash", "storage_key"}

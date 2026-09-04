@@ -1,6 +1,5 @@
 ---
 coverage: full
-sources: []
 ---
 
 ## Definition and ownership

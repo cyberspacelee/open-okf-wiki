@@ -51,7 +51,9 @@ frozen code evidence.
 After `run start`, inspect captured database evidence without reconnecting:
 
     okf catalog tables --source database --json
+    okf catalog tables --source database --summary --json
     okf catalog describe orders --source database --json
+    okf catalog describe orders --source database --full --json
 
 Use these query commands as the database interface. Do not read Run state or
 captured Catalog JSON files, including paths exposed in packets.
@@ -64,14 +66,17 @@ migrated.
 Disk Artifacts are authoritative after restart or context compression:
 
     work/plan.md
+    work/plan-intent.json
     work/plan-ledger.json
     work/progress.md
     work/evidence/
     work/plan-review.json
     work/composition.md
+    work/composition-requirements.json
     work/composition-review.json
     work/reference-map.json
     work/page-packets/<page-id>.json
+    work/evidence-cache/<evidence-id>.json
     work/drafts/<page-id>.md
     work/review.json
 
@@ -90,9 +95,9 @@ commands or repairs to execute:
 
 | Phase | Load and act |
 | --- | --- |
-| `plan` | `plan.md`, `plan-ledger.json` and `contract.md`; investigate or repair the Plan |
+| `plan` | Author `plan.md` and `plan-intent.json`; run `plan inspect`, then `plan compile` |
 | `plan-review` | Run `review plan`; its reviewer loads the returned reference |
-| `composition` | Create or repair `composition.md` |
+| `composition` | Run `composition prepare`, then create or repair `composition.md` |
 | `composition-review` | Run `review composition`; its reviewer loads the returned reference |
 | `write` | Run `page prepare` for each page, then write drafts from those packets |
 | `review` | Run `review prepare` or `review complete`; its reviewer loads the returned reference |
@@ -148,8 +153,9 @@ ambiguous Source selection or another real external dependency. Resume with
 Read [references/plan.md](references/plan.md) and
 [references/contract.md](references/contract.md). One long-lived planner owns
 the cross-Source model and continuously overwrites `work/plan.md` and
-`work/plan-ledger.json`. The Markdown Artifact is the readable synthesis; the
-JSON Artifact is the strict machine ledger. Organize
+`work/plan-intent.json`. The Markdown Artifact is the readable synthesis; the
+JSON Intent contains semantic decisions. The kernel compiles the strict
+`work/plan-ledger.json`; agents never edit it. Organize
 coverage by Domain and leave page splitting to Composition. Model Basis is selected per Concept, so one Plan may combine
 OpenGauss-backed, code-derived and non-persistent Concepts. Replace the
 initial `work/progress.md` note before Plan review and keep it current before
@@ -201,8 +207,11 @@ Search and read limits come from `status.policy.evidence`, not per-call
 overrides. When `has_more` is true, continue with the returned `next_after` or
 `next_locator`; never restart the same bounded search from the beginning.
 
-Finish Plan normalization, including scope and evidence-seed trimming, before
-requesting review; any later Plan edit invalidates the digest-bound approval.
+Finish Plan semantics, then run `okf plan inspect --json` and repair its complete
+diagnostic set. Run `okf plan compile --json` only when inspection is clean.
+The compiler normalizes participants, evidence, Catalog groups and derived model
+units. Any later authored Plan edit makes the ledger stale and invalidates the
+digest-bound approval.
 When the Plan passes deterministic validation, `next_actions` returns `review
 plan`. Run that exact action; do not substitute the later bundle action `review
 prepare`.
@@ -221,7 +230,9 @@ advances to Composition. Retain that reviewer handle through Composition review.
 ## Write
 
 Read [references/composition.md](references/composition.md). The planner or one
-composer turns the completed knowledge units into `work/composition.md`.
+composer first runs `okf composition prepare --json`, then reads the generated
+requirements packet and turns the complete effective-unit set into
+`work/composition.md`.
 Composition is the first Artifact that defines page IDs, titles and physical
 paths. It assigns every knowledge unit exactly once and one Reference Root per
 OpenGauss Source; the final paths are the published hierarchy. The kernel
@@ -243,7 +254,8 @@ reviewer.
 Then read [references/page.md](references/page.md). For every authored page,
 run `okf page prepare <page-id> --json`. The kernel writes one digest-bound
 `work/page-packets/<page-id>.json`; command output names the packet, page
-reference and draft output, while the packet names the exact template. Do not
+reference and draft output, while the packet names the exact template, prepared
+evidence IDs and bounded cache paths. Do not
 construct those paths or give writers the complete Plan, Composition or
 Reference Map.
 
@@ -254,8 +266,10 @@ the packet's output path and language. There is no language fallback; a missing
 locale template is a broken skill package. Schema and Table templates belong to
 deterministic generation and are never writer assignments. A Plan unit ID is
 never a draft ID unless it is also that page's declared ID.
-Never infer output language from Source text. Writers reopen frozen Source
-evidence for load-bearing claims. Status derives missing and invalid drafts
+Never infer output language from Source text. Writers consume the prepared
+cache entries and cite only their `ev-*` IDs; they do not repeat searches,
+construct locators, write `sources`, or write footnote definitions. The kernel
+generates citation metadata during binding. Status derives missing and invalid drafts
 directly from Composition. Send page repairs back to the original writer while
 it remains available.
 

@@ -49,10 +49,12 @@ identifying semantics, never evidence confidence.
 
 A scope pairs a registered Source with normalized relative POSIX paths. `.`
 selects the eligible Source root. Cross-Source claims evidence each participant.
-Each Source appears once per unit with one role: `owner`, `model`, `producer`,
-`contract`, `consumer` or `feedback`, and has at least one seed inside its
-paths. Integration units include producer and consumer scopes from at least two
-Sources. A `model` scope identifies structural evidence; it does not imply
+Authored participants pair a Source with one or more roles: `owner`, `model`,
+`producer`, `contract`, `consumer` or `feedback`. The compiler merges repeated
+participants for the same Source into one ledger scope and deduplicates paths
+and evidence. Code/file participants have evidence inside their paths; Catalog
+participants derive table identity evidence. Integration units include producer
+and consumer roles from at least two Sources. A `model` role identifies structural evidence; it does not imply
 business ownership.
 For a Catalog Source, `.` selects the whole captured catalog; otherwise paths
 select exact table names/page slugs, and evidence from a sibling table is out of
@@ -60,10 +62,13 @@ scope.
 Agents query live selection with `okf db tables` and `okf db describe <table>` before
 registration, then frozen capture with `okf catalog tables` and `okf catalog
 describe <table>` after `run start`. They do not read Run state or Catalog JSON
-files.
-Catalog table-existence locators are derived by the kernel; table-group evidence
-records only classification or Domain ownership, while Concept links derive
-from `model_basis.catalog_tables`.
+files. Use `catalog tables --summary` to add comments and structural counts
+without opening every table. Captured `catalog describe` is compact by default: identity, comments,
+columns, primary key and foreign keys. Use `--full` only when indexes, complete
+constraints or partitions are required.
+Catalog table-existence locators and Concept `catalog_tables` are derived by the
+kernel. Catalog Group evidence records only classification or Domain ownership;
+`concept_ids` are the authored association.
 Locators are plain paths with an optional line range:
 
     service/src/main/java/example/Request.java#L42-L68
@@ -79,9 +84,11 @@ are routing inputs, never provenance.
 
 ## Artifact boundaries
 
-Plan is a pair: `work/plan.md` is Markdown with identity-only frontmatter and a
-required analysis body, while `work/plan-ledger.json` is its strict machine
-coverage ledger. Both are bound by the same review digest. Composition is
+Plan has two authored inputs and one compiled output: `work/plan.md` is Markdown
+with identity-only frontmatter and a required analysis body;
+`work/plan-intent.json` contains semantic decisions; and the kernel writes the
+strict `work/plan-ledger.json`. All three are bound by the same review digest.
+Composition is
 Markdown with small schema-validated frontmatter and an analysis body. Pages are Markdown. Plan, Composition and bundle
 reviews are strict JSON issue ledgers because they control phase transitions.
 Each issue has a stable ID and remains `open` or `resolved`; approval means no
@@ -90,8 +97,9 @@ planning progress is one living Markdown file that is overwritten in place.
 The kernel creates its initial marker; Plan review remains closed until the
 coordinator replaces that marker with findings, gaps and next actions.
 
-The Plan Ledger owns Domain-oriented coverage, compact table groups, sparse
-replica mappings, authored knowledge units, evidence scopes, seeds and gaps.
+Plan Intent owns Domain-oriented semantics, Catalog classifications, sparse
+replica mappings, authored units, participants and gaps. The compiled ledger
+owns normalized groups, scopes, seeds, Concept catalog tables and derived units.
 The Plan Narrative owns global synthesis, lifecycles, cross-Source
 relationships, evidence-backed conclusions, rejected hypotheses and unresolved
 gaps. Domains and Concepts use unit IDs to declare unique definition owners;
@@ -107,17 +115,26 @@ Independent Plan review binds domain recall to the frozen Sources. Independent
 Composition review binds task routing and page cohesion before page fan-out.
 Both reviews record merge probes covering every routed item when more than one
 exists; a merge decision requires a matching open merge issue.
-After Composition approval, the kernel derives one digest-bound
+After Plan approval, `composition prepare` writes a digest-bound requirements
+packet containing every authored and derived unit, required Domain/Concept/model
+slot, allowed page types, Reference Root obligation and the path contract. The
+single composer closes this exact-once global assignment. After Composition approval, the kernel derives one digest-bound
 `work/page-packets/<page-id>.json` per authored page. It contains only that
-page's owned units, related semantic projections, scopes, evidence seeds,
-generated references, template and output. Writers read this packet and reopen
-evidence; they do not load the full Plan Ledger, Composition or Reference Map.
+page's owned units, related semantic projections, scopes, prepared evidence
+registry, bounded cache paths, generated model preview, references, template and
+output. Writers read cached excerpts through the paths in that packet; they do
+not load the full Plan Ledger, Composition or Reference Map or rescan Sources.
+Evidence IDs derive from logical locators and remain separate from the frozen
+revision or Catalog digest stored in each cache entry. Cache files are
+content-hashed, digest-bound, disposable runtime optimization; they are not a
+provenance source and any mismatch requires `page prepare` again.
 Domain packets project all Concepts, related detail pages and non-owning units
 in their one owned Domain without duplicating unit ownership. The projected
-units extend that Domain page's allowed scopes and seeds so its summaries can
-reopen and cite the evidence they describe.
-Writers own authored page bodies, citations and coverage. They do not transcribe
-Catalog field inventories. Final bundle review owns the machine trust stamp and
+units extend that Domain page's allowed scopes and prepared evidence so its
+summaries can cite the facts they describe.
+Writers own authored page bodies, evidence-ID references and coverage. The
+kernel owns locators, `sources` metadata and footnote definitions. Writers do
+not transcribe Catalog field inventories. Final bundle review owns the machine trust stamp and
 is digest-bound to both approved pre-write reviews.
 
 ## Page types and diagrams
@@ -154,8 +171,10 @@ participant.
 
 ## Citations and links
 
-Every load-bearing claim uses a footnote ID that appears exactly once in
-frontmatter `sources`, body references and a footnote definition. Partial
+Every load-bearing claim uses an ID from its prepared evidence registry. A draft
+writes only `[^ev-id]` references; it never writes `sources` or footnote
+definitions. Binding selects the cited registry entries, generates both, and
+requires their exact join. Partial
 coverage requires a non-empty `Gaps` section for English or `缺口` section for
 Chinese, naming missing evidence and searched scope; full coverage forbids that
 section. `author` and `last_modified` are optional best-effort metadata for Git
@@ -166,16 +185,15 @@ Before binding, logical page links use `[label][page-id]` without definitions.
 After binding, links are ordinary bundle-root-relative or page-relative links.
 Unknown IDs and broken links fail validation.
 
-Draft frontmatter contains both required fields `coverage` and `sources`, no
-others, and is validated by a strict writer schema before kernel metadata is
-added. Localized template
+Draft frontmatter contains only the required `coverage` field and is validated
+by a strict writer schema before kernel metadata is added. Localized template
 headings are required, and sections designated by the template as compact
 tables must contain Markdown tables. Every localized template instruction is an
 explicit `{{replace: ...}}` marker; leaving one in a draft fails validation.
 
 ## Deterministic boundary
 
-The Run contract is `domain-plan-ledger-coverage`. Reject every older Run
+The Run contract is `compiled-plan-evidence-registry`. Reject every older Run
 state rather than migrating or branching its schema; OKF remains v0.2.
 The skill bundle digest binds only runtime source files: `SKILL.md`, Markdown
 references and templates, and Python kernel files. Caches, bytecode and other

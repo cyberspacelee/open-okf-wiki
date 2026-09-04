@@ -22,7 +22,7 @@ from _models import (
 from pydantic import ValidationError
 
 VERSION = 1
-CONTRACT = "domain-plan-ledger-coverage"
+CONTRACT = "compiled-plan-evidence-registry"
 LOCK_TIMEOUT_SEC = 60
 MAX_STATUS_ISSUES = 10
 
@@ -199,14 +199,17 @@ def _artifact_paths(root: pathlib.Path, state: dict) -> dict[str, str]:
     base = run_dir(root, state["run_id"])
     return {
         "plan": str(work / "plan.md"),
+        "plan_intent": str(work / "plan-intent.json"),
         "plan_ledger": str(work / "plan-ledger.json"),
         "progress": str(work / "progress.md"),
         "evidence": str(work / "evidence"),
         "plan_review": str(work / "plan-review.json"),
         "composition": str(work / "composition.md"),
+        "composition_requirements": str(work / "composition-requirements.json"),
         "composition_review": str(work / "composition-review.json"),
         "reference_map": str(work / "reference-map.json"),
         "page_packets": str(work / "page-packets"),
+        "evidence_cache": str(work / "evidence-cache"),
         "drafts": str(work / "drafts"),
         "review": str(work / "review.json"),
         "candidate": str(base / "candidate"),
@@ -267,6 +270,7 @@ def start_run(root: pathlib.Path) -> dict:
     for relative in (
         "index",
         "work/evidence",
+        "work/evidence-cache",
         "work/drafts",
         "work/page-packets",
         "candidate",
@@ -316,8 +320,10 @@ def _work_digest(root: pathlib.Path, state: dict) -> str:
     work = work_dir(root, state)
     files = [
         work / "plan.md",
+        work / "plan-intent.json",
         work / "plan-ledger.json",
         work / "plan-review.json",
+        work / "composition-requirements.json",
         work / "composition.md",
         work / "composition-review.json",
         *sorted((work / "drafts").glob("*.md")),
@@ -345,6 +351,9 @@ def _plan_subject_digest(root: pathlib.Path, state: dict) -> str:
     work = work_dir(root, state)
     payload = {
         "plan": hashlib.sha256((work / "plan.md").read_bytes()).hexdigest(),
+        "plan_intent": hashlib.sha256(
+            (work / "plan-intent.json").read_bytes()
+        ).hexdigest(),
         "plan_ledger": hashlib.sha256(
             (work / "plan-ledger.json").read_bytes()
         ).hexdigest(),
@@ -365,6 +374,9 @@ def _composition_subject_digest(root: pathlib.Path, state: dict) -> str:
         "plan_subject_digest": _plan_subject_digest(root, state),
         "plan_review": hashlib.sha256(
             (work / "plan-review.json").read_bytes()
+        ).hexdigest(),
+        "composition_requirements": hashlib.sha256(
+            (work / "composition-requirements.json").read_bytes()
         ).hexdigest(),
         "composition": hashlib.sha256(
             (work / "composition.md").read_bytes()
@@ -479,11 +491,17 @@ def status(root: pathlib.Path) -> dict:
     )
     errors = _errors(plan_issues)
     if errors:
+        derived = {"plan-compile-required", "plan-ledger-stale"}
+        next_actions = (
+            ["plan compile"]
+            if {item["code"] for item in errors} <= derived
+            else ["repair work/plan.md and work/plan-intent.json", "plan inspect"]
+        )
         return _status_payload(
             root,
             state,
             "plan",
-            ["repair work/plan.md and work/plan-ledger.json"],
+            next_actions,
             issues=errors,
         )
 
@@ -513,6 +531,18 @@ def status(root: pathlib.Path) -> dict:
             "plan",
             ["repair the issues in work/plan-review.json", "review plan"],
             issues=_open_review_issues(plan_review),
+        )
+
+    requirements = _validate.composition_requirements(
+        plan, _plan_subject_digest(root, state)
+    )
+    requirement_issues = _validate.validate_composition_requirements(
+        pathlib.Path(paths["composition_requirements"]), requirements
+    )
+    errors = _errors(requirement_issues)
+    if errors:
+        return _status_payload(
+            root, state, "composition", ["composition prepare"], issues=errors
         )
 
     composition, composition_issues = _validate.validate_composition_artifact(
@@ -557,8 +587,18 @@ def status(root: pathlib.Path) -> dict:
     )
     errors = _errors(draft_issues)
     if errors:
+        prepare = [
+            f"page prepare {pathlib.Path(item['path']).stem}"
+            for item in errors
+            if item["code"] in {"page-prepare-required", "page-packet-stale"}
+        ]
+        prepare = prepare[: state["policy"]["agents"]["max_active_children"]]
         return _status_payload(
-            root, state, "write", ["repair work/drafts"], issues=errors
+            root,
+            state,
+            "write",
+            list(dict.fromkeys(prepare)) or ["repair work/drafts"],
+            issues=errors,
         )
 
     current_work = _work_digest(root, state)
@@ -587,6 +627,124 @@ def status(root: pathlib.Path) -> dict:
             issues=_open_review_issues(report),
         )
     return _status_payload(root, state, "review", ["review complete"])
+
+
+@_locked
+def plan_compile(root: pathlib.Path) -> dict:
+    import _validate
+
+    state = _require_run(root, {"active"})
+    assert_revisions_current(root, state)
+    work = work_dir(root, state)
+    plan, issues = _validate.compile_plan_sources(root, state, work / "plan.md")
+    errors = _errors(issues)
+    if plan is None or errors:
+        return {"ok": False, "issues": errors, "state": status(root)}
+    target = work / "plan-ledger.json"
+    atomic_json(target, plan.model_dump(mode="json", exclude_defaults=True))
+    return {
+        "ok": True,
+        "artifact": str(target),
+        "intent_digest": plan.intent_digest,
+        "counts": {
+            "domains": len(plan.domains),
+            "concepts": len(plan.concepts),
+            "authored_units": len(plan.units),
+            "derived_units": len(plan.effective_units) - len(plan.units),
+            "catalog_tables": len(plan.table_dispositions),
+        },
+        "state": status(root),
+    }
+
+
+def plan_inspect(root: pathlib.Path) -> dict:
+    import _validate
+
+    state = _require_run(root, {"active"})
+    assert_revisions_current(root, state)
+    work = work_dir(root, state)
+    plan, issues = _validate.compile_plan_sources(root, state, work / "plan.md")
+    diagnostics = [item.to_dict() for item in issues]
+    categories: dict[str, int] = {}
+    for item in diagnostics:
+        category = item.get("category") or "content"
+        categories[category] = categories.get(category, 0) + 1
+    result = {
+        "ok": plan is not None and not _errors(issues),
+        "diagnostics": diagnostics,
+        "diagnostic_counts": categories,
+        "skipped_checks": [],
+    }
+    if any(
+        item["code"] in {"plan-intent-missing", "schema-invalid"}
+        for item in diagnostics
+    ):
+        result["skipped_checks"] = [
+            "semantic-compilation",
+            "intent-environment",
+            "compiled-ledger-validation",
+            "plan-narrative-alignment",
+        ]
+    elif plan is None:
+        result["skipped_checks"] = [
+            "compiled-ledger-validation",
+            "plan-narrative-alignment",
+        ]
+    if plan is not None:
+        result["derived"] = {
+            "domains": len(plan.domains),
+            "concepts": len(plan.concepts),
+            "authored_units": len(plan.units),
+            "derived_units": [
+                unit.id
+                for unit in plan.effective_units
+                if unit.id not in {x.id for x in plan.units}
+            ],
+            "catalog_tables": len(plan.table_dispositions),
+        }
+    return result
+
+
+@_locked
+def composition_prepare(root: pathlib.Path) -> dict:
+    import _validate
+
+    state = _require_run(root, {"active"})
+    assert_revisions_current(root, state)
+    work = work_dir(root, state)
+    plan, issues = _validate.validate_plan_artifact(root, state, work / "plan.md")
+    errors = _errors(issues)
+    if plan is not None:
+        review, review_issues = _validate.validate_plan_review(
+            work / "plan-review.json",
+            _plan_subject_digest(root, state),
+            {unit.id for unit in plan.effective_units},
+        )
+        errors.extend(_errors(review_issues))
+        if review is not None and review.verdict != "approved":
+            errors.append(
+                {
+                    "severity": "error",
+                    "code": "plan-review-rejected",
+                    "path": str(work / "plan-review.json"),
+                    "line": None,
+                    "message": "obtain Plan approval before preparing Composition",
+                }
+            )
+    if plan is None or errors:
+        return {"ok": False, "issues": errors, "state": status(root)}
+    target = work / "composition-requirements.json"
+    requirements = _validate.composition_requirements(
+        plan, _plan_subject_digest(root, state)
+    )
+    atomic_json(target, requirements)
+    return {
+        "ok": True,
+        "artifact": str(target),
+        "effective_units": len(requirements["effective_units"]),
+        "required_slots": len(requirements["required_slots"]),
+        "state": status(root),
+    }
 
 
 def assert_revisions_current(root: pathlib.Path, state: dict) -> None:
@@ -674,7 +832,13 @@ def _bind_candidate(
 
     for page in composition.pages:
         draft = work / "drafts" / f"{page.id}.md"
-        spec = _validate.page_spec(plan, page)
+        packet, packet_issues = _validate.page_packet(root, state, plan, page)
+        if packet is None:
+            raise StateError(
+                f"cannot bind page without valid packet: {page.id}: "
+                f"{packet_issues[0].message}"
+            )
+        spec = {**_validate.page_spec(plan, page), "evidence": packet["evidence"]}
         rendered = _validate.render_generated_page(
             root, state, spec, draft, plan=plan, page=page
         )
@@ -757,6 +921,7 @@ def plan_review_prepare(root: pathlib.Path) -> dict:
         ),
         "inputs": {
             "plan": str(work / "plan.md"),
+            "plan_intent": str(work / "plan-intent.json"),
             "plan_ledger": str(work / "plan-ledger.json"),
             "evidence": str(work / "evidence"),
             "sources": [item["name"] for item in state["revisions"]]
@@ -795,6 +960,16 @@ def composition_review_prepare(root: pathlib.Path) -> dict:
                     "message": "repair the Knowledge Plan and obtain approval",
                 }
             )
+        requirements = _validate.composition_requirements(
+            plan, _plan_subject_digest(root, state)
+        )
+        errors.extend(
+            _errors(
+                _validate.validate_composition_requirements(
+                    work / "composition-requirements.json", requirements
+                )
+            )
+        )
         composition, composition_issues = _validate.validate_composition_artifact(
             work / "composition.md", plan
         )
@@ -824,6 +999,7 @@ def composition_review_prepare(root: pathlib.Path) -> dict:
             "plan": str(work / "plan.md"),
             "plan_ledger": str(work / "plan-ledger.json"),
             "plan_review": str(work / "plan-review.json"),
+            "composition_requirements": str(work / "composition-requirements.json"),
             "composition": str(work / "composition.md"),
             "reference_map": str(work / "reference-map.json"),
         },
@@ -832,6 +1008,147 @@ def composition_review_prepare(root: pathlib.Path) -> dict:
     if previous_review:
         packet["previous_review"] = previous_review
     return packet
+
+
+def _evidence_cache_payload(root: pathlib.Path, state: dict, resource: str) -> dict:
+    import _db
+    import _validate
+
+    evidence_id = f"ev-{hashlib.sha256(resource.encode()).hexdigest()[:16]}"
+    catalog_value = None
+    source_name = None
+    binding = None
+    kind = "source"
+    for record in state["catalogs"]:
+        catalog = _db.load_index(root, record["storage_key"])
+        if resource == catalog["resource"]:
+            source_name = catalog["name"]
+            catalog_value = {
+                "source": catalog["name"],
+                "schema": catalog["schema"],
+                "count": len(catalog["tables"]),
+                "tables": [
+                    {
+                        key: table.get(key)
+                        for key in (
+                            "name",
+                            "comment",
+                            "column_count",
+                            "foreign_key_count",
+                            "index_count",
+                        )
+                    }
+                    for table in catalog["tables"]
+                ],
+            }
+        else:
+            entry = next(
+                (table for table in catalog["tables"] if table["resource"] == resource),
+                None,
+            )
+            if entry is not None:
+                source_name = catalog["name"]
+                catalog_value = _db.compact_table(
+                    _db.load_table(root, record["storage_key"], entry["page_slug"])
+                )
+        if catalog_value is not None:
+            binding = record["content_hash"]
+            kind = "catalog"
+            break
+
+    if catalog_value is None:
+        parsed = _validate.parse_resource(resource)
+        if parsed is None:
+            raise StateError(f"invalid evidence resource: {resource}")
+        source_name = parsed[0]
+        catalog_value = evidence_read(root, resource, frozen_state=state)
+        revision = next(
+            (item for item in state["revisions"] if item["name"] == source_name), None
+        )
+        if revision is None:
+            raise StateError(
+                f"evidence source is not frozen in this run: {source_name}"
+            )
+        binding = revision.get("commit") or revision.get("content_hash")
+
+    cache = {
+        "kind": "page-evidence",
+        "id": evidence_id,
+        "seed": resource,
+        "resource": catalog_value.get("returned_locator", resource),
+        "source": source_name,
+        "source_kind": kind,
+        "binding": binding,
+        "content": catalog_value,
+    }
+    raw = json.dumps(cache, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    cache["content_digest"] = hashlib.sha256(raw.encode()).hexdigest()
+    return cache
+
+
+def _cached_evidence(
+    root: pathlib.Path, state: dict, resource: str
+) -> tuple[dict, pathlib.Path] | None:
+    evidence_id = f"ev-{hashlib.sha256(resource.encode()).hexdigest()[:16]}"
+    target = work_dir(root, state) / "evidence-cache" / f"{evidence_id}.json"
+    try:
+        cache = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        cache = None
+    if not isinstance(cache, dict):
+        return None
+    digest = cache.pop("content_digest", None)
+    actual_digest = hashlib.sha256(
+        json.dumps(
+            cache, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    cache["content_digest"] = digest
+    records = (
+        state["catalogs"]
+        if cache.get("source_kind") == "catalog"
+        else state["revisions"]
+    )
+    record = next(
+        (item for item in records if item["name"] == cache.get("source")), None
+    )
+    binding = (
+        record.get("content_hash")
+        if cache.get("source_kind") == "catalog" and record
+        else record and (record.get("commit") or record.get("content_hash"))
+    )
+    valid = (
+        cache.get("kind") == "page-evidence"
+        and cache.get("source_kind") in {"catalog", "source"}
+        and record is not None
+        and cache.get("id") == evidence_id
+        and cache.get("seed") == resource
+        and digest == actual_digest
+        and cache.get("binding") == binding
+    )
+    return (cache, target) if valid else None
+
+
+def _prepared_evidence(root: pathlib.Path, state: dict, resource: str) -> dict:
+    cached = _cached_evidence(root, state, resource)
+    if cached is None:
+        cache = _evidence_cache_payload(root, state, resource)
+        target = work_dir(root, state) / "evidence-cache" / f"{cache['id']}.json"
+        atomic_json(target, cache)
+    else:
+        cache, target = cached
+    return {
+        key: cache[key]
+        for key in (
+            "id",
+            "seed",
+            "resource",
+            "source",
+            "source_kind",
+            "binding",
+            "content_digest",
+        )
+    } | {"cache_path": str(target)}
 
 
 @_locked
@@ -849,10 +1166,20 @@ def page_prepare(root: pathlib.Path, page_id: str) -> dict:
         _plan_subject_digest(root, state),
         {unit.id for unit in plan.effective_units},
     )
+    requirements = _validate.composition_requirements(
+        plan, _plan_subject_digest(root, state)
+    )
+    requirement_issues = _validate.validate_composition_requirements(
+        work / "composition-requirements.json", requirements
+    )
     composition, composition_issues = _validate.validate_composition_artifact(
         work / "composition.md", plan
     )
-    errors = [*_errors(review_issues), *_errors(composition_issues)]
+    errors = [
+        *_errors(review_issues),
+        *_errors(requirement_issues),
+        *_errors(composition_issues),
+    ]
     if plan_review is not None and plan_review.verdict != "approved":
         errors.append(
             {
@@ -954,6 +1281,8 @@ def page_prepare(root: pathlib.Path, page_id: str) -> dict:
         if disposition.domain_id in domain_ids
         for gap_id in disposition.gap_ids
     )
+    resources = _validate.page_evidence_resources(plan, page)
+    evidence = [_prepared_evidence(root, state, resource) for resource in resources]
     payload = {
         "subject_digest": _composition_subject_digest(root, state),
         "page": page.model_dump(mode="json", exclude_none=True),
@@ -984,7 +1313,8 @@ def page_prepare(root: pathlib.Path, page_id: str) -> dict:
             for item in references
         ],
         "scopes": spec["scopes"],
-        "evidence_seeds": spec["evidence_seeds"],
+        "evidence": evidence,
+        "draft_frontmatter": {"coverage": "full"},
         "template": str(
             pathlib.Path(__file__).resolve().parent.parent
             / "assets/templates"
@@ -998,6 +1328,23 @@ def page_prepare(root: pathlib.Path, page_id: str) -> dict:
         "language": state["language"],
         "workdir": str(root),
     }
+    if page.type == "DataModel":
+        import _reference
+
+        _meta, preview = _reference.enrich_data_model(
+            root,
+            state,
+            plan,
+            page,
+            {
+                "sources": [
+                    {"id": item["id"], "resource": item["seed"]} for item in evidence
+                ],
+                "diagrams": spec["diagrams"],
+            },
+            "<!-- okf-generated:model -->",
+        )
+        payload["generated_model_preview"] = preview
     packet_path = work / "page-packets" / f"{page.id}.json"
     atomic_json(packet_path, payload)
     return {
@@ -1188,11 +1535,11 @@ def _normalized_path(value: str) -> str:
 
 
 def _navigation_context(
-    root: pathlib.Path, source_name: str
+    root: pathlib.Path, source_name: str, frozen_state: dict | None = None
 ) -> tuple[dict, pathlib.Path, list[str]]:
     import _workspace
 
-    state = _require_run(root, {"active"})
+    state = frozen_state or _require_run(root, {"active"})
     workspace = _workspace.load(root)
     source = workspace.sources.get(source_name)
     revision = next(
@@ -1313,7 +1660,9 @@ def evidence_search(
     return response(results, limit_reached=False, has_more=False)
 
 
-def evidence_read(root: pathlib.Path, locator: str) -> dict:
+def evidence_read(
+    root: pathlib.Path, locator: str, *, frozen_state: dict | None = None
+) -> dict:
     import _workspace
     from _validate import parse_resource
 
@@ -1321,7 +1670,7 @@ def evidence_read(root: pathlib.Path, locator: str) -> dict:
     if parsed is None:
         raise StateError("read requires a canonical source/path#Lx-Ly locator")
     source, path, start, end = parsed
-    state, pin, files = _navigation_context(root, source)
+    state, pin, files = _navigation_context(root, source, frozen_state)
     policy = RunPolicy.model_validate(state["policy"], strict=True).evidence.read
     if path not in files:
         raise StateError(f"file is outside the captured Source: {path}")

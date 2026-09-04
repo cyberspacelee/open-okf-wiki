@@ -5,6 +5,7 @@
 """Deterministic end-to-end exercise of the artifact loop."""
 
 import argparse
+import hashlib
 import json
 import pathlib
 import shutil
@@ -75,12 +76,14 @@ def unit(
         "question": f"How does {unit_id} work across the captured sources?",
         "domain_ids": ["workspace"],
         "concept_ids": concept_ids,
-        "scopes": [
-            {"source": name, "role": role, "paths": ["."]}
+        "participants": [
+            {
+                "source": name,
+                "roles": [role],
+                "paths": ["."],
+                "evidence": [f"{name}/src/main/java/example/App.java#L1-L2"],
+            }
             for name, role in zip(source_names, roles, strict=True)
-        ],
-        "evidence_seeds": [
-            f"{name}/src/main/java/example/App.java#L1-L2" for name in source_names
         ],
     }
 
@@ -89,7 +92,7 @@ def knowledge_plan(units: list[dict]) -> dict:
     api_ref = "API/src/main/java/example/App.java#L1-L2"
     web_ref = "WebUI/src/main/java/example/App.java#L1-L2"
     return {
-        "kind": "knowledge-plan",
+        "kind": "knowledge-plan-intent",
         "source_areas": [
             {
                 "id": "api.workspace",
@@ -97,7 +100,6 @@ def knowledge_plan(units: list[dict]) -> dict:
                 "paths": ["."],
                 "disposition": "domain",
                 "domain_ids": ["workspace"],
-                "evidence_seeds": [api_ref],
             },
             {
                 "id": "web.workspace",
@@ -105,7 +107,6 @@ def knowledge_plan(units: list[dict]) -> dict:
                 "paths": ["."],
                 "disposition": "domain",
                 "domain_ids": ["workspace"],
-                "evidence_seeds": [web_ref],
             },
         ],
         "domains": [
@@ -139,7 +140,7 @@ def knowledge_plan(units: list[dict]) -> dict:
                 "model_basis": {"basis": "none"},
             },
         ],
-        "table_groups": [],
+        "catalog_groups": [],
         "relationships": [
             {
                 "id": "routing-selects-boundary",
@@ -158,7 +159,11 @@ def knowledge_plan(units: list[dict]) -> dict:
 
 def plan_narrative() -> str:
     return markdown(
-        {"kind": "knowledge-plan-narrative", "ledger": "plan-ledger.json"},
+        {
+            "kind": "knowledge-plan-narrative",
+            "intent": "plan-intent.json",
+            "ledger": "plan-ledger.json",
+        },
         "# Knowledge Plan\n\n"
         "## Global model\n\n"
         "The API owns routing and WebUI participates at the source boundary.\n\n"
@@ -176,11 +181,10 @@ def plan_narrative() -> str:
     )
 
 
-def page(refs: list[tuple[str, str]], logical_link: str, page_type: str) -> str:
-    sources = [{"id": source_id, "resource": resource} for source_id, resource in refs]
-    citations = " ".join(f"[^{source_id}]" for source_id, _ in refs)
-    definitions = "\n".join(
-        f"[^{source_id}]: Frozen Source entry point." for source_id, _ in refs
+def page(resources: list[str], logical_link: str, page_type: str) -> str:
+    citations = " ".join(
+        f"[^ev-{hashlib.sha256(resource.encode()).hexdigest()[:16]}]"
+        for resource in resources
     )
     if page_type == "Overview":
         body = (
@@ -188,7 +192,7 @@ def page(refs: list[tuple[str, str]], logical_link: str, page_type: str) -> str:
             f"Pinned entry points bound this Wiki. {citations}\n\n"
             "## Task entry points\n\n"
             "| Task | Start here |\n| --- | --- |\n"
-            f"| Change a boundary | {logical_link} |\n\n{definitions}"
+            f"| Change a boundary | {logical_link} |"
         )
     elif page_type == "DataModel":
         body = (
@@ -211,7 +215,6 @@ def page(refs: list[tuple[str, str]], logical_link: str, page_type: str) -> str:
             "| Concept | Code projection | Owner |\n"
             "| --- | --- | --- |\n"
             "| Routing | App entry | API |\n\n"
-            f"{definitions}"
         )
     elif page_type == "Procedure":
         body = (
@@ -226,7 +229,6 @@ def page(refs: list[tuple[str, str]], logical_link: str, page_type: str) -> str:
             "| --- | --- | --- |\n"
             "| Select one route. | Routing procedure | Ambiguous destination |\n\n"
             "## Change points\n\nChange the routing procedure and its tests.\n\n"
-            f"{definitions}"
         )
     elif page_type == "Flow":
         body = (
@@ -246,10 +248,12 @@ def page(refs: list[tuple[str, str]], logical_link: str, page_type: str) -> str:
             "| --- | --- | --- |\n"
             "| Participant missing | Restore the boundary | Request rejected |\n\n"
             "## Change points\n\nChange both participants and their contract tests.\n\n"
-            f"{logical_link}\n\n{definitions}"
+            f"{logical_link}"
         )
     else:
         body = (
+            "## Purpose and system context\n\n"
+            f"This domain routes maintenance work across the workspace. {citations}\n\n"
             "## Responsibility and public surface\n\n"
             f"Pinned entry points define this boundary. {citations}\n\n"
             "## Invariants and rules\n\n"
@@ -264,9 +268,8 @@ def page(refs: list[tuple[str, str]], logical_link: str, page_type: str) -> str:
             f"The API-to-WebUI boundary is the primary cross-source flow. {logical_link}\n\n"
             f"## Concepts\n\n{logical_link}\n\n"
             "## Change points\n\nChange both boundary participants and tests.\n\n"
-            f"{definitions}"
         )
-    return markdown({"coverage": "full", "sources": sources}, body)
+    return markdown({"coverage": "full"}, body)
 
 
 def evaluate(base: pathlib.Path) -> dict:
@@ -302,7 +305,8 @@ def evaluate(base: pathlib.Path) -> dict:
         or started["policy"]["evidence"]["search"]["max_results"] != 1
         or started["policy"]["evidence"]["read"]["max_lines"] != 1
         or started["sources"] != ["API", "WebUI"]
-        or started["next_actions"] != ["repair work/plan.md and work/plan-ledger.json"]
+        or started["next_actions"]
+        != ["repair work/plan.md and work/plan-intent.json", "plan inspect"]
     ):
         raise RuntimeError(f"Run did not enter Plan: {started}")
     search = run(ws, "evidence", "search", "public", "--source", "API")
@@ -340,7 +344,7 @@ def evaluate(base: pathlib.Path) -> dict:
     )
     write(work / "plan.md", plan_narrative())
     write(
-        work / "plan-ledger.json",
+        work / "plan-intent.json",
         json.dumps(
             knowledge_plan(
                 [
@@ -361,6 +365,12 @@ def evaluate(base: pathlib.Path) -> dict:
             )
         ),
     )
+    inspected = run(ws, "plan", "inspect")
+    if not inspected["ok"]:
+        raise RuntimeError(f"Plan inspection failed: {inspected}")
+    compiled = run(ws, "plan", "compile")
+    if compiled["counts"]["derived_units"] != 1:
+        raise RuntimeError(f"Plan compilation omitted the model unit: {compiled}")
 
     plan_packet = run(ws, "review", "plan")
     write(
@@ -509,6 +519,9 @@ def evaluate(base: pathlib.Path) -> dict:
             "# Composition\n\nStable page IDs are independent of publication paths.",
         ),
     )
+    requirements = run(ws, "composition", "prepare")
+    if requirements["effective_units"] != 4:
+        raise RuntimeError(f"Composition requirements are incomplete: {requirements}")
     composition_packet = run(ws, "review", "composition")
     write(
         pathlib.Path(composition_packet["artifact"]),
@@ -630,7 +643,7 @@ def evaluate(base: pathlib.Path) -> dict:
     write(
         work / "drafts/architecture.md",
         page(
-            [("api", api_ref), ("web", web_ref)],
+            [api_ref, web_ref],
             "See [overview][overview].",
             "Flow",
         ),
@@ -638,19 +651,19 @@ def evaluate(base: pathlib.Path) -> dict:
     write(
         work / "drafts/overview.md",
         page(
-            [("api", api_ref), ("web", web_ref)],
+            [api_ref, web_ref],
             "See [architecture][architecture].",
             "Domain",
         ),
     )
     write(
         work / "drafts/procedure.md",
-        page([("api", api_ref)], "[overview][overview].", "Procedure"),
+        page([api_ref], "[overview][overview].", "Procedure"),
     )
     write(
         work / "drafts/data-model.md",
         page(
-            [("api", api_ref), ("web", web_ref)],
+            [api_ref, web_ref],
             "See [overview][overview].",
             "DataModel",
         ),
@@ -711,7 +724,8 @@ def evaluate(base: pathlib.Path) -> dict:
         raise RuntimeError("review repair loop did not remain active")
     write(
         overview,
-        overview.read_text(encoding="utf-8") + "\nRouting starts here.[^api]\n",
+        overview.read_text(encoding="utf-8")
+        + f"\nRouting starts here.[^ev-{hashlib.sha256(api_ref.encode()).hexdigest()[:16]}]\n",
     )
 
     packet = run(ws, "review", "prepare")

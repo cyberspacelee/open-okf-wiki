@@ -1,4 +1,5 @@
 import json
+import hashlib
 import pathlib
 from datetime import datetime, timezone
 from types import SimpleNamespace as NS
@@ -151,7 +152,8 @@ def model(tmp_path, monkeypatch):
     resources = {item["name"]: item["resource"] for item in manifest["tables"]}
     plan = KnowledgePlan.model_validate(
         {
-            "kind": "knowledge-plan",
+            "kind": "knowledge-plan-ledger",
+            "intent_digest": "0" * 64,
             "source_areas": [
                 {
                     "id": "database.sales",
@@ -159,7 +161,6 @@ def model(tmp_path, monkeypatch):
                     "paths": ["."],
                     "disposition": "domain",
                     "domain_ids": ["sales"],
-                    "evidence_seeds": ["database/."],
                 }
             ],
             "domains": [
@@ -180,9 +181,7 @@ def model(tmp_path, monkeypatch):
                     "owner_unit_id": "sales-capability",
                     "model_basis": {
                         "basis": "opengauss",
-                        "catalog_tables": [
-                            {"source": "database", "table": table}
-                        ],
+                        "catalog_tables": [{"source": "database", "table": table}],
                     },
                 }
                 for concept_id, table, title in (
@@ -206,7 +205,7 @@ def model(tmp_path, monkeypatch):
                     "domain_ids": ["sales"],
                     "concept_ids": ["customer", "order"],
                     "scopes": [
-                        {"source": "database", "role": "model", "paths": ["."]}
+                        {"source": "database", "roles": ["model"], "paths": ["."]}
                     ],
                     "evidence_seeds": ["database/."],
                 }
@@ -216,9 +215,7 @@ def model(tmp_path, monkeypatch):
     composition = CompositionMap.model_validate(
         {
             "kind": "composition-map",
-            "reference_roots": [
-                {"source": "database", "path": "reference/database"}
-            ],
+            "reference_roots": [{"source": "database", "path": "reference/database"}],
             "pages": [
                 {
                     "id": "sales-domain",
@@ -596,12 +593,17 @@ def test_reference_pages_bind_into_candidate_and_manifest(model):
     work = root / ".okf-wiki/runs/run-reference/work"
     draft = work / "drafts/sales-data-model.md"
     draft.parent.mkdir(parents=True)
+    catalog_id = f"ev-{hashlib.sha256('database/.'.encode()).hexdigest()[:16]}"
     (work / "drafts/sales-domain.md").write_text(
         render(
-            {"coverage": "full", "sources": [{"id": "catalog", "resource": "database/."}]},
-            """## Responsibility and public surface
+            {"coverage": "full"},
+            f"""## Purpose and system context
 
-Sales owns customer and order persistence.[^catalog]
+Sales owns the persistence context for customer orders.[^{catalog_id}]
+
+## Responsibility and public surface
+
+Sales owns customer and order persistence.[^{catalog_id}]
 
 ## Invariants and rules
 
@@ -611,32 +613,30 @@ Sales owns customer and order persistence.[^catalog]
 
 ## Data model overview
 
-Customer and Order form the Sales model.[^catalog]
+Customer and Order form the Sales model.[^{catalog_id}]
 
 ## State and lifecycle
 
-The fixture captures structure but no state lifecycle.[^catalog]
+The fixture captures structure but no state lifecycle.[^{catalog_id}]
 
 ## Key flows
 
-The fixture captures structure but no operational flow.[^catalog]
+The fixture captures structure but no operational flow.[^{catalog_id}]
 
 ## Concepts
 
-Customer and Order are the primary concepts.[^catalog]
+Customer and Order are the primary concepts.[^{catalog_id}]
 
 ## Change points
 
-Start from the Sales data model.[^catalog]
-
-[^catalog]: Frozen OpenGauss Catalog.
+Start from the Sales data model.[^{catalog_id}]
 """,
         ),
         encoding="utf-8",
     )
     draft.write_text(
         render(
-            {"coverage": "full", "sources": []},
+            {"coverage": "full"},
             """## Model basis
 
 Catalog-backed Sales concepts.
@@ -671,8 +671,28 @@ Use the generated references.
         encoding="utf-8",
     )
     (work / "plan.md").write_text("plan\n", encoding="utf-8")
+    (work / "plan-intent.json").write_text("{}\n", encoding="utf-8")
     (work / "plan-ledger.json").write_text("{}\n", encoding="utf-8")
     (work / "plan-review.json").write_text("{}\n", encoding="utf-8")
+    (work / "composition-requirements.json").write_text("{}\n", encoding="utf-8")
+    subject_digest = _state._composition_subject_digest(root, state)
+    packets = work / "page-packets"
+    packets.mkdir()
+    for composition_page in composition.pages:
+        evidence = [
+            _state._prepared_evidence(root, state, resource)
+            for resource in _validate.page_evidence_resources(plan, composition_page)
+        ]
+        (packets / f"{composition_page.id}.json").write_text(
+            json.dumps(
+                {
+                    "subject_digest": subject_digest,
+                    "page": {"id": composition_page.id},
+                    "evidence": evidence,
+                }
+            ),
+            encoding="utf-8",
+        )
 
     _state._bind_candidate(root, state, plan, composition)
     candidate = root / ".okf-wiki/runs/run-reference/candidate"

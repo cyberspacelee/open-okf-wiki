@@ -1,6 +1,5 @@
 ---
 coverage: full
-sources: []
 ---
 
 ## 触发条件与结果

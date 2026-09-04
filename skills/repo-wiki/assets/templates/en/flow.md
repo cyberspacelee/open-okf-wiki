@@ -1,6 +1,5 @@
 ---
 coverage: full
-sources: []
 ---
 
 ## Trigger and outcome

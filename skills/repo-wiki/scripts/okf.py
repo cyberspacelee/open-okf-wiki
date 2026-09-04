@@ -303,6 +303,28 @@ def cmd_review(args) -> int:
     return 0
 
 
+def cmd_plan(args) -> int:
+    import _state
+
+    result = (
+        _state.plan_compile(workspace_root())
+        if args.action == "compile"
+        else _state.plan_inspect(workspace_root())
+    )
+    emit(result, args.json)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_composition(args) -> int:
+    import _state
+
+    result = _state.composition_prepare(workspace_root())
+    if not result.get("ok"):
+        return emit_issues(result["issues"], args.json)
+    emit(result, args.json)
+    return 0
+
+
 def cmd_publication(args) -> int:
     import _publish
 
@@ -371,9 +393,14 @@ def cmd_catalog(args) -> int:
         raise _state.StateError("no run")
     catalogs = state.get("catalogs") or []
     if args.action == "tables":
-        emit_tables(_db.tables_captured(root, catalogs, args.source), args.json)
+        emit_tables(
+            _db.tables_captured(root, catalogs, args.source, summary=args.summary),
+            args.json,
+        )
         return 0
-    result = _db.describe_captured(root, catalogs, args.table, args.source)
+    result = _db.describe_captured(
+        root, catalogs, args.table, args.source, full=args.full
+    )
     emit(result, args.json)
     return 0
 
@@ -543,6 +570,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     read.add_argument("locator", help="canonical source/path#Lx-Ly locator")
 
+    plan = commands.add_parser("plan", help="inspect or compile semantic Plan intent")
+    plan_actions = plan.add_subparsers(dest="action", required=True)
+    leaf(
+        plan_actions.add_parser(
+            "inspect", help="report all actionable Plan diagnostics"
+        )
+    )
+    leaf(
+        plan_actions.add_parser(
+            "compile", help="generate the deterministic Plan ledger"
+        )
+    )
+
+    composition = commands.add_parser(
+        "composition", help="prepare the complete Composition contract"
+    )
+    composition_actions = composition.add_subparsers(dest="action", required=True)
+    leaf(
+        composition_actions.add_parser(
+            "prepare", help="generate required slots and effective unit mappings"
+        )
+    )
+
     review = commands.add_parser(
         "review", help="prepare or complete one independent Wiki bundle review"
     )
@@ -645,6 +695,11 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     catalog_tables.add_argument("--source", help="restrict to one catalog source")
+    catalog_tables.add_argument(
+        "--summary",
+        action="store_true",
+        help="include comments and column, foreign-key and index counts",
+    )
     catalog_describe = leaf(
         catalog_actions.add_parser(
             "describe", help="describe one captured table, including comments"
@@ -653,6 +708,9 @@ def build_parser() -> argparse.ArgumentParser:
     catalog_describe.add_argument("table", help="table name or page slug")
     catalog_describe.add_argument(
         "--source", help="catalog source when the name is shared"
+    )
+    catalog_describe.add_argument(
+        "--full", action="store_true", help="include indexes and full constraints"
     )
 
     page = commands.add_parser(
@@ -686,6 +744,8 @@ def main() -> int:
         "source": cmd_source,
         "run": cmd_run,
         "evidence": cmd_evidence,
+        "plan": cmd_plan,
+        "composition": cmd_composition,
         "review": cmd_review,
         "publication": cmd_publication,
         "validate": cmd_validate,

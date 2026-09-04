@@ -158,9 +158,10 @@ uv run $REPO_WIKI_SKILL/scripts/okf.py run status --json
 The host agent runs one explicit loop until Publication or a real external
 block. `run status` derives the next phase from fixed Plan, progress,
 Composition, draft and review Artifacts. One long-lived planner owns the
-cross-Source model in readable `plan.md` plus strict `plan-ledger.json`; focused
-workers write bounded evidence notes. After Composition approval, `page prepare
-<page-id>` creates one bounded packet for each independent writer. One fresh
+cross-Source model in readable `plan.md` plus semantic `plan-intent.json`; the
+Kernel compiles strict `plan-ledger.json`. Focused workers write bounded evidence
+notes. After Composition approval, `page prepare <page-id>` creates one bounded,
+cached evidence packet for each independent writer. One fresh
 reviewer checks the complete Candidate. Validation and review defects return to
 the loop.
 

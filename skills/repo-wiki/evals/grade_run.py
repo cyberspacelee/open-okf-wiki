@@ -78,6 +78,15 @@ KILLBILL_INTENTS = {
     ),
 }
 
+UNIT_PAGE_TYPES = {
+    "capability": ["Domain", "Concept", "Overview", "Architecture"],
+    "lifecycle": ["Lifecycle", "Domain", "Concept"],
+    "flow": ["Flow", "Procedure", "Domain"],
+    "integration": ["Flow", "Architecture", "Domain"],
+    "operations": ["Procedure", "Architecture", "Domain"],
+    "data-model": ["DataModel"],
+}
+
 
 def matches(record: str, patterns: tuple[str, ...]) -> bool:
     return all(re.search(pattern, record, re.IGNORECASE) for pattern in patterns)
@@ -110,6 +119,49 @@ def scope_has_seed(scope: dict, seeds: list[str], catalogs: list[dict]) -> bool:
 
 def load(path: pathlib.Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def valid_evidence_cache(entry: dict, state: dict) -> bool:
+    path = pathlib.Path(entry.get("cache_path", ""))
+    if not path.is_file():
+        return False
+    try:
+        cache = load(path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    recorded_digest = cache.pop("content_digest", None)
+    actual_digest = hashlib.sha256(
+        json.dumps(
+            cache, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    cache["content_digest"] = recorded_digest
+    source = cache.get("source")
+    catalog = cache.get("source_kind") == "catalog"
+    records = state.get("catalogs" if catalog else "revisions", [])
+    record = next((item for item in records if item.get("name") == source), None)
+    binding = (
+        record.get("content_hash")
+        if catalog and record
+        else record and (record.get("commit") or record.get("content_hash"))
+    )
+    expected_entry = {
+        key: cache.get(key)
+        for key in (
+            "id",
+            "seed",
+            "resource",
+            "source",
+            "source_kind",
+            "binding",
+            "content_digest",
+        )
+    } | {"cache_path": str(path)}
+    return (
+        recorded_digest == actual_digest
+        and cache.get("binding") == binding
+        and entry == expected_entry
+    )
 
 
 def frontmatter(path: pathlib.Path) -> dict:
@@ -146,9 +198,12 @@ def table_dispositions(plan: dict) -> list[dict]:
     ]
 
 
-def plan_subject_digest(plan: pathlib.Path, ledger: pathlib.Path, state: dict) -> str:
+def plan_subject_digest(
+    plan: pathlib.Path, intent: pathlib.Path, ledger: pathlib.Path, state: dict
+) -> str:
     payload = {
         "plan": hashlib.sha256(plan.read_bytes()).hexdigest(),
+        "plan_intent": hashlib.sha256(intent.read_bytes()).hexdigest(),
         "plan_ledger": hashlib.sha256(ledger.read_bytes()).hexdigest(),
         "revisions": state["revisions"],
         "catalogs": [
@@ -163,14 +218,19 @@ def plan_subject_digest(plan: pathlib.Path, ledger: pathlib.Path, state: dict) -
 
 def composition_subject_digest(
     plan: pathlib.Path,
+    intent: pathlib.Path,
     ledger: pathlib.Path,
     plan_review: pathlib.Path,
+    requirements: pathlib.Path,
     composition: pathlib.Path,
     state: dict,
 ) -> str:
     payload = {
-        "plan_subject_digest": plan_subject_digest(plan, ledger, state),
+        "plan_subject_digest": plan_subject_digest(plan, intent, ledger, state),
         "plan_review": hashlib.sha256(plan_review.read_bytes()).hexdigest(),
+        "composition_requirements": hashlib.sha256(
+            requirements.read_bytes()
+        ).hexdigest(),
         "composition": hashlib.sha256(composition.read_bytes()).hexdigest(),
     }
     return hashlib.sha256(
@@ -231,7 +291,7 @@ def effective_units(plan: dict) -> list[dict]:
                 "scopes": [
                     {
                         "source": source,
-                        "role": "model",
+                        "roles": ["model"],
                         "paths": list(dict.fromkeys(paths)),
                     }
                     for source, paths in scopes.items()
@@ -363,8 +423,8 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     parsed_events, commands, spawn_prompts, trace_agents = trace_data(trace_path)
 
     check(
-        "Run uses the split Plan/ledger contract without scheduler state",
-        state.get("contract") == "domain-plan-ledger-coverage"
+        "Run uses compiled Plan and prepared evidence without scheduler state",
+        state.get("contract") == "compiled-plan-evidence-registry"
         and manifest.get("policy") == state.get("policy")
         and manifest.get("skill_bundle_digest") == state.get("skill_bundle_digest")
         and not any(
@@ -385,8 +445,9 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     )
 
     plan_doc = parse_file(work / "plan.md")
+    intent = load(work / "plan-intent.json")
     plan = load(work / "plan-ledger.json")
-    authored_units = plan.get("units", [])
+    authored_units = intent.get("units", [])
     units = effective_units(plan)
     source_areas = plan.get("source_areas", [])
     domains = plan.get("domains", [])
@@ -418,7 +479,6 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         and len(gap_ids) == len(gaps)
         and all(
             item.get("paths")
-            and item.get("evidence_seeds")
             and set(item.get("domain_ids", [])) <= domain_ids
             and (item.get("disposition") != "domain" or item.get("domain_ids"))
             for item in source_areas
@@ -558,24 +618,35 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
 
     scope_closed = all(
         all(
-            scope.get("role")
-            in {"owner", "producer", "contract", "consumer", "feedback", "model"}
+            set(scope.get("roles", []))
+            <= {"owner", "producer", "contract", "consumer", "feedback", "model"}
+            and scope.get("roles")
             and scope_has_seed(scope, unit.get("evidence_seeds", []), catalogs)
             for scope in unit.get("scopes", [])
         )
         and (
             unit.get("kind") != "integration"
-            or {scope.get("role") for scope in unit.get("scopes", [])}
+            or {
+                role
+                for scope in unit.get("scopes", [])
+                for role in scope.get("roles", [])
+            }
             >= {"producer", "consumer"}
         )
         for unit in units
     )
     check(
-        "the Plan narrative and ledger separate explanation from routing data",
-        plan.get("kind") == "knowledge-plan"
+        "Plan narrative, semantic intent and compiled ledger separate responsibilities",
+        intent.get("kind") == "knowledge-plan-intent"
+        and plan.get("kind") == "knowledge-plan-ledger"
+        and isinstance(plan.get("intent_digest"), str)
         and not plan_doc.errors
         and plan_doc.meta
-        == {"kind": "knowledge-plan-narrative", "ledger": "plan-ledger.json"}
+        == {
+            "kind": "knowledge-plan-narrative",
+            "intent": "plan-intent.json",
+            "ledger": "plan-ledger.json",
+        }
         and all(
             heading in {section.title for section in extract(plan_doc.body).sections}
             for heading in (
@@ -604,6 +675,9 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
             "id" in unit
             and unit.get("domain_ids")
             and "concept_ids" in unit
+            and unit.get("participants")
+            and "scopes" not in unit
+            and "evidence_seeds" not in unit
             and "path" not in unit
             and "owner" not in unit
             for unit in authored_units
@@ -624,7 +698,12 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         and not has_open_issues(plan_review)
         and (len(units) < 2 or probed_units == {unit["id"] for unit in units})
         and plan_review.get("subject_digest")
-        == plan_subject_digest(work / "plan.md", work / "plan-ledger.json", state),
+        == plan_subject_digest(
+            work / "plan.md",
+            work / "plan-intent.json",
+            work / "plan-ledger.json",
+            state,
+        ),
         f"verdict={plan_review.get('verdict')}",
     )
     if scenario == "killbill":
@@ -661,12 +740,78 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     )
 
     composition = frontmatter(work / "composition.md")
+    requirements = load(work / "composition-requirements.json")
+    authored_unit_ids = {unit.get("id") for unit in plan.get("units", [])}
+    expected_requirements = {
+        "kind": "composition-requirements",
+        "subject_digest": plan_subject_digest(
+            work / "plan.md",
+            work / "plan-intent.json",
+            work / "plan-ledger.json",
+            state,
+        ),
+        "assignment": "each effective unit must appear on exactly one authored page",
+        "effective_units": [
+            {
+                "id": unit.get("id"),
+                "kind": unit.get("kind"),
+                "origin": (
+                    "authored" if unit.get("id") in authored_unit_ids else "derived"
+                ),
+                "domain_ids": unit.get("domain_ids", []),
+                "concept_ids": unit.get("concept_ids", []),
+                "allowed_page_types": UNIT_PAGE_TYPES.get(unit.get("kind")),
+            }
+            for unit in units
+        ],
+        "required_slots": [
+            *(
+                {
+                    "kind": "domain-definition",
+                    "id": domain.get("id"),
+                    "unit_id": domain.get("owner_unit_id"),
+                    "page_type": "Domain",
+                }
+                for domain in domains
+            ),
+            *(
+                {
+                    "kind": "concept-definition",
+                    "id": concept.get("id"),
+                    "unit_id": concept.get("owner_unit_id"),
+                    "page_types": ["Domain", "Concept"],
+                }
+                for concept in concepts
+            ),
+            *(
+                {
+                    "kind": "concept-model",
+                    "id": concept.get("id"),
+                    "unit_id": model_unit_id(concept),
+                    "page_type": "DataModel",
+                }
+                for concept in concepts
+                if model_unit_id(concept) is not None
+            ),
+        ],
+        "required_reference_sources": sorted(
+            {item.get("source") for item in dispositions}
+        ),
+        "path_contract": {
+            "pattern": r"^[a-z0-9][a-z0-9/_.-]*\.md$",
+            "reserved_names": ["index.md", "log.md"],
+            "hierarchy": "non-overview pages in multi-page Wikis require a domain/capability directory",
+        },
+    }
     pages = {page["id"]: page for page in composition.get("pages", [])}
     mapped = [unit for page in pages.values() for unit in page.get("units", [])]
     removed_fields = {"owner", "scopes", "evidence_seeds", "parent", "depends_on"}
     check(
         "Composition late-binds every unit exactly once without duplicate graphs",
         composition.get("kind") == "composition-map"
+        and requirements == expected_requirements
+        and {item.get("id") for item in requirements.get("effective_units", [])}
+        == unit_ids
         and set(mapped) == unit_ids
         and len(mapped) == len(set(mapped))
         and all(not (removed_fields & set(page)) for page in pages.values()),
@@ -737,8 +882,10 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         and composition_review.get("subject_digest")
         == composition_subject_digest(
             work / "plan.md",
+            work / "plan-intent.json",
             work / "plan-ledger.json",
             plan_review_path,
+            work / "composition-requirements.json",
             work / "composition.md",
             state,
         ),
@@ -748,20 +895,39 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     drafts = {path.stem for path in (work / "drafts").glob("*.md")}
     check(
         "authored drafts match Composition pages without generated references",
-        drafts == set(pages),
+        drafts == set(pages)
+        and all(
+            set(frontmatter(work / "drafts" / f"{page_id}.md")) == {"coverage"}
+            for page_id in drafts
+        ),
         f"drafts={sorted(drafts)}, pages={sorted(pages)}",
     )
     packet_paths = sorted((work / "page-packets").glob("*.json"))
     page_packets = {path.stem: load(path) for path in packet_paths}
+    expected_packet_digest = composition_subject_digest(
+        work / "plan.md",
+        work / "plan-intent.json",
+        work / "plan-ledger.json",
+        work / "plan-review.json",
+        work / "composition-requirements.json",
+        work / "composition.md",
+        state,
+    )
     domain_concepts = {
         domain_id: {item["id"] for item in concepts if item["domain_id"] == domain_id}
         for domain_id in domain_ids
     }
     packets_bounded = set(page_packets) == set(pages) and all(
-        packet.get("page", {}).get("id") == page_id
+        packet.get("subject_digest") == expected_packet_digest
+        and packet.get("page", {}).get("id") == page_id
         and {item.get("id") for item in packet.get("units", [])}
         == set(pages[page_id].get("units", []))
         and not ({"source_areas", "table_groups", "table_replicas"} & set(packet))
+        and packet.get("draft_frontmatter") == {"coverage": "full"}
+        and all(
+            item.get("id", "").startswith("ev-") and valid_evidence_cache(item, state)
+            for item in packet.get("evidence", [])
+        )
         for page_id, packet in page_packets.items()
     )
     domain_packets_project_units = all(

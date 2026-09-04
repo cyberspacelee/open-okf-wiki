@@ -1,6 +1,12 @@
 # Composition Map
 
-Read the complete Plan Narrative and Plan Ledger, then design the Wiki as a whole. A fresh composer also
+Run `okf composition prepare --json`, then read its
+`composition-requirements.json`, the complete Plan Narrative and compiled Plan
+Ledger before designing the Wiki as a whole. The requirements packet lists all
+authored and derived units, mandatory definition/model slots, allowed page
+types, Reference Root obligations and the exact path contract. Treat it as the
+complete assignment contract; do not discover requirements through validation
+errors. A fresh composer also
 reads each relevant evidence note once; the planner that already synthesized
 those notes into the approved Plan does not reread them. This is the first
 stage allowed to choose pages and physical paths.
@@ -40,7 +46,7 @@ After the frontmatter, add a short analysis paragraph explaining the routing
 and unit grouping. Write page titles, descriptions, tags and Diagram questions
 in `status.language`; preserve exact domain identifiers where needed.
 
-Assign every Plan unit to exactly one authored page. A page inherits the union of its
+Assign every effective unit from the requirements packet to exactly one authored page. A page inherits the union of its
 units' scopes and evidence seeds, so do not repeat those fields. Page IDs and
 paths are unique. The physical path is both the final hierarchy and navigation
 binding; do not maintain a separate parent graph or writer dependency graph.
@@ -107,8 +113,8 @@ trigger-to-outcome handoff across participants, and Lifecycle for state
 reachability. A DataModel containing code-backed Concepts plans a logical ER
 diagram. Its OpenGauss-backed Concepts always leave physical ER to the generated
 model block; a mixed page may therefore contain both separate views.
-Writers may run concurrently after Composition review because each reopens
-Source evidence.
+Writers may run concurrently after Composition review because each receives an
+independent prepared evidence registry and bounded cache.
 
 Drafts remain at `work/drafts/<page-id>.md`: this identity store is deliberately
 flat so a Composition move does not rename writer work. The Candidate and

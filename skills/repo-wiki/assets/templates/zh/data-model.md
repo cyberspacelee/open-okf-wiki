@@ -1,6 +1,5 @@
 ---
 coverage: full
-sources: []
 ---
 
 ## 模型依据

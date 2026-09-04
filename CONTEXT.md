@@ -123,16 +123,22 @@ explains the global model, lifecycles, relationships, conclusions, rejected
 hypotheses and gaps without carrying the machine coverage ledger.
 _Avoid_: page tree, Source shard
 
+**Plan Intent**:
+The authored semantic Artifact in `plan-intent.json` defining Source Areas,
+Domains, Concepts, relationships, Catalog classifications, participants and
+Gaps.
+_Avoid_: normalized scopes, derived units, repeated table associations
+
 **Plan Ledger**:
-The strict machine Artifact in `plan-ledger.json` defining Source Areas,
-Domains, Concepts, compact table groups, sparse replica mappings,
-relationships, authored Knowledge Units, scopes, seeds and gaps.
+The strict machine Artifact compiled into `plan-ledger.json`, defining
+normalized Domains, Concepts, compact table groups, sparse replica mappings,
+relationships, authored and derived Knowledge Units, scopes, seeds and gaps.
 _Avoid_: prose synthesis, page tree, duplicated Catalog
 
 **Knowledge Unit**:
 A stable capability, lifecycle, flow, data model, integration or operations
 question requiring evidence-backed coverage. Data-model units are derived from
-persistent Concepts; other units are authored in the Plan Ledger.
+persistent Concepts; other units are authored in Plan Intent.
 _Avoid_: package, page, execution task
 
 **Evidence Note**:

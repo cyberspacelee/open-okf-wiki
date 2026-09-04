@@ -28,8 +28,12 @@ groups, behaviors, failure paths and handoffs. Create only the knowledge units
 needed to own those findings; Composition decides later whether units become
 separate pages.
 
-Continuously overwrite `work/plan.md` and `work/plan-ledger.json` as one
-digest-bound Plan. For long work, keep
+Continuously overwrite the authored `work/plan.md` and `work/plan-intent.json`.
+Run `okf plan inspect --json` after each meaningful merge; it reports all
+independently diagnosable schema, structural, evidence, coverage and
+cross-artifact errors with JSON pointers and repair suggestions. Once clean,
+run `okf plan compile --json`. The kernel alone writes
+`work/plan-ledger.json`; never edit that derived Artifact. For long work, keep
 `work/progress.md` sufficient to resume without conversation history: completed
 investigations, current findings, rejected hypotheses, gaps and next actions.
 Evidence notes belong under `work/evidence/`; copy conclusions into the Plan
@@ -71,6 +75,7 @@ in the unresolved-gaps section. For a Chinese workspace, use the exact headings
 ```yaml
 ---
 kind: knowledge-plan-narrative
+intent: plan-intent.json
 ledger: plan-ledger.json
 ---
 
@@ -94,20 +99,28 @@ No unresolved gaps.
 [^request]: `API/api-core/src/main/java/example/request/Request.java#L20-L48`
 ```
 
-`work/plan-ledger.json` is the canonical machine Artifact. Write strict JSON,
+`work/plan-intent.json` is the authored semantic Artifact. Write strict JSON,
 not YAML-in-Markdown:
 
 ```json
 {
-  "kind": "knowledge-plan",
-  "source_areas": [{
-    "id": "api-request-domain",
-    "source": "API",
-    "paths": ["api-core/src/main/java/example/request"],
-    "disposition": "domain",
-    "domain_ids": ["requests"],
-    "evidence_seeds": ["API/api-core/src/main/java/example/request/Request.java#L20-L48"]
-  }],
+  "kind": "knowledge-plan-intent",
+  "source_areas": [
+    {
+      "id": "api-request-domain",
+      "source": "API",
+      "paths": ["api-core/src/main/java/example/request"],
+      "disposition": "domain",
+      "domain_ids": ["requests"]
+    },
+    {
+      "id": "database-request-domain",
+      "source": "database",
+      "paths": ["."],
+      "disposition": "domain",
+      "domain_ids": ["requests"]
+    }
+  ],
   "domains": [{
     "id": "requests",
     "name": "Requests",
@@ -122,15 +135,15 @@ not YAML-in-Markdown:
     "definition": "A durable unit of accepted work.",
     "owner_unit_id": "request-capability",
     "model_basis": {
-      "basis": "opengauss",
-      "catalog_tables": [{"source": "database", "table": "requests"}]
+      "basis": "opengauss"
     }
   }],
-  "table_groups": [{
+  "catalog_groups": [{
     "source": "database",
     "domain_id": "requests",
     "role": "entity",
-    "tables": ["requests"]
+    "tables": ["requests"],
+    "concept_ids": ["request"]
   }],
   "units": [{
     "id": "request-capability",
@@ -138,21 +151,25 @@ not YAML-in-Markdown:
     "question": "What does the request capability own and enforce?",
     "domain_ids": ["requests"],
     "concept_ids": ["request"],
-    "scopes": [{
+    "participants": [{
       "source": "API",
-      "role": "owner",
-      "paths": ["api-core/src/main/java/example/request"]
-    }],
-    "evidence_seeds": ["API/api-core/src/main/java/example/request/Request.java#L20-L48"]
+      "roles": ["owner"],
+      "paths": ["api-core/src/main/java/example/request"],
+      "evidence": ["API/api-core/src/main/java/example/request/Request.java#L20-L48"]
+    }]
   }]
 }
 ```
 
 Omit optional empty arrays. `coverage` defaults to `full`; write it only for
-`partial` Model Basis records. Do not author `data-model` units. The kernel
-derives `model.<concept-id>` from every persistent Concept, its Model Basis and
-its relationships. Do not repeat owner evidence on Domain or Concept records;
-their owner unit seeds are authoritative.
+`partial` Model Basis records. The compiler merges repeated participants for
+one Source, unions their roles, paths and evidence, converts them to ledger
+scopes and seeds, derives Concept catalog tables from Catalog Group
+`concept_ids`, groups classifications by `(source, domain_id, role)`, and
+derives `model.<concept-id>` units. Semantic definitions, relationships,
+ownership, classification and Gaps remain authored decisions.
+Source Areas partition every registered Source, including each OpenGauss
+Source; use `.` when the whole captured Catalog belongs to one area.
 
 ## Exact field contract
 
@@ -162,14 +179,15 @@ are:
 
 | Record | Required fields | Optional fields and defaults |
 | --- | --- | --- |
-| Plan Ledger | `kind`, non-empty `source_areas`, `domains`, `concepts`, `units` | `table_groups`, `table_replicas`, `relationships`, `gaps`: `[]` |
-| Source Area | `id`, `source`, non-empty `paths`, `disposition`, `domain_ids`, non-empty `evidence_seeds` | none |
+| Plan Intent | `kind`, non-empty `source_areas`, `domains`, `concepts`, `units` | `catalog_groups`, `table_replicas`, `relationships`, `gaps`: `[]` |
+| Source Area | `id`, `source`, non-empty `paths`, `disposition`, `domain_ids` | none |
 | Domain | `id`, `name`, `definition`, `owner_unit_id` | none |
 | Concept | `id`, `domain_id`, `kind`, `name`, `definition`, `owner_unit_id`, `model_basis` | none |
-| Model Basis | `basis` | `coverage`: `full`; `catalog_tables`, `structure_evidence`, `gap_ids`: `[]` |
-| Table Group | `source`, `role`, non-empty `tables` | `domain_id`: absent; `evidence`, `gap_ids`: `[]` |
+| Model Basis | `basis` | `coverage`: `full`; `structure_evidence`, `gap_ids`: `[]` |
+| Catalog Group | `source`, `role`, non-empty `tables` | `domain_id`: absent; `concept_ids`, `evidence`, `gap_ids`: `[]` |
 | Relationship | `id`, `from_concept_id`, `to_concept_id`, `level`, `cardinality`, non-empty `evidence`, `include_in_er` | none |
-| Authored Unit | `id`, `kind`, `question`, non-empty `domain_ids`, `concept_ids`, non-empty `scopes`, non-empty `evidence_seeds` | none |
+| Authored Unit | `id`, `kind`, `question`, non-empty `domain_ids`, `concept_ids`, non-empty `participants` | none |
+| Participant | `source`, non-empty `roles`, non-empty `paths` | `evidence`: `[]` only for Catalog participants, otherwise non-empty |
 | Gap | `id`, `category`, `claim`, `evidence` | none |
 
 Exact enums:
@@ -179,22 +197,22 @@ Exact enums:
 | Source Area `disposition` | `domain`, `shared`, `test`, `generated`, `excluded` |
 | Concept `kind` | `entity`, `value-object`, `event`, `service`, `policy`, `process`, `read-model` |
 | Authored Unit `kind` | `capability`, `lifecycle`, `flow`, `integration`, `operations` |
-| Scope `role` | `owner`, `model`, `producer`, `contract`, `consumer`, `feedback` |
+| Participant `roles` | `owner`, `model`, `producer`, `contract`, `consumer`, `feedback` |
 | Table Group `role` | `entity`, `association`, `history`, `reference`, `read-model`, `working`, `infrastructure`, `replica`, `excluded`, `unresolved` |
 | Relationship `level` | `declared`, `mapped`, `observed`, `heuristic` |
 | Relationship `cardinality` | `one-to-one`, `one-to-many`, `many-to-one`, `many-to-many`, `unknown` |
 | Gap `category` | `catalog-selection`, `source-coverage`, `model-coverage`, `relationship-confidence`, `other` |
 
 `evidence` on a Gap may be empty; its claim must then state that registered
-evidence is absent or outside the registered Sources for review approval. Every other seed/evidence
-collection marked non-empty above must contain at least one locator. A
+evidence is absent or outside the registered Sources for review approval. Every
+other evidence collection marked non-empty above contains a locator. A
 `partial` Model Basis requires `gap_ids`; `full` forbids them. An `excluded`
 Table Group requires evidence, and an `unresolved` group requires `gap_ids`;
 all other group roles forbid `gap_ids`.
 
-Kinds are `capability`, `lifecycle`, `flow`, `data-model`, `integration` and
-`operations`. IDs are stable lowercase semantic keys. Each scoped Source has at
-least one seed actually opened inside its paths. The body explains the global
+Authored kinds are `capability`, `lifecycle`, `flow`, `integration` and
+`operations`; `data-model` is compiled. IDs are stable lowercase semantic
+keys. Each code/file participant has evidence opened inside its paths. The body explains the global
 model, lifecycle and cross-Source relationships, evidence-backed conclusions,
 rejected hypotheses and unresolved gaps.
 
@@ -204,22 +222,22 @@ Close each ledger before Plan review:
 
 - `source_areas` partitions every eligible deterministic Source region once.
   `disposition` is `domain`, `shared`, `test`, `generated` or `excluded`;
-  domain areas name their `domain_ids` and every area has opened seeds.
+  domain areas name their `domain_ids`; participants own evidence routing.
 - `domains` records a stable definition and one `owner_unit_id`.
   Each Domain has its own owner unit; one owner unit cannot own several Domains.
 - `concepts` assigns every Concept to one Domain and one `owner_unit_id`.
   The kernel derives a model unit for persistent Concepts; `none` Concepts have
   no model unit.
-- `table_groups` classifies every captured table once, grouped by Source,
-  Domain and role. Roles are `entity`,
+- `catalog_groups` classifies every captured table once. The compiler groups
+  the ledger representation by Source, Domain and role. Roles are `entity`,
   `association`, `history`, `reference`, `read-model`, `working`,
   `infrastructure`, `replica`, `excluded` or `unresolved`. `domain_id` is
   omitted when no Domain owns the group. Optional `evidence` explains the
   role or Domain judgment; it never repeats the table-existence locator that
   the kernel derives from `source` and `tables`. `gap_ids` appears only on an
   `unresolved` group. A name suffix is a search hint, not evidence for the role.
-  Concept links are derived from each Concept's `model_basis.catalog_tables`
-  and are not repeated in a table group.
+  `concept_ids` assign tables to Concepts; the compiler derives each Concept's
+  `model_basis.catalog_tables`, so table identity is authored once.
 - `table_replicas` is omitted unless a real replica exists. Each entry maps one
   `{source, table}` to its `replica_of` `{source, table}` and supplies evidence;
   every table in a `replica` group has exactly one entry and other roles have
@@ -235,8 +253,8 @@ definition and model ownership exact without duplicating it in Composition.
 
 Each Concept has a structured `model_basis`:
 
-- `opengauss` lists its selected `catalog_tables`; Catalog facts are primary
-  for structure and code seeds explain behavior;
+- `opengauss` receives selected `catalog_tables` from Catalog Groups; Catalog
+  facts are primary for structure and code evidence explains behavior;
 - `code` uses `structure_evidence` in precedence order: DDL/migrations, ORM
   annotations or XML overrides, SQL/mappers, persistence code;
 - `none` has no tables, structure evidence, model unit or model coverage Gap.
@@ -249,14 +267,15 @@ Gap categories are `catalog-selection`, `source-coverage`, `model-coverage`,
 available evidence. `unresolved` groups must reference a Gap and must be
 resolved before approval.
 
-Put all paths for one Source in one scope record. Roles are `owner`, `model`,
-`producer`, `contract`, `consumer` and `feedback`. Use `model` for structural
+Put routing in participants. Repeated participants for one Source are allowed
+and compile into one scope with unioned paths, roles and evidence. Roles are
+`owner`, `model`, `producer`, `contract`, `consumer` and `feedback`. Use `model` for structural
 evidence without assigning business ownership. A cross-Source handoff is an
 `integration` unit with producer and consumer scopes from at least two Sources;
 include both implementation neighborhoods, not only the message or request
 declaration. Add a contract or feedback scope when that evidence lives in a
-separate Source. The State Gate rejects ambiguous duplicate Source scopes,
-missing producer/consumer roles and any scoped Source without a seed.
+separate Source. The compiler rejects missing producer/consumer roles and
+code/file participants without evidence.
 For an OpenGauss Source, use `.` only for the whole captured Catalog or use a
 selected table name/page slug. A seed or citation from another table remains
 outside scope even when it belongs to the same OpenGauss Source.

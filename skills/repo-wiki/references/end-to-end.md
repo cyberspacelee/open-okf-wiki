@@ -22,12 +22,21 @@ The planner continuously replaces:
 
 ```text
 work/plan.md
-work/plan-ledger.json
+work/plan-intent.json
 work/progress.md
 ```
 
 The first file contains the required narrative sections and evidence
-footnotes. The second contains strict machine data. Run status until the next
+footnotes. The second is authored semantic JSON. `plan compile` alone creates
+or replaces the generated `work/plan-ledger.json`; never edit that ledger.
+Inspect and compile before status can advance:
+
+```text
+okf plan inspect --json
+okf plan compile --json
+```
+
+Run status until the next
 action is `review plan`, then dispatch the exact packet:
 
 ```text
@@ -40,11 +49,12 @@ Artifacts together when needed and request a fresh digest-bound review.
 
 ## 3. Compose and approve routes
 
-Write `work/composition.md`, assigning every authored and derived unit exactly
-once. Use the documented lowercase path contract and one Reference Root per
-OpenGauss Source.
+Generate the complete contract, then write `work/composition.md`, assigning
+every authored and derived unit exactly once. Use the documented lowercase path
+contract and one Reference Root per OpenGauss Source.
 
 ```text
+okf composition prepare --json
 okf review composition --json
 ```
 
@@ -61,8 +71,9 @@ okf page prepare measurement --json
 
 Dispatch one writer with only the returned `artifact` packet path, its
 `reference`, relevant evidence-note paths and the packet's `output`. The writer
-replaces every template `{{replace: ...}}` marker, reopens frozen evidence and
-writes exactly that draft. Domain packets contain non-owning unit, model,
+reads only packet cache paths, cites prepared `ev-*` IDs, replaces every
+template `{{replace: ...}}` marker and writes exactly that draft. It never
+writes source metadata or footnote definitions. Domain packets contain non-owning unit, model,
 state/lifecycle and flow projections for their overview sections.
 
 ## 5. Review, publish and verify

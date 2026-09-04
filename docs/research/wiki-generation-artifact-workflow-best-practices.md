@@ -1,7 +1,7 @@
 # Wiki 生成 Artifact 与工作流最佳实践
 
-日期：2026-09-03  
-范围：针对 repo-wiki 的 Plan、数据库证据、Domain 页面、验证、writer dispatch 与跨平台 CLI。  
+日期：2026-09-04
+范围：针对 repo-wiki 的 Plan、数据库证据、Domain 页面、验证、agent context、writer dispatch 与跨平台 CLI。
 资料边界：只采用官方规范、官方项目文档和原始研究。
 
 > 外部资料不会规定 repo-wiki 的 Artifact 名称、locator 语法或阶段划分。本文先陈述来源
@@ -10,17 +10,23 @@
 
 ## 结论
 
-当前方向应调整为：**可读 Plan 与机器账本分离；数据库 locator 使用稳定逻辑名，运行环境
+当前基线方向正确：**可读 Plan 与机器账本分离；数据库 locator 使用稳定逻辑名，运行环境
 坐标只留在 Source/Run 绑定中；Domain 是厚概览和导航入口，但不复制详细页事实；unit 继续
 exact-once ownership；日常工作看阶段状态，全量 `validate` 保留为审计；每个 writer 只接收
 一个由 kernel 派生的页面 packet。**
+
+下一步值得做的是把仍由 agent 手工展开的账本改为“typed semantic intent -> deterministic
+compiled ledger”，并补 composition requirements packet、page-scoped evidence registry 和 compact
+Catalog projection。前三者是契约改进；任何持久 evidence cache 只是有指标支持后再做的性能优化。
 
 推荐数据流：
 
 ```text
 frozen Source/Catalog
-  -> plan-ledger.json (机器事实、coverage、scope、seed、gap)
-  -> plan.md          (全局模型、生命周期、结论、反证、缺口)
+  -> planner
+       |- plan.md          (agent 写全局模型、生命周期、结论、反证、缺口)
+       `- semantic intent  (agent 明确表达领域判断、关系、例外和缺口)
+            -> plan-ledger.json (kernel 编译 coverage、scope、seed、反向索引)
   -> composition.md   (unit exact-once -> page/path)
   -> page packet      (单页所需的最小高信号上下文)
   -> one writer / one page
@@ -32,10 +38,20 @@ frozen Source/Catalog
 | 来源 | 官方主张 | 对 repo-wiki 的直接含义 |
 |---|---|---|
 | [Anthropic context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) | context 是有限资源；使用最小高信号集合、轻量标识和按需检索 | writer 接收页面 packet，再按 locator 读取证据，不预装完整 Plan/Reference Map |
+| [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) | cache 复用完全相同的 prompt prefix，默认 TTL 5 分钟，也可配置 1 小时 | 只用于降低重复静态前缀的延迟和成本，不能替代 bounded packet、证据绑定或持久 registry |
 | [Anthropic effective agents](https://www.anthropic.com/engineering/building-effective-agents) | 从简单、可组合工作流开始；只有任务可独立拆分时才并行 | 保留确定性阶段编排；一页一 writer，避免多页大任务和通用 scheduler |
-| [OpenAI model guidance](https://developers.openai.com/api/docs/guides/latest-model) | 删除重复指令和无关工具；有界的过滤、连接、去重、聚合、验证适合程序化处理；以代表性任务评测 | 账本投影、coverage、dedupe 和 packet 生成放在 kernel；LLM 负责证据综合与写作 |
-| [MCP architecture](https://modelcontextprotocol.io/specification/2025-06-18/architecture) | host 负责编排和权限，server 暴露聚焦能力并只接收必要上下文 | 页面 packet 可未来暴露为 resource/tool，但本地 CLI 已能满足时不增加 MCP server |
+| [OpenAI model guidance](https://developers.openai.com/api/docs/guides/latest-model) | 删除重复指令和无关工具；为 bounded stage 明确目标、工具、输出 schema、证据、停止和失败条件，并以代表性任务评测 | 账本投影、coverage、dedupe 和 packet 生成放在 kernel；LLM 负责证据综合与写作 |
+| [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) | JSON Schema 可约束输出形状，但官方明确说明结构化输出仍可能出错 | typed intent 仍需 semantic compiler/validator；schema-valid 不等于事实或跨引用正确 |
+| [OpenAI evaluation best practices](https://developers.openai.com/api/docs/guides/evaluation-best-practices) | 每阶段做 scoped tests，使用真实分布数据，自动化可机械评分部分并持续评估 | 分别评测 intent extraction、ledger compilation、packet 质量和最终页面，不只评最终 Markdown |
+| [OpenAI agent harness](https://developers.openai.com/blog/codex-as-a-platform) | harness 管理 context、tools、边界、进度、失败与跨 turn 状态，application 选择与当前 workflow 相关的数据和动作 | kernel 负责确定性约束与 packet，宿主 agent 负责语义工作和编排 |
+| [MCP architecture](https://modelcontextprotocol.io/specification/2026-07-28/architecture) | host 负责编排和 context aggregation，server 暴露聚焦能力并只接收必要上下文 | 页面 packet 可未来暴露为 resource/tool，但本地 CLI 已能满足时不增加 MCP server |
 | [QEMU QMP](https://www.qemu.org/docs/master/interop/qmp-spec.html) | QMP 是控制 QEMU 的 JSON machine protocol | 与 Wiki/agent context 无关；若“QMP”不是笔误，需要提供全称再评估 |
+
+### 当前实现基线
+
+截至提交 `6d896fa`，上一轮建议中的 Plan narrative/ledger 拆分、plain Catalog locator、Domain
+非 owning projection、阶段字段与 `skipped_checks`、`okf page prepare <page-id> --json` 均已实现。
+因此下文第 1-5 节保留为设计依据，不再表示未完成工作；新增工作集中在第 7 节。
 
 ## 1. 机器账本与可读 Plan 分离
 
@@ -72,10 +88,10 @@ work/plan.md           # readable synthesis; only small identity/digest metadata
 Concept-to-table 关系继续由 kernel 派生；同一 seed 不再为了不同视图重复三次。review digest
 同时绑定 ledger 和 narrative，防止二者漂移。
 
-当前契约已经写明“small frontmatter、body holds analysis”，但又让 Plan frontmatter 承担完整
-coverage ledger，两条规则存在结构性张力，见
-[`references/contract.md`](../../skills/repo-wiki/references/contract.md) 与
-[`references/plan.md`](../../skills/repo-wiki/references/plan.md)。拆分 Artifact 才能真正消除张力。
+原问题中的契约一边要求“small frontmatter、body holds analysis”，一边让 Plan frontmatter 承担
+完整 coverage ledger，存在结构性张力。当前
+[`references/plan.md`](../../skills/repo-wiki/references/plan.md) 已通过 `plan.md` +
+`plan-ledger.json` 消除这项冲突。
 
 ## 2. 数据库证据使用逻辑身份，不使用连接坐标
 
@@ -165,12 +181,14 @@ Table 页的链接。字段清单、完整状态边、完整算法和完整 evid
 - `okf run status --json`：阶段视图，只返回当前可行动 blocker 和 next actions；
 - `okf validate --json`：全 Candidate 审计，允许列出未来阶段缺失，但必须明确其 applicability。
 
-共享 issue record 至少增加 `code`、`severity`、`phase`、`artifact/location`、`message` 和
-`next_action`。未来页面尚未写时，在阶段视图中省略或标为 `pending/notApplicable`，不能计入
-当前 `error_count`；真正违反当前阶段前置条件的项才是 blocking error。
+共享 issue record 使用稳定 `code`、`severity`、`phase`、`artifact/location` 和 `message`；
+`next_actions` 可以继续由 status 在顶层按阶段统一给出。未来页面尚未写时，在阶段视图中省略或
+标为 `pending/notApplicable`，不能计入当前 `blocking_errors`；真正违反当前阶段前置条件的项才是
+blocking error。
 
-当前 `_state.status()` 已按阶段短路，所以第一步只是统一 issue metadata、明确两个命令的职责
-并让 SOP 默认调用 status。只有实际使用仍需要任意阶段审计时，才增加 `validate --phase`。
+当前实现已经聚合、去重并稳定排序 issues，输出 `severity/code/path/line/phase/message`、计数和
+`skipped_checks`；status 也只报告当前阶段 blocker。剩余增量见第 7.2 节。只有实际使用仍需要
+任意阶段审计时，才增加 `validate --phase`。
 
 ## 5. Writer 必须接收页面级 task packet
 
@@ -196,17 +214,16 @@ Table 页的链接。字段清单、完整状态边、完整算法和完整 evid
 
 ### 对 repo-wiki 的调整
 
-当前“一 writer 一页”是正确修复，但仍把完整 Plan、Composition 和 Reference Map 都交给每个
-writer，输入边界仍过大。建议新增唯一一个较深的只读 CLI 接口：
+“一 writer 一页”加页面级投影是正确修复。当前已提供这个较深的只读 CLI 接口：
 
 ```text
 okf page prepare <page-id> --json
 ```
 
-kernel 从已批准 Artifact 派生并落盘 `work/page-packets/<page-id>.json`，只包含：page spec、
-owned units、相关 Domain/Concept/model/relationship 摘要、允许的 scopes/seeds、该页使用到的
-Reference Map entries、模板与输出路径、diagram obligations 和验收条件。writer 再通过现有
-`evidence search/read` 按需打开 frozen evidence。
+kernel 从已批准 Artifact 派生并落盘 `work/page-packets/<page-id>.json`，包含 page spec、owned
+units、相关 Domain/Concept/model/relationship 投影、允许的 scopes/seeds、该页使用到的 Reference
+Map entries、模板与输出路径。writer 再通过现有 `evidence search/read` 按需打开 frozen evidence。
+第 7.4 节讨论在不增加新事实源的前提下，如何继续缩小重复读证据的成本。
 
 packet 必须 digest-bind 到 Plan ledger、Plan narrative 和 Composition；它是投影，不是新事实源。
 handoff 继续只返回 draft path、citation count 和 gap count。不要增加通用 scheduler、共享 writer
@@ -215,6 +232,10 @@ memory 或多页 writer。
 OpenAI 与 Anthropic 的官方实践在这里一致：入口应短、Source of Truth 应持久且可检索、当前任务
 只装载相关上下文。它们没有规定“一页一个 writer”或上述 packet schema；这是结合本项目 page
 ownership、超时数据和确定性 kernel 作出的推论。
+
+两家也没有给出通用的“每个 writer 几页”或固定 timeout。Anthropic 文中的并发 agent 数与工具
+调用量是其 Research 产品经验，不能直接成为 repo-wiki 默认值；这里应以 page completion、引用
+覆盖、packet bytes、tool calls、wall time 和 cancellation rate 的代表性 eval 来定任务大小。
 
 ### “QMP” 检索结论
 
@@ -225,10 +246,11 @@ ownership、超时数据和确定性 kernel 作出的推论。
 本问题无关。因此本文不把 QMP 纳入设计依据；需要其全称或官方链接后才能可靠比较。
 
 如果这里想表达的是 **MCP（Model Context Protocol）**，其官方
-[architecture](https://modelcontextprotocol.io/specification/2025-06-18/architecture) 要求 host 负责
+[architecture](https://modelcontextprotocol.io/specification/2026-07-28/architecture) 要求 host 负责
 编排与权限、server 提供聚焦能力，server 只接收必要上下文且不能读取整个 conversation；
-[server primitives](https://modelcontextprotocol.io/specification/2025-06-18/server/index) 则把
-application-controlled resources、model-controlled tools 和 prompts 分开。
+[resources](https://modelcontextprotocol.io/specification/2026-07-28/server/resources) 与
+[tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools) 则把 application-controlled
+context 与 model-controlled actions 分开，并分别提供稳定身份、schema、分页和 cache metadata。
 [MCP design principles](https://modelcontextprotocol.io/community/design-principles) 还强调先用现有
 primitive 组合、保持协议面小，并只标准化已经由实践证明的模式。这些原则支持页面级资源和有界
 工具接口，但**不构成现在新增 MCP server 的理由**：先实现同一语义的本地 `okf page prepare`；
@@ -264,16 +286,126 @@ $result = okf validate --json | ConvertFrom-Json
 stdout/stderr 原始 bytes 前，不能把 `strict=False` 当修复。先验证 stdout 是否混入日志、BOM、
 ANSI 或宿主启动器输出。
 
-## 7. 调整后的实施顺序
+## 7. 新一轮设计假设评估
 
-1. **P0：修 plain Catalog locator 全链路。** 清除所有 Artifact 中的连接坐标，并加入真实
-   OpenGauss capture CLI e2e；这是契约、安全边界和跨环境稳定性的共同前提。
-2. **P1：拆分 Plan narrative 与 machine ledger。** 同步 models/validation、Artifact references、
-   tests、CLI e2e 和 grader；不保留双 schema 或迁移分支。
-3. **P1：新增 `okf page prepare`，随后加厚 Domain 模板。** Domain 的聚合信息由 packet 派生，
-   unit ownership 仍 exact-once。
-4. **P2：统一阶段诊断字段与命令语义。** 日常 SOP 用 status，全量 validate 用于审计/review。
-5. **P2：补公开路径规则、完整端到端示例、PowerShell 示例和 `pwsh 7` smoke test。**
+| 设计 | 支持度 | 结论 |
+|---|---|---|
+| semantic intent -> deterministic compiled ledger | 中等，带边界 | 编译确定性派生项；领域判断和例外仍须显式 authored |
+| aggregated diagnostics | 强 | 聚合独立错误，同时抑制前置失败引发的级联噪声 |
+| composition requirements packet | 强 | 提供全局但紧凑的 composition 输入；不要把全局闭包拆给独立 composer |
+| page evidence registry + bounded excerpts | 强 | 放进现有 page packet，绑定 Run revision/digest |
+| 持久 evidence cache | 弱到中 | 只在指标证明重复 I/O 是瓶颈后增加，且必须可丢弃 |
+| compact Catalog views | 强 | 保持 list/discovery 与 describe/detail 两级，按需补 filter/cursor |
 
-暂不增加 `plan patch`、`bundle refresh-digest`、通用调度器或通用 `catalog compare`。前两者分别
-引入第二套编辑语言、破坏 Run 可复现性；后两者应等重复需求和性能数据证明值得维护时再加。
+### 7.1 Semantic intent 编译为 deterministic ledger
+
+**来源事实。** Anthropic 明确区分 agent 的非确定性与工具的确定性，并要求工具用严格数据模型
+约束输入输出（[Writing effective tools](https://www.anthropic.com/engineering/writing-tools-for-agents)）。
+OpenAI Structured Outputs 保证 JSON Schema 形状，但官方同时指出输出仍可能包含错误，输入与
+schema 不相容时还可能产生幻觉（[Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)）。
+OpenAI 还建议为每个生成步骤做 scoped eval，而不是用最终结果掩盖中间失败
+（[evaluation best practices](https://developers.openai.com/api/docs/guides/evaluation-best-practices)）。
+
+**repo-wiki 推论。** 支持把当前手工 `plan-ledger.json` 的输入收窄为一个 typed semantic intent，
+再由 kernel 原子编译、排序并写出 ledger；但只编译同输入必然得到同结果的内容：effective
+data-model units、table-group 展开、scope/seed union、去重、coverage、反向索引和 digest。
+Domain/Concept 边界、relationship 含义、owner unit、table role、被拒绝假设与 Gap 都不是可可靠
+推断的机械事实，必须留在 authored intent/narrative。
+
+最小契约应是：semantic intent 是唯一可编辑机器输入，compiled ledger 明确标记 generated 且不可
+手修；编译失败不覆盖上一份有效输出，diagnostic 指回 intent 的 JSON Pointer。不要让 intent 与
+ledger 同时成为可编辑 SSOT，也不要把 Structured Outputs 当 semantic validation。
+
+### 7.2 聚合诊断，但在依赖边界停止
+
+**来源事实。** Pydantic 的 `ValidationError` 包含全部已发现错误，`errors()` 返回含 machine-readable
+`type`、嵌套 `loc`、`msg`、`input` 和文档 URL 的列表
+（[Pydantic error handling](https://pydantic.dev/docs/validation/latest/errors/errors/)）。Terraform
+Diagnostics 明确采用 append-only slice，让用户一次看到全部相关问题并更快修复，同时建议在已有
+error 后停止可能造成混乱或 crash 的后续执行
+（[Terraform provider diagnostics](https://developer.hashicorp.com/terraform/plugin/framework/diagnostics)）。
+`terraform validate -json` 还提供版本、计数、severity、summary/detail、range 和 source snippet
+（[Terraform validate](https://developer.hashicorp.com/terraform/cli/commands/validate)）。SARIF 使用稳定、
+opaque `ruleId` 以及 level/message/location 表达可关联诊断
+（[SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/sarif-v2.1.0-errata01-os-complete.html)）。
+
+**repo-wiki 推论。** 当前 `Issue`、计数、phase、applicability、去重排序和 `skipped_checks` 已接近成熟
+形态。下一步只需给 JSON envelope 增加 `format_version`，保持 `code` 稳定，并遵循一条关键规则：
+同一验证作用域内聚合所有**独立**问题；如果前置 Artifact 无法解析，只报告根因并把依赖检查放入
+`skipped_checks`，不展开几十条必然失败的引用错误。人类输出可按 `phase + code + root cause` 分组，
+`--json` 保留完整 items。没有互操作需求时无需实现完整 SARIF。
+
+### 7.3 Composition requirements packet
+
+**来源事实。** Anthropic 的生产多 agent 经验要求 subagent task 明确 objective、output format、
+tools/sources 和 boundaries；模糊任务会造成重复和遗漏，长结果应落盘并只回传轻量引用
+（[multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system)）。
+OpenAI 的 Multi-agent 指南同样把 independent、bounded work 与 focused context 作为适用条件，并
+指出有共享可变状态或固定确定性执行图时单 agent 更合适
+（[OpenAI Multi-agent](https://developers.openai.com/api/docs/guides/responses-multi-agent)）。
+
+**repo-wiki 推论。** 在 Plan approval 后由 kernel 派生一个全局但紧凑的 composition requirements
+packet，内容只包括：effective unit inventory、Domain/Concept ownership、允许的 page types、路径
+regex 与保留名、reference roots、exact-once/route/merge-probe obligations，以及目标输出路径和
+验收命令。它不应携带完整 evidence seed、Catalog detail 或 Plan prose。
+
+Composition 有全局 exact-once 闭包，默认仍由一个 composer 完成；packet 是减少输入噪声，不是把
+全局映射切成相互不知道对方决策的多个任务。该 packet 应由 compiled ledger 派生并 digest-bind，
+不是新的 authored Artifact。是否增加 `okf composition prepare --json`，应由现有 composer 的 token、
+时延和返工 eval 决定；不要同时再造通用 query DSL。
+
+### 7.4 Page evidence registry、bounded excerpts 与 cache
+
+**来源事实。** MCP Resource 用 URI 唯一标识 context，明确分离 `resources/list` 与
+`resources/read`，列表支持 pagination/cache metadata，由 application 决定搜索、过滤和注入时机
+（[MCP Resources](https://modelcontextprotocol.io/specification/2026-07-28/server/resources)）。MCP Tool
+有独立 input/output schema，并支持分页 discovery
+（[MCP Tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)）。Anthropic 推荐
+JIT context 使用 path/query/link 等轻量标识，并为大工具结果提供 pagination、range、filter 和
+truncation（[context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)、
+[tool response efficiency](https://www.anthropic.com/engineering/writing-tools-for-agents)）。
+
+Anthropic prompt cache 仅在 prefix 匹配时复用计算，默认 TTL 5 分钟；工具、system 或较早 message
+变化会使后续 prefix 失效（[prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)、
+[cache diagnostics](https://platform.claude.com/docs/en/build-with-claude/cache-diagnostics)）。因此它既不是
+证据 provenance，也不是持久 evidence store。
+
+**repo-wiki 推论。** 不新增全局 `evidence-cache.json`。直接在现有 page packet 加 page-scoped
+`evidence[]` registry：`id`、plain locator、Source binding/catalog digest、kind、bounded excerpt 的
+实际行范围、`truncated` 和 excerpt digest。`id` 可由 normalized logical locator 稳定派生；跨
+revision 的内容正确性由独立 binding digest 保证，不能假设 MCP URI 或 locator 本身 immutable。
+excerpt 不足时 writer 仍用 locator JIT read，最终引用仍落到 canonical locator。
+
+若后续 profile 证明重复读取是瓶颈，kernel 可加 disposable cache，key 至少包含 Source/Catalog
+digest、normalized locator、range 和 policy version；Run/digest 变化即 miss。registry 是 packet
+契约，cache 是可删除后重建的实现细节。
+
+### 7.5 Compact Catalog views
+
+**来源事实。** MCP 把只返回 metadata 的 resource discovery 与完整 content read 分开；Anthropic
+也建议工具提供 `concise|detailed`、分页、范围、过滤和截断，并展示过 concise response 约使用
+详细响应三分之一 token 的实例。该比例是单个 Anthropic 示例，不应当作 repo-wiki SLO
+（[Writing effective tools](https://www.anthropic.com/engineering/writing-tools-for-agents)）。
+
+**repo-wiki 推论。** 当前 `catalog tables`（source/schema/count/names）与 `catalog describe` 已经是
+正确的 discovery/detail 两级，不需要新命令族。Composition packet 和 page packet 只投影 table
+logical ID/name、关系或列计数、content digest 与 detail handle；需要字段、键、comment 时才
+`describe`。只有大型 Catalog eval 显示 list 仍超预算，才给 `tables` 补 `--after/--limit` 和过滤；
+跨源 compare 成为重复工作后，再考虑一个确定性 compare view，而不是先造通用查询语言。
+
+## 8. 实现决策
+
+1. **已实施：semantic intent 由 kernel 编译为 ledger。** models、validation、references、tests、
+   CLI e2e 和 grader 使用同一契约，不保留双写或兼容分支。
+2. **已实施：prerequisite-aware aggregation。** `plan inspect` 保留全部可独立检查的分类 issues，
+   并显式列出确实无法执行的 `skipped_checks`；Run contract 标识 schema，无需重复的
+   `format_version`。
+3. **已实施：composition requirements packet。** 现有运行已经证明 derived unit 和隐式路径规则
+   导致反复修复，因此在写 Composition 前一次性给出完整约束。
+4. **已实施：page-scoped evidence registry 与 digest-bound cache。** 多 writer 重复读取和超时是
+   已观察事实；cache 命中复用，失配时由 `page prepare` 重建。
+5. **已实施：Catalog summary/compact/full 分层。** cursor/filter 留待大型 Catalog eval 证明现有
+   summary 仍超预算后再增加。
+
+不增加 `plan patch`、`bundle refresh-digest`、通用调度器或通用 `catalog compare`。它们会引入
+第二套编辑语言、破坏 Run 可复现性，或仍缺少重复需求证据。

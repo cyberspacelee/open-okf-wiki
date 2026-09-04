@@ -1,6 +1,5 @@
 ---
 coverage: full
-sources: []
 ---
 
 ## 职责与边界

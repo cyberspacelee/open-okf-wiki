@@ -68,7 +68,11 @@ def resolve_url(root: pathlib.Path, env_ref: str) -> str:
         url = env_dict[var_name]
 
     parsed = urlsplit(url)
-    if parsed.scheme != "opengauss" or not parsed.hostname or not parsed.path.strip("/"):
+    if (
+        parsed.scheme != "opengauss"
+        or not parsed.hostname
+        or not parsed.path.strip("/")
+    ):
         raise DbError("URL must be an opengauss:// URL with host and database")
     return url
 
@@ -92,7 +96,9 @@ def _connect(url: str):
             options="-c default_transaction_read_only=on -c statement_timeout=10000",
         )
     except Exception:  # noqa: BLE001 - database errors may contain credentials
-        raise DbError(f"Failed to connect to OpenGauss database '{_extract_dbname(url)}'")
+        raise DbError(
+            f"Failed to connect to OpenGauss database '{_extract_dbname(url)}'"
+        )
 
 
 @contextmanager
@@ -101,16 +107,14 @@ def _snapshot(url: str):
     try:
         with conn.cursor() as cur:
             cur.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-            cur.execute(
-                """
+            cur.execute("""
                 SELECT
                   opengauss_version(),
                   working_version_num(),
                   gs_deployment(),
                   version(),
                   current_database()
-                """
-            )
+                """)
             row = cur.fetchone()
             if not row or not isinstance(row[0], str) or not row[0].strip():
                 raise DbError("Connected server did not identify itself as OpenGauss")
@@ -206,7 +210,9 @@ def _column_rows(conn, relation_oid: int) -> tuple[list[dict], dict[int, str]]:
     return columns, names
 
 
-def _constraint_rows(conn, relation_oid: int, column_names: dict[int, str]) -> list[dict]:
+def _constraint_rows(
+    conn, relation_oid: int, column_names: dict[int, str]
+) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -276,7 +282,9 @@ def _constraint_rows(conn, relation_oid: int, column_names: dict[int, str]) -> l
         item = {
             "name": name,
             "type": _CONSTRAINT_TYPES[kind],
-            "columns": [column_names[key] for key in (keys or []) if key in column_names],
+            "columns": [
+                column_names[key] for key in (keys or []) if key in column_names
+            ],
             "definition": definition,
             "deferrable": bool(deferrable),
             "initially_deferred": bool(initially_deferred),
@@ -289,7 +297,9 @@ def _constraint_rows(conn, relation_oid: int, column_names: dict[int, str]) -> l
             item.update(
                 ref_schema=ref_schema,
                 ref_table=ref_table,
-                ref_columns=[ref_names[key] for key in (ref_keys or []) if key in ref_names],
+                ref_columns=[
+                    ref_names[key] for key in (ref_keys or []) if key in ref_names
+                ],
                 match=_FK_MATCHES.get(match_type, match_type),
                 on_update=_FK_ACTIONS.get(update_action, update_action),
                 on_delete=_FK_ACTIONS.get(delete_action, delete_action),
@@ -455,14 +465,20 @@ def describe(url: str, table: str, schema: str = "public") -> dict:
         return _describe_row(conn, schema, relation)
 
 
-def _inspect_catalog(url: str, schema: str, selected: list[str]) -> tuple[dict, list[dict]]:
+def _inspect_catalog(
+    url: str, schema: str, selected: list[str]
+) -> tuple[dict, list[dict]]:
     with _snapshot(url) as (conn, fingerprint):
         available = _table_rows(conn, schema)
         by_name = {item["name"]: item for item in available}
         missing = sorted(set(selected) - set(by_name))
         if missing:
-            raise DbError(f"Configured tables not found in schema '{schema}': {missing}")
-        return fingerprint, [_describe_row(conn, schema, by_name[name]) for name in selected]
+            raise DbError(
+                f"Configured tables not found in schema '{schema}': {missing}"
+            )
+        return fingerprint, [
+            _describe_row(conn, schema, by_name[name]) for name in selected
+        ]
 
 
 def _extract_dbname(url: str) -> str:
@@ -557,7 +573,11 @@ def load_table(root: pathlib.Path, storage_key: str, page_slug: str) -> dict:
 
 
 def tables_captured(
-    root: pathlib.Path, catalogs: list[dict], source: str | None = None
+    root: pathlib.Path,
+    catalogs: list[dict],
+    source: str | None = None,
+    *,
+    summary: bool = False,
 ) -> list[dict]:
     records = [
         record for record in catalogs if not source or record.get("name") == source
@@ -567,13 +587,30 @@ def tables_captured(
     result = []
     for record in records:
         manifest = load_index(root, record["storage_key"])
-        names = sorted(table["name"] for table in manifest["tables"])
+        entries = sorted(manifest["tables"], key=lambda table: table["name"])
+        names = [table["name"] for table in entries]
         result.append(
             {
                 "source": manifest["name"],
                 "schema": manifest["schema"],
                 "count": len(names),
-                "tables": names,
+                "tables": (
+                    [
+                        {
+                            key: table.get(key)
+                            for key in (
+                                "name",
+                                "comment",
+                                "column_count",
+                                "foreign_key_count",
+                                "index_count",
+                            )
+                        }
+                        for table in entries
+                    ]
+                    if summary
+                    else names
+                ),
             }
         )
     return result
@@ -584,6 +621,8 @@ def describe_captured(
     catalogs: list[dict],
     table: str,
     source: str | None = None,
+    *,
+    full: bool = False,
 ) -> dict:
     matches = []
     records = [
@@ -595,12 +634,47 @@ def describe_captured(
         manifest = load_index(root, record["storage_key"])
         for item in manifest.get("tables", []):
             if item.get("name") == table or item.get("page_slug") == table:
-                matches.append(load_table(root, record["storage_key"], item["page_slug"]))
+                matches.append(
+                    load_table(root, record["storage_key"], item["page_slug"])
+                )
     if not matches:
         raise DbError(f"Table '{table}' not found in captured catalog")
     if len(matches) > 1:
         raise DbError(f"Table '{table}' is ambiguous; pass --source")
-    return matches[0]
+    return matches[0] if full else compact_table(matches[0])
+
+
+def compact_table(table: dict) -> dict:
+    compact = {
+        key: table.get(key)
+        for key in (
+            "resource",
+            "schema",
+            "name",
+            "comment",
+            "relation_kind",
+            "persistence",
+            "primary_key",
+        )
+        if key in table
+    }
+    compact["columns"] = [
+        {
+            key: column.get(key)
+            for key in ("position", "name", "type", "nullable", "comment")
+            if key in column
+        }
+        for column in table.get("columns", [])
+    ]
+    compact["foreign_keys"] = [
+        {
+            key: foreign_key.get(key)
+            for key in ("name", "columns", "ref_schema", "ref_table", "ref_columns")
+            if key in foreign_key
+        }
+        for foreign_key in table.get("foreign_keys", [])
+    ]
+    return compact
 
 
 def _page_slug(table: str) -> str:
@@ -631,6 +705,9 @@ def capture_catalog(root: pathlib.Path, source, *, inspect=_inspect_catalog) -> 
                 "comment": item.get("comment") or "",
                 "relation_kind": item.get("relation_kind"),
                 "persistence": item.get("persistence"),
+                "column_count": len(item.get("columns", [])),
+                "foreign_key_count": len(item.get("foreign_keys", [])),
+                "index_count": len(item.get("indexes", [])),
                 "content_hash": _hash_json(item),
             }
         )

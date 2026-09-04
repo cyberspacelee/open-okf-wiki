@@ -23,7 +23,7 @@ from pydantic import ValidationError
 def scope(paths=None) -> dict:
     return {
         "source": "src",
-        "role": "owner",
+        "roles": ["owner"],
         "paths": ["app.py"] if paths is None else paths,
     }
 
@@ -45,7 +45,8 @@ def knowledge_plan(units=None, **overrides) -> dict:
     units = [unit()] if units is None else units
     owner = units[0]["id"]
     return {
-        "kind": "knowledge-plan",
+        "kind": "knowledge-plan-ledger",
+        "intent_digest": "0" * 64,
         "source_areas": [
             {
                 "id": "src.answers",
@@ -53,7 +54,6 @@ def knowledge_plan(units=None, **overrides) -> dict:
                 "paths": ["app.py"],
                 "disposition": "domain",
                 "domain_ids": ["answers"],
-                "evidence_seeds": ["src/app.py#L1-L2"],
             }
         ],
         "domains": [
@@ -177,22 +177,13 @@ def test_model_basis_requires_the_authoritative_structure_source():
         KnowledgePlan.model_validate(data)
 
 
-def test_persistent_model_units_are_derived_and_their_ids_are_reserved():
+def test_persistent_model_units_are_derived():
     data = knowledge_plan()
     data["concepts"][0]["model_basis"] = {
         "basis": "code",
         "structure_evidence": ["src/app.py#L1-L2"],
     }
-    data["units"].append(
-        unit("model.answer", kind="capability", concept_ids=["answer"])
-    )
-    with pytest.raises(ValidationError, match="derived model unit IDs are reserved"):
-        KnowledgePlan.model_validate(data)
-
-    data["units"][-1]["id"] = "authored-model"
-    data["units"][-1]["kind"] = "data-model"
-    with pytest.raises(ValidationError, match="must not be authored"):
-        KnowledgePlan.model_validate(data)
+    assert KnowledgePlan.model_validate(data).effective_units[-1].id == "model.answer"
 
 
 def test_non_persistent_model_basis_cannot_report_structural_gaps():
@@ -218,9 +209,6 @@ def test_opengauss_model_requires_a_matching_table_disposition():
         "basis": "opengauss",
         "catalog_tables": [{"source": "database", "table": "answers"}],
     }
-    with pytest.raises(ValidationError, match="matching disposition"):
-        KnowledgePlan.model_validate(data)
-
     data["table_groups"] = [
         {
             "source": "database",
@@ -248,27 +236,6 @@ def test_table_groups_keep_large_catalog_plans_compact():
     assert len(plan.table_dispositions) == 195
     assert len(text.encode()) < 16 * 1024
     assert text.count("\n") < 300
-
-
-def test_table_groups_must_combine_matching_classifications():
-    data = knowledge_plan()
-    data["table_groups"] = [
-        {
-            "source": "database",
-            "domain_id": "answers",
-            "role": "entity",
-            "tables": ["answers"],
-        },
-        {
-            "source": "database",
-            "domain_id": "answers",
-            "role": "entity",
-            "tables": ["answer_details"],
-        },
-    ]
-
-    with pytest.raises(ValidationError, match="must combine"):
-        KnowledgePlan.model_validate(data)
 
 
 def test_excluded_table_groups_require_classification_evidence():
@@ -307,10 +274,6 @@ def test_replica_mappings_are_sparse_complete_and_evidenced():
 
     plan = KnowledgePlan.model_validate(data)
     assert plan.table_dispositions[1].replica_of.table == "answers"
-
-    data["table_replicas"] = []
-    with pytest.raises(ValidationError, match="exactly one replica mapping"):
-        KnowledgePlan.model_validate(data)
 
 
 def test_partial_models_and_unresolved_tables_require_structured_gaps():
@@ -417,7 +380,7 @@ def test_page_templates_only_seed_writer_owned_frontmatter():
         path.name for path in (templates / "zh").glob("*.md")
     }
     for path in templates.glob("*/*.md"):
-        assert parse_file(path).meta == {"coverage": "full", "sources": []}
+        assert parse_file(path).meta == {"coverage": "full"}
 
 
 def test_composition_accepts_one_page_and_only_late_binding_fields():
@@ -717,8 +680,8 @@ def test_merge_probe_reviews_have_no_hidden_512_item_ceiling():
 
 
 def test_integration_scopes_require_roles_and_each_source_once():
-    producer = {"source": "api", "role": "producer", "paths": ["src"]}
-    consumer = {"source": "worker", "role": "consumer", "paths": ["src"]}
+    producer = {"source": "api", "roles": ["producer"], "paths": ["src"]}
+    consumer = {"source": "worker", "roles": ["consumer"], "paths": ["src"]}
     integration = unit(
         kind="integration",
         scopes=[producer, consumer],
@@ -738,17 +701,11 @@ def test_integration_scopes_require_roles_and_each_source_once():
 
 def test_draft_frontmatter_is_strict_and_typed():
     assert (
-        DraftFrontmatter.model_validate(
-            {
-                "coverage": "full",
-                "sources": [{"id": "entry", "resource": "src/app.py"}],
-            },
-            strict=True,
-        ).coverage
+        DraftFrontmatter.model_validate({"coverage": "full"}, strict=True).coverage
         == "full"
     )
     for invalid in (
-        {"coverage": "full"},
+        {},
         {"coverage": "Most behavior is covered", "sources": []},
         {"coverage": "full", "sources": ["src/app.py"]},
         {
@@ -885,20 +842,6 @@ def test_catalog_resources_stay_inside_selected_table_scope():
         catalogs, "database/customers", {"database": ["."]}
     )
     assert not _validate._catalog_resource(catalogs, "opengauss://db/public/orders")
-
-
-def test_source_areas_cannot_overlap():
-    value = knowledge_plan()
-    value["source_areas"].append(
-        {
-            **value["source_areas"][0],
-            "id": "src.answers.child",
-            "paths": ["app.py/child"],
-        }
-    )
-
-    with pytest.raises(ValidationError, match="source area paths must not overlap"):
-        KnowledgePlan.model_validate(value)
 
 
 @pytest.mark.parametrize(

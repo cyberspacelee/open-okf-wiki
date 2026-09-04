@@ -288,6 +288,25 @@ def test_describe_preserves_composite_constraints_indexes_and_partitions(monkeyp
     assert result["constraints"][0]["definition"] == "CHECK (amount >= 0)"
     assert result["indexes"][0]["keys"] == ["amount DESC"]
     assert result["partitions"][0]["boundaries"] == ["2027-01-01"]
+    compact = _db.compact_table(result)
+    assert set(compact) == {
+        "schema",
+        "name",
+        "comment",
+        "relation_kind",
+        "persistence",
+        "columns",
+        "primary_key",
+        "foreign_keys",
+    }
+    assert "default" not in compact["columns"][2]
+    assert set(compact["foreign_keys"][0]) == {
+        "name",
+        "columns",
+        "ref_schema",
+        "ref_table",
+        "ref_columns",
+    }
     constraint_sql = next(sql for sql, _ in conn.sql if "pg_constraint" in sql)
     assert "constraint_name" not in constraint_sql
     assert "con.conrelid = %s" in constraint_sql
@@ -388,6 +407,9 @@ def test_catalog_is_manifest_plus_hash_checked_table_shards(tmp_path, monkeypatc
     assert "columns" not in manifest["tables"][0]
     assert manifest["tables"][0]["path"].startswith("tables/")
     assert manifest["tables"][0]["content_hash"] == table["content_hash"]
+    assert table["column_count"] == 1
+    assert table["foreign_key_count"] == 0
+    assert table["index_count"] == 0
     assert "secret" not in json.dumps(manifest)
     assert "token" not in json.dumps(manifest)
     assert manifest["resource"] == "appdb/."
@@ -407,9 +429,21 @@ def test_catalog_is_manifest_plus_hash_checked_table_shards(tmp_path, monkeypatc
         }
     ]
     assert _db.tables_captured(tmp_path, [catalog]) == expected_tables
+    summary = _db.tables_captured(tmp_path, [catalog], summary=True)[0]["tables"][0]
+    assert summary == {
+        "name": "Order Items",
+        "comment": "line items",
+        "column_count": 1,
+        "foreign_key_count": 0,
+        "index_count": 0,
+    }
     assert (
         _db.describe_captured(tmp_path, [catalog], "Order Items")["comment"]
         == "line items"
+    )
+    assert "indexes" not in _db.describe_captured(tmp_path, [catalog], "Order Items")
+    assert "indexes" in _db.describe_captured(
+        tmp_path, [catalog], "Order Items", full=True
     )
     with pytest.raises(DbError, match="Captured catalog 'missing' not found"):
         _db.tables_captured(tmp_path, [catalog], "missing")

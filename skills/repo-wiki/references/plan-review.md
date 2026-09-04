@@ -1,6 +1,6 @@
 # Knowledge Plan Review
 
-Review the exact Plan Narrative and Plan Ledger named by the `review plan` packet in an
+Review the exact Plan Narrative, authored Plan Intent and compiled Plan Ledger named by the `review plan` packet in an
 independent context. Use bounded evidence navigation commands
 from the packet workdir; the packet's Source names are routing hints. Do not
 read run internals or Catalog JSON files, write Composition or choose pages.
@@ -12,12 +12,12 @@ path and is not an input packet file.
 First verify mandatory coverage closure:
 
 - every eligible Source region has one non-overlapping Source Area disposition;
-- every Domain has a definition and its own seeded owner unit that names it;
+- every Domain has a definition and its own evidenced owner unit that names it;
 - every Concept belongs to one Domain and has a definition owner that names it;
 - each persistent Concept has exactly one kernel-derived `model.<concept-id>`
   unit and a valid `opengauss` or
   `code` Model Basis; a `none` Concept has neither;
-- every captured OpenGauss table occurs in exactly one `table_groups` entry,
+- every captured OpenGauss table occurs in exactly one compiled `table_groups` entry,
   grouped by Source, Domain and role, with every `excluded` claim evidenced and
   every `unresolved` group rejected;
 - table existence is established by the captured Catalog and its locator is
@@ -84,7 +84,7 @@ semantic-recall criterion that remains assessable before page fan-out:
 - lifecycles include failure, retry, cancellation and recovery paths where
   present;
 - events, queues, extension points and cross-Source contracts are represented;
-- every scoped Source has one seed inside its paths; integration units name
+- every compiled scope has evidence inside its paths; integration units name
   producer and consumer roles from at least two Sources, plus a separate
   contract or feedback participant when the frozen evidence requires it;
 - a causal lifecycle split across units has one question or explicit gap that

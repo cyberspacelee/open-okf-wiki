@@ -37,6 +37,9 @@ Judge the Wiki globally:
 - root and directory Navigation Indexes route every composed page through the
   intended capability hierarchy with no orphan or page-type directory;
 - citation support, invented rationale, scope bleed and terminology;
+- readable evidence density: support a coherent paragraph or independently
+  checkable table claim instead of attaching citations mechanically to every
+  sentence or row;
 - diagram semantics, accessibility and renderability.
 
 Treat repeated shared behavior as a routing defect: identify its canonical

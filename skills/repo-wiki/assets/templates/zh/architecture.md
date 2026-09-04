@@ -1,6 +1,5 @@
 ---
 coverage: full
-sources: []
 ---
 
 ## 职责地图
