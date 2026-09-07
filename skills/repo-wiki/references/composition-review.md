@@ -55,7 +55,9 @@ review and rebuild Composition.
 
 On follow-up, read the complete ledger in `previous_review`. Preserve issue IDs,
 mark verified repairs `resolved`, retain failures as `open`, and add a new ID
-only for a direct regression or a check previously blocked by an open issue.
+for a regression, a newly assessable check, or an evidence-backed defect missed
+earlier. Explain the discovery in the claim; earlier approval never suppresses
+a known error.
 Use the new packet's top-level `subject_digest` and replace the fixed Artifact
 once with strict JSON:
 

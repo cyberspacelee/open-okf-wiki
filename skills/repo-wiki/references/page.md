@@ -7,8 +7,19 @@ Do not load the full Plan Ledger, Composition or Reference Map. Select the
 language from `packet.language` with no fallback. The packet supplies inherited
 scopes plus an exact evidence registry. Read bounded content only from each
 registry entry's `cache_path`; do not rescan a Source or read internal Catalog
-storage. The cache entry carries its logical resource, frozen binding and
-content digest. Plan and evidence notes are synthesis inputs, not provenance.
+storage. Each cache entry contains the complete seed range, or the complete file
+when its seed has no range. The kernel follows read pagination and never clips
+line contents; an oversized seed fails preparation with a repair diagnostic.
+The cache entry carries its logical resource, frozen binding and content digest.
+Plan and evidence notes are synthesis inputs, not provenance.
+
+When prepared evidence cannot support a required claim, return an evidence
+request to the coordinator: page ID, claim, existing evidence IDs, missing
+neighborhood and the packet output path. Keep the existing draft intact. The
+coordinator investigates through the evidence worker, updates Plan seeds or a
+structured Gap, obtains the affected approvals, and prepares the page again.
+Resume writing from the replacement packet. A missing prepared excerpt is work
+to repair, not evidence that the frozen Source lacks the behavior.
 
 Writers handle authored pages only. The kernel renders Schema and Table pages
 from captured OpenGauss facts, and inserts the OpenGauss physical model at the
@@ -20,6 +31,8 @@ keeps that view separate from its generated OpenGauss facts.
 Use `packet.reference_pages` for logical links to generated pages and
 `packet.related_pages` for authored routes; never derive an ID or path from a
 Source or table name.
+Related routes include the definition and model owners of cross-Domain
+relationship endpoints.
 
 Write all reader-visible prose, headings, table cells and diagram labels in the
 Workspace language. Preserve exact code identifiers and established domain
@@ -67,7 +80,10 @@ conclusion. In state diagrams, use ASCII state aliases with quoted localized
 labels. Keep locators outside diagrams.
 
 Every cited evidence ID is already inside an inherited scope. Cite each scoped
-Source at least once. When evidence is incomplete, use `coverage: partial`
+Source at least once. Start with `packet.draft_frontmatter`. Every Gap in
+`packet.gaps` requires `coverage: partial` and its exact Gap ID plus its meaning
+in the localized Gaps section; this includes non-model and global uncertainties.
+When other evidence is incomplete, use `coverage: partial`
 and a non-empty `## Gaps` section for `en` or `## 缺口` for `zh`. Repair an
 existing draft with one targeted update; `coverage: full` must not contain that
 section. Git file metadata may be enriched automatically; do not invent missing

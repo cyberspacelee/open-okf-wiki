@@ -101,8 +101,9 @@ semantic-recall criterion that remains assessable before page fan-out:
 
 On follow-up, read the complete prior ledger embedded in `previous_review`.
 Preserve every issue ID, mark verified repairs `resolved`, retain failures as
-`open`, and add a new ID only when the repair introduced an issue or an earlier
-issue prevented assessment. Copy the new packet's top-level `subject_digest`
+`open`, and add a new ID for a regression, a newly assessable check, or a newly
+discovered evidence-backed defect missed earlier. Explain the discovery in the
+claim and investigate the affected neighborhood. Copy the new packet's top-level `subject_digest`
 into the replacement report, never the nested prior digest. Replace the fixed
 Artifact once with strict JSON:
 

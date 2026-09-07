@@ -131,6 +131,22 @@ def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> Compile
     }
     catalog_sources = {catalog["name"] for catalog in catalogs}
 
+    effective_ids = set(units) | {
+        f"model.{concept.id}"
+        for concept in intent.concepts
+        if concept.model_basis.basis != "none"
+    }
+    for index, gap in enumerate(intent.gaps):
+        if unknown := sorted(set(gap.unit_ids) - effective_ids):
+            report(
+                "gap-unit-invalid",
+                "cross-artifact",
+                f"/gaps/{index}/unit_ids",
+                "gap references unknown units",
+                unknown,
+                "use authored or derived unit ids, or omit unit_ids for a global gap",
+            )
+
     for index, area in enumerate(intent.source_areas):
         unknown = sorted(set(area.domain_ids) - set(domains))
         if unknown:

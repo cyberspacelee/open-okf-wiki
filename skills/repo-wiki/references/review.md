@@ -13,9 +13,12 @@ regression; do not repeat either pre-write review from scratch.
 Sweep the complete bundle and report every independently supportable issue in
 one pass; do not stop after the first failure. When the packet includes
 `previous_review`, read its complete ledger before replacement. Preserve every
-issue ID, mark verified repairs `resolved`, retain failures as `open`, and add a
-new ID only when the repair introduced an issue or an earlier issue prevented
-assessment. Replace the fixed Artifact in one update.
+issue ID, mark verified repairs `resolved`, and retain failures as `open`.
+Add a new ID for a regression, a newly assessable check, or a newly discovered
+evidence-backed defect, including defects missed in an earlier review. Explain
+what evidence revealed it in the claim and inspect that affected neighborhood.
+Earlier approval never suppresses a known error. Replace the fixed Artifact in
+one update.
 
 Judge the Wiki globally:
 

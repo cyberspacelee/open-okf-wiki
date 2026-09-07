@@ -26,6 +26,24 @@ from _reference import derive_pages, enrich_data_model
 MARKER = "<!-- okf-generated:model -->"
 
 
+def test_source_areas_reject_uncovered_catalog_tables(model):
+    root, catalog, _resources, plan, _composition, _page = model
+    _workspace.init(root)
+    _workspace.add_opengauss_source(
+        root, "database", "DB_URL", "public", ["customers", "orders"]
+    )
+    area = plan.source_areas[0].model_copy(update={"paths": ["orders"]})
+    issues = _validate._validate_source_areas(
+        root,
+        {"revisions": [], "catalogs": [catalog]},
+        _db.load_indexes(root, [catalog]),
+        [area],
+        root / "plan-intent.json",
+    )
+    assert "source-area-uncovered" in {issue.code for issue in issues}
+    assert any("customers" in issue.message for issue in issues)
+
+
 def con(name, kind, columns, **extra):
     return {
         "name": name,
@@ -675,7 +693,7 @@ Use the generated references.
     (work / "plan-ledger.json").write_text("{}\n", encoding="utf-8")
     (work / "plan-review.json").write_text("{}\n", encoding="utf-8")
     (work / "composition-requirements.json").write_text("{}\n", encoding="utf-8")
-    subject_digest = _state._composition_subject_digest(root, state)
+    state["policy"] = _workspace.load(root).policy.model_dump(mode="json")
     packets = work / "page-packets"
     packets.mkdir()
     for composition_page in composition.pages:
@@ -686,8 +704,9 @@ Use the generated references.
         (packets / f"{composition_page.id}.json").write_text(
             json.dumps(
                 {
-                    "subject_digest": subject_digest,
-                    "page": {"id": composition_page.id},
+                    **_state._page_inputs(
+                        root, state, plan, composition, composition_page
+                    ),
                     "evidence": evidence,
                 }
             ),

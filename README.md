@@ -30,7 +30,7 @@ versioned bundle, not a development link: reinstall it after upgrading this
 repository and commit its `skills-lock.json` entry. Verify that the harness
 resolves `repo-wiki` to the intended path when discovery scopes overlap.
 Before starting a Run on another machine, update the installed skill. A current
-Run reports contract `artifact-loop-routing-closure`; another contract identifies a
+Run reports contract `compiled-plan-evidence-registry`; another contract identifies a
 stale bundle or legacy Run. Preserve that Workspace for forensics and start from
 a new hub after reinstalling rather than resuming or migrating it.
 
@@ -164,6 +164,13 @@ notes. After Composition approval, `page prepare <page-id>` creates one bounded,
 cached evidence packet for each independent writer. One fresh
 reviewer checks the complete Candidate. Validation and review defects return to
 the loop.
+
+The opt-in `evals/run_live_eval.py` additionally runs a fresh Wiki-only reader
+and a separate frozen-source judge on three maintenance questions: payment
+recovery, overdue feedback and durable delivery. This spends additional model
+tokens and writes `semantic-answers.json` and `semantic-review.json` in the eval
+Workspace. `evals/grade_run.py` requires these reports to match the exact
+Publication and answers; keyword coverage alone does not establish correctness.
 
 PowerShell 7 can consume every JSON command without inline Python:
 

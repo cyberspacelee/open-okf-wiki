@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["PyYAML>=6,<7"]
+# dependencies = ["PyYAML>=6,<7", "pydantic>=2.12"]
 # ///
 """Outcome grader for a published artifact-loop run."""
 
@@ -20,6 +20,9 @@ sys.path.insert(0, str(SKILL / "scripts"))
 
 from _frontmatter import parse_file
 from _markdown import extract
+from _models import CompositionMap, KnowledgePlan
+import _validate
+from semantic_eval import grade_semantic
 
 CITE = re.compile(
     r"^\s*resource:\s*\"?([A-Za-z0-9][A-Za-z0-9-]*/[^\s#\"]+)"
@@ -418,6 +421,15 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         for item in state.get("catalogs", [])
     ]
     work = run_dir / "work"
+    metadata_path = ws / "live-eval.json"
+    metadata = load(metadata_path) if metadata_path.is_file() else {}
+    runtime_skill = pathlib.Path(metadata.get("runtime_skill", str(SKILL)))
+    semantic_errors = grade_semantic(ws, bundle, pointer["generation"], state)
+    check(
+        "independent Wiki answers explain maintenance tasks and match frozen evidence",
+        not semantic_errors,
+        str(semantic_errors),
+    )
     trace_path = ws / "host-run.log"
     trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
     parsed_events, commands, spawn_prompts, trace_agents = trace_data(trace_path)
@@ -447,6 +459,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     plan_doc = parse_file(work / "plan.md")
     intent = load(work / "plan-intent.json")
     plan = load(work / "plan-ledger.json")
+    parsed_plan = KnowledgePlan.model_validate(plan)
     authored_units = intent.get("units", [])
     units = effective_units(plan)
     source_areas = plan.get("source_areas", [])
@@ -511,7 +524,10 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     )
     check(
         "Plan closes every run Source, Domain and Concept",
-        source_domain_concept_closed,
+        source_domain_concept_closed
+        and not _validate.source_area_coverage(
+            ws, state, catalogs, parsed_plan.source_areas, work / "plan-intent.json"
+        ),
         f"sources={len(source_areas)}/{len(run_sources)}, "
         f"domains={len(domains)}, concepts={len(concepts)}",
     )
@@ -904,31 +920,35 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     )
     packet_paths = sorted((work / "page-packets").glob("*.json"))
     page_packets = {path.stem: load(path) for path in packet_paths}
-    expected_packet_digest = composition_subject_digest(
-        work / "plan.md",
-        work / "plan-intent.json",
-        work / "plan-ledger.json",
-        work / "plan-review.json",
-        work / "composition-requirements.json",
-        work / "composition.md",
-        state,
-    )
+    parsed_composition = CompositionMap.model_validate(composition)
+    packet_issues = [
+        issue.to_dict()
+        for page in parsed_composition.pages
+        for issue in _validate.page_packet(
+            ws, state, parsed_plan, page, parsed_composition, skill_dir=runtime_skill
+        )[1]
+    ]
     domain_concepts = {
         domain_id: {item["id"] for item in concepts if item["domain_id"] == domain_id}
         for domain_id in domain_ids
     }
-    packets_bounded = set(page_packets) == set(pages) and all(
-        packet.get("subject_digest") == expected_packet_digest
-        and packet.get("page", {}).get("id") == page_id
-        and {item.get("id") for item in packet.get("units", [])}
-        == set(pages[page_id].get("units", []))
-        and not ({"source_areas", "table_groups", "table_replicas"} & set(packet))
-        and packet.get("draft_frontmatter") == {"coverage": "full"}
+    packets_bounded = (
+        not packet_issues
+        and set(page_packets) == set(pages)
         and all(
-            item.get("id", "").startswith("ev-") and valid_evidence_cache(item, state)
-            for item in packet.get("evidence", [])
+            packet.get("page", {}).get("id") == page_id
+            and {item.get("id") for item in packet.get("units", [])}
+            == set(pages[page_id].get("units", []))
+            and not ({"source_areas", "table_groups", "table_replicas"} & set(packet))
+            and packet.get("draft_frontmatter")
+            == {"coverage": "partial" if packet.get("gaps") else "full"}
+            and all(
+                item.get("id", "").startswith("ev-")
+                and valid_evidence_cache(item, state)
+                for item in packet.get("evidence", [])
+            )
+            for page_id, packet in page_packets.items()
         )
-        for page_id, packet in page_packets.items()
     )
     domain_packets_project_units = all(
         {item.get("id") for item in page_packets[page_id].get("projections", [])}
@@ -948,7 +968,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     )
     domain_packets_complete = all(
         {item.get("id") for item in page_packets[page_id].get("concepts", [])}
-        == set().union(
+        >= set().union(
             *(
                 domain_concepts.get(domain_id, set())
                 for unit_id in page.get("units", [])
@@ -1169,14 +1189,12 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
             f"language=zh, unlocalized={unlocalized}",
         )
 
-    runtime_skill = SKILL
-    metadata_path = ws / "live-eval.json"
-    metadata = {}
-    if metadata_path.is_file():
-        metadata = load(metadata_path)
-        candidate = pathlib.Path(metadata.get("runtime_skill", ""))
-        if (candidate / "scripts/okf.py").is_file():
-            runtime_skill = candidate
+    check(
+        "producer and independent semantic evaluator processes completed",
+        metadata.get("host_exit_code") == 0
+        and metadata.get("semantic_exit_codes") == {"reader": 0, "judge": 0},
+        f"producer={metadata.get('host_exit_code')}, semantic={metadata.get('semantic_exit_codes')}",
+    )
     requested_cap = state["policy"]["agents"]["max_active_children"]
     check(
         "live adapter records concurrency enforcement",

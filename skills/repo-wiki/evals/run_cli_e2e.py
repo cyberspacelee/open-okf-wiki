@@ -54,7 +54,10 @@ def source(path: pathlib.Path, label: str) -> pathlib.Path:
     write(
         path / "src/main/java/example/App.java",
         "package example;\n"
-        f'public class App {{ public static String name = "{label}"; }}\n'
+        f'public class App {{ public static String name = "{label}"; }} // '
+        + "x"
+        * 600
+        + " end-of-line\n"
         "public interface Named {}\n",
     )
     subprocess.run(["git", "-C", str(path), "add", "."], check=True)
@@ -153,7 +156,15 @@ def knowledge_plan(units: list[dict]) -> dict:
             }
         ],
         "units": units,
-        "gaps": [],
+        "gaps": [
+            {
+                "id": "external-recovery",
+                "category": "source-coverage",
+                "claim": "Recovery belongs to an unregistered dependency.",
+                "evidence": [],
+                "unit_ids": ["source-boundaries"],
+            }
+        ],
     }
 
 
@@ -175,13 +186,13 @@ def plan_narrative() -> str:
         "## Rejected hypotheses\n\n"
         "The sources do not prove a durable queue or database-backed handoff.\n\n"
         "## Unresolved gaps\n\n"
-        "The bounded fixture has no failure behavior to document.\n\n"
+        "external-recovery: recovery belongs to an unregistered dependency.\n\n"
         "[^api]: `API/src/main/java/example/App.java#L1-L2`\n"
         "[^web]: `WebUI/src/main/java/example/App.java#L1-L2`",
     )
 
 
-def page(resources: list[str], logical_link: str, page_type: str) -> str:
+def page(resources: list[str], logical_link: str, page_type: str, gaps=()) -> str:
     citations = " ".join(
         f"[^ev-{hashlib.sha256(resource.encode()).hexdigest()[:16]}]"
         for resource in resources
@@ -269,7 +280,11 @@ def page(resources: list[str], logical_link: str, page_type: str) -> str:
             f"## Concepts\n\n{logical_link}\n\n"
             "## Change points\n\nChange both boundary participants and tests.\n\n"
         )
-    return markdown({"coverage": "full"}, body)
+    if gaps:
+        body += "\n\n## Gaps\n\n" + "\n".join(
+            f"{gap['id']}: {gap['claim']}" for gap in gaps
+        )
+    return markdown({"coverage": "partial" if gaps else "full"}, body)
 
 
 def evaluate(base: pathlib.Path) -> dict:
@@ -365,6 +380,17 @@ def evaluate(base: pathlib.Path) -> dict:
             )
         ),
     )
+    intent_path = work / "plan-intent.json"
+    intent = json.loads(intent_path.read_text())
+    incomplete = json.loads(intent_path.read_text())
+    incomplete["source_areas"][0]["paths"] = ["pom.xml"]
+    write(intent_path, json.dumps(incomplete))
+    rejected = json.loads(invoke(ws, "plan", "inspect", check=False).stdout)
+    if "source-area-uncovered" not in {
+        item["code"] for item in rejected["diagnostics"]
+    }:
+        raise RuntimeError("Source Area coverage omitted a frozen subtree")
+    write(intent_path, json.dumps(intent))
     inspected = run(ws, "plan", "inspect")
     if not inspected["ok"]:
         raise RuntimeError(f"Plan inspection failed: {inspected}")
@@ -626,6 +652,17 @@ def evaluate(base: pathlib.Path) -> dict:
         ):
             raise RuntimeError(f"invalid page packet for {page_id}: {packet}")
         prepared_packets[page_id] = packet
+        for entry in packet["evidence"]:
+            cache = json.loads(pathlib.Path(entry["cache_path"]).read_text())
+            if (
+                cache["resource"] != entry["seed"]
+                or "end-of-line" not in cache["content"]["text"]
+            ):
+                raise RuntimeError(
+                    "prepared evidence truncated a seed range or a long line"
+                )
+    if prepared_packets["architecture"]["draft_frontmatter"] != {"coverage": "partial"}:
+        raise RuntimeError("scoped non-model Gap was lost from the writer packet")
     overview_packet = prepared_packets["overview"]
     if (
         {item["id"] for item in overview_packet["concepts"]}
@@ -646,6 +683,7 @@ def evaluate(base: pathlib.Path) -> dict:
             [api_ref, web_ref],
             "See [overview][overview].",
             "Flow",
+            prepared_packets["architecture"]["gaps"],
         ),
     )
     write(
@@ -654,6 +692,7 @@ def evaluate(base: pathlib.Path) -> dict:
             [api_ref, web_ref],
             "See [architecture][architecture].",
             "Domain",
+            prepared_packets["overview"]["gaps"],
         ),
     )
     write(
@@ -669,16 +708,36 @@ def evaluate(base: pathlib.Path) -> dict:
         ),
     )
 
-    overview = work / "drafts/overview.md"
-    full_page = overview.read_text(encoding="utf-8")
-    write(overview, full_page + "\n## Gaps\n\nA scoped behavior remains unverified.\n")
+    full_draft = work / "drafts/procedure.md"
+    full_page = full_draft.read_text(encoding="utf-8")
+    write(
+        full_draft, full_page + "\n## Gaps\n\nA scoped behavior remains unverified.\n"
+    )
     rejected = invoke(ws, "review", "prepare", check=False)
     rejected_data = json.loads(rejected.stdout)
     if rejected.returncode != 1 or [
         item["code"] for item in rejected_data.get("issues", [])
     ] != ["gaps-unexpected"]:
         raise RuntimeError("full coverage accepted a Gaps section")
-    write(overview, full_page)
+    write(full_draft, full_page)
+
+    write(
+        work / "plan.md",
+        (work / "plan.md").read_text() + "\nEditorial clarification.\n",
+    )
+    for command in ("plan", "composition"):
+        if command == "composition":
+            run(ws, "composition", "prepare")
+        fresh = run(ws, "review", command)
+        report_path = pathlib.Path(fresh["artifact"])
+        report = json.loads(report_path.read_text())
+        report["subject_digest"] = fresh["subject_digest"]
+        write(report_path, json.dumps(report))
+    for page_id, packet in prepared_packets.items():
+        if json.loads((work / f"page-packets/{page_id}.json").read_text()) != packet:
+            raise RuntimeError("unrelated Plan prose rewrote a page packet")
+
+    overview = work / "drafts/overview.md"
 
     if run(ws, "run", "status")["next_actions"] != ["review prepare"]:
         raise RuntimeError("complete drafts did not advance to review")

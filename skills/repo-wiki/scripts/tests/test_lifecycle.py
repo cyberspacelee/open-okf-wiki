@@ -694,6 +694,183 @@ def test_page_packet_cache_tampering_is_rejected(tmp_path):
     assert "page-evidence-cache-invalid" in {
         item["code"] for item in _state.status(root)["issues"]
     }
+    assert "page prepare answer" in _state.status(root)["next_actions"]
+
+
+@pytest.mark.parametrize("source_kind", ["git", "files"])
+def test_source_areas_reject_uncovered_frozen_files(tmp_path, source_kind):
+    if source_kind == "git":
+        root = workspace(tmp_path)
+    else:
+        root = tmp_path / "workspace"
+        root.mkdir()
+        write(tmp_path / "files/app.py", "answer = 42\n")
+        write(tmp_path / "files/architecture.py", "class Service: pass\n")
+        _workspace.init(root)
+        _workspace.add_files_source(root, str(tmp_path / "files"), "src")
+    run = start(root)
+    value = plan_meta()
+    value["source_areas"][0]["paths"] = ["app.py"]
+    write_plan(run, value)
+
+    result = _state.plan_inspect(root)
+
+    assert not result["ok"]
+    assert "source-area-uncovered" in {item["code"] for item in result["diagnostics"]}
+    assert "architecture.py" in json.dumps(result["diagnostics"])
+
+
+def test_prepared_evidence_reads_complete_ranges_and_long_lines(tmp_path):
+    root = workspace(tmp_path)
+    source = root / "source"
+    write(source / "long.txt", "".join(f"row {i}\n" for i in range(1, 1201)))
+    write(source / "wide.sql", "SELECT " + "x" * 600 + " FROM orders;\n")
+    subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "evidence"], check=True)
+    start(root)
+    state = _state.read(root)
+
+    for locator in ("src/long.txt", "src/long.txt#L1-L1200"):
+        cache = _state._evidence_cache_payload(root, state, locator)
+        assert cache["resource"] == "src/long.txt#L1-L1200"
+        assert "1200|row 1200" in cache["content"]["text"]
+        assert not cache["content"]["limit_reached"]
+    cache = _state._evidence_cache_payload(root, state, "src/long.txt#L201-L1100")
+    assert cache["resource"] == "src/long.txt#L201-L1100"
+    assert "1101|" not in cache["content"]["text"]
+    assert "FROM orders;" in _state.evidence_read(root, "src/wide.sql")["text"]
+
+
+def test_page_packet_routes_cross_domain_owners_and_gaps(tmp_path):
+    root = workspace(tmp_path)
+    run = start(root)
+    value = plan_meta()
+    value["units"][0]["kind"] = "capability"
+    value["units"][1]["domain_ids"] = ["infrastructure"]
+    value["concepts"][1]["domain_id"] = "infrastructure"
+    value["domains"][0]["owner_unit_id"] = "answer"
+    value["domains"].append(
+        {
+            "id": "infrastructure",
+            "name": "Infrastructure",
+            "definition": "Owns service infrastructure.",
+            "owner_unit_id": "architecture",
+        }
+    )
+    value["source_areas"][0]["domain_ids"].append("infrastructure")
+    value["relationships"] = [
+        {
+            "id": "answer-service",
+            "from_concept_id": "answer",
+            "to_concept_id": "architecture",
+            "level": "observed",
+            "cardinality": "many-to-one",
+            "evidence": ["src/app.py#L1-L2"],
+            "include_in_er": False,
+        }
+    ]
+    value["gaps"] = [
+        {
+            "id": "missing-recovery",
+            "category": "source-coverage",
+            "claim": "Recovery belongs to an unregistered source.",
+            "evidence": [],
+            "unit_ids": ["answer"],
+        }
+    ]
+    write_plan(run, value)
+    write(
+        run / "work/plan.md",
+        plan().replace(
+            "No unresolved gap remains.",
+            "missing-recovery: recovery is outside registered Sources.",
+        ),
+    )
+    assert _state.plan_compile(root)["ok"]
+    write(run / "work/composition.md", composition())
+    approve_plan(root, run)
+    approve_composition(root, run)
+    packet = json.loads((run / "work/page-packets/answer.json").read_text())
+    other = json.loads((run / "work/page-packets/architecture.json").read_text())
+
+    assert [p["id"] for p in packet["related_pages"]] == ["architecture"]
+    assert [gap["id"] for gap in packet["gaps"]] == ["missing-recovery"]
+    assert packet["draft_frontmatter"] == {"coverage": "partial"}
+    assert other["gaps"] == []
+    write(
+        run / "work/drafts/answer.md",
+        draft("src/app.py#L1-L2", "architecture", "service"),
+    )
+    assert "page-gap-coverage-missing" in {
+        item["code"] for item in _state.status(root)["issues"]
+    }
+    value["gaps"][0].pop("unit_ids")
+    write_plan(
+        run,
+        value,
+        extra="\nmissing-recovery: recovery is outside registered Sources.\n",
+    )
+    approve_plan(root, run)
+    approve_composition(root, run)
+    other = json.loads((run / "work/page-packets/architecture.json").read_text())
+    assert other["draft_frontmatter"] == {"coverage": "partial"}
+    assert [gap["id"] for gap in other["gaps"]] == ["missing-recovery"]
+
+
+def test_page_packet_survives_unrelated_plan_narrative_edit(tmp_path):
+    root = workspace(tmp_path)
+    run = start(root)
+    write_work(run)
+    approve_plan(root, run)
+    approve_composition(root, run)
+    packet_path = run / "work/page-packets/answer.json"
+    before = packet_path.read_bytes()
+    narrative = run / "work/plan.md"
+    write(narrative, narrative.read_text() + "\nEditorial clarification.\n")
+    approve_plan(root, run)
+    _state.composition_prepare(root)
+    packet = _state.composition_review_prepare(root)
+    composition_review(
+        run / "work/composition-review.json", packet["subject_digest"], "approved"
+    )
+
+    assert _state.status(root)["phase"] == "review"
+    assert packet_path.read_bytes() == before
+
+    value = json.loads((run / "work/plan-intent.json").read_text())
+    value["units"][0]["question"] = "Where does answer recovery begin?"
+    write_plan(run, value)
+    approve_plan(root, run)
+    _state.composition_prepare(root)
+    packet = _state.composition_review_prepare(root)
+    composition_review(
+        run / "work/composition-review.json", packet["subject_digest"], "approved"
+    )
+    assert "page-packet-stale" in {
+        item["code"] for item in _state.status(root)["issues"]
+    }
+
+
+def test_prepared_evidence_and_page_inputs_enforce_byte_budgets(tmp_path, monkeypatch):
+    policy = RunPolicy.defaults().model_dump(mode="json")
+    policy["evidence"]["read"]["max_output_bytes"] = 4096
+    root = workspace(tmp_path, policy=policy)
+    source = root / "source"
+    write(source / "large.txt", "".join("x" * 100 + "\n" for _ in range(100)))
+    subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "commit", "-qm", "budget fixture"], check=True
+    )
+    run = start(root)
+    with pytest.raises(_state.StateError, match="narrow the Plan seed range"):
+        _state._evidence_cache_payload(root, _state.read(root), "src/large.txt")
+    write_work(run)
+    approve_plan(root, run)
+    approve_composition(root, run)
+    monkeypatch.setattr(_validate, "MAX_PAGE_INPUT_BYTES", 100)
+    result = _state.page_prepare(root, "answer")
+    assert not result["ok"]
+    assert result["issues"][0]["code"] == "page-input-budget-exceeded"
 
 
 def test_draft_can_only_cite_prepared_evidence_ids(tmp_path):
@@ -835,7 +1012,7 @@ def test_evidence_byte_limits_preserve_json_and_continuation(tmp_path):
     read = _state.evidence_read(root, "src/wide.txt#L1-L12")
     assert read["limit_reached"] and read["has_more"]
     assert read["next_locator"]
-    assert read["clipped_lines"]
+    assert read["clipped_lines"] == []
     assert compact_json_size(read) <= 4096
 
 

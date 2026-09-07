@@ -203,3 +203,26 @@ def test_compile_blocks_unresolved_catalog_classifications():
 
     assert result.plan is None
     assert "table-disposition-unresolved" in {item.code for item in result.diagnostics}
+
+
+def test_gap_routes_accept_derived_units_and_reject_unknown_units():
+    value = intent()
+    value["gaps"] = [
+        {
+            "id": "recovery",
+            "category": "source-coverage",
+            "claim": "Recovery belongs to an unregistered source.",
+            "evidence": [],
+            "unit_ids": ["model.order"],
+        }
+    ]
+    assert not _plan.compile_intent(
+        KnowledgePlanIntent.model_validate(value), catalogs()
+    ).diagnostics
+    value["gaps"][0]["unit_ids"] = ["missing"]
+    assert "gap-unit-invalid" in {
+        issue.code
+        for issue in _plan.compile_intent(
+            KnowledgePlanIntent.model_validate(value), catalogs()
+        ).diagnostics
+    }

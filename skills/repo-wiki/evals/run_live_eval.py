@@ -15,6 +15,8 @@ import sys
 import time
 from datetime import datetime, timezone
 
+from semantic_eval import QUESTIONS, judge_prompt, reader_prompt, subject_digest
+
 EVALS = pathlib.Path(__file__).resolve().parent
 SKILL = EVALS.parent
 
@@ -41,6 +43,34 @@ def copy_runtime(base: pathlib.Path) -> pathlib.Path:
             ignore=shutil.ignore_patterns("tests", "__pycache__", "*.pyc"),
         )
     return target
+
+
+def host_command(
+    adapter: str, model: str | None, ws: pathlib.Path, prompt: str
+) -> list[str]:
+    if adapter == "codex":
+        return [
+            "codex",
+            "exec",
+            "--json",
+            *(["--model", model] if model else []),
+            "--approve-for-me",
+            "--skip-git-repo-check",
+            "-C",
+            str(ws),
+            prompt,
+        ]
+    return [
+        "claude",
+        "-p",
+        prompt,
+        *(["--model", model] if model else []),
+        "--allowedTools",
+        "Bash,Read,Write,Edit,Glob,Grep",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ]
 
 
 def main() -> int:
@@ -114,29 +144,7 @@ def main() -> int:
         "every registered Source, then export it to wiki/. Do not modify the skill."
     )
     log = ws / "host-run.log"
-    if args.host_adapter == "codex":
-        command = [
-            "codex",
-            "exec",
-            "--json",
-            *(["--model", args.model] if args.model else []),
-            "--approve-for-me",
-            "--skip-git-repo-check",
-            "-C",
-            str(ws),
-            prompt,
-        ]
-    else:
-        command = [
-            "claude",
-            "-p",
-            prompt,
-            "--allowedTools",
-            "Bash,Read,Write,Edit,Glob,Grep",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-        ]
+    command = host_command(args.host_adapter, args.model, ws, prompt)
     started = datetime.now(timezone.utc)
     before = time.monotonic()
     with log.open("w", encoding="utf-8", newline="\n") as handle:
@@ -145,8 +153,69 @@ def main() -> int:
             stdout=handle,
             stderr=subprocess.STDOUT,
             env=host_env,
+            cwd=ws,
             check=False,
         )
+    semantic_exit_codes = {}
+    pointer_path = ws / ".okf-wiki/publication/current.json"
+    if host_result.returncode == 0 and pointer_path.is_file():
+        generation = json.loads(pointer_path.read_text())["generation"]
+        bundle = ws / ".okf-wiki/publication/generations" / generation
+        manifest = json.loads((bundle / ".okf-manifest.json").read_text())
+        source_paths = {
+            source["name"]: str(
+                ws.joinpath(*pathlib.PurePosixPath(source["path"]).parts)
+            )
+            for source in json.loads((ws / "workspace.json").read_text())["sources"]
+            if source["kind"] == "git"
+        }
+        answers_path = ws / "semantic-answers.json"
+        for role in ("reader", "judge"):
+            if role == "reader":
+                evaluation_prompt = reader_prompt(bundle, generation, answers_path)
+            else:
+                if not answers_path.is_file() or semantic_exit_codes["reader"]:
+                    break
+                try:
+                    answers = json.loads(answers_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    semantic_exit_codes["reader"] = 2
+                    break
+                packet_path = ws / "semantic-review-packet.json"
+                packet_path.write_text(
+                    json.dumps(
+                        {
+                            "subject_digest": subject_digest(generation, answers),
+                            "questions": QUESTIONS,
+                            "sources": [
+                                {
+                                    "name": source["name"],
+                                    "path": source_paths[source["name"]],
+                                    "commit": source["commit"],
+                                }
+                                for source in manifest["revisions"]
+                            ],
+                            "answers": str(answers_path),
+                            "bundle": str(bundle),
+                            "output": str(ws / "semantic-review.json"),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                evaluation_prompt = judge_prompt(packet_path)
+            with (ws / f"semantic-{role}.log").open("w", encoding="utf-8") as handle:
+                result = subprocess.run(
+                    host_command(args.host_adapter, args.model, ws, evaluation_prompt),
+                    cwd=ws,
+                    env=host_env,
+                    stdout=handle,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+            semantic_exit_codes[role] = result.returncode
     final_runtime_digest = runtime_digest(runtime_skill)
     metadata = {
         "started_at": started.isoformat(),
@@ -155,6 +224,7 @@ def main() -> int:
         "host_adapter": args.host_adapter,
         "model": args.model,
         "host_exit_code": host_result.returncode,
+        "semantic_exit_codes": semantic_exit_codes,
         "runtime_skill": str(runtime_skill),
         "runtime_skill_digest": initial_runtime_digest,
         "runtime_skill_unchanged": initial_runtime_digest == final_runtime_digest,

@@ -188,7 +188,7 @@ are:
 | Relationship | `id`, `from_concept_id`, `to_concept_id`, `level`, `cardinality`, non-empty `evidence`, `include_in_er` | none |
 | Authored Unit | `id`, `kind`, `question`, non-empty `domain_ids`, `concept_ids`, non-empty `participants` | none |
 | Participant | `source`, non-empty `roles`, non-empty `paths` | `evidence`: `[]` only for Catalog participants, otherwise non-empty |
-| Gap | `id`, `category`, `claim`, `evidence` | none |
+| Gap | `id`, `category`, `claim`, `evidence` | `unit_ids`: `[]` (global) |
 
 Exact enums:
 
@@ -204,8 +204,12 @@ Exact enums:
 | Gap `category` | `catalog-selection`, `source-coverage`, `model-coverage`, `relationship-confidence`, `other` |
 
 `evidence` on a Gap may be empty; its claim must then state that registered
-evidence is absent or outside the registered Sources for review approval. Every
-other evidence collection marked non-empty above contains a locator. A
+evidence is absent or outside the registered Sources for review approval.
+A Gap names affected authored or derived `unit_ids`; omit them only for a global
+uncertainty that every authored page must disclose. Model and table gap links
+also route their Gap to the owning pages. Writers receive those Gaps, use partial
+coverage and retain each Gap ID in their localized Gaps section.
+Every other evidence collection marked non-empty above contains a locator. A
 `partial` Model Basis requires `gap_ids`; `full` forbids them. An `excluded`
 Table Group requires evidence, and an `unresolved` group requires `gap_ids`;
 all other group roles forbid `gap_ids`.
@@ -223,6 +227,8 @@ Close each ledger before Plan review:
 - `source_areas` partitions every eligible deterministic Source region once.
   `disposition` is `domain`, `shared`, `test`, `generated` or `excluded`;
   domain areas name their `domain_ids`; participants own evidence routing.
+  The kernel checks the complete frozen file/table inventory for uncovered
+  paths as well as overlaps; registering a Source name alone does not close it.
 - `domains` records a stable definition and one `owner_unit_id`.
   Each Domain has its own owner unit; one owner unit cannot own several Domains.
 - `concepts` assigns every Concept to one Domain and one `owner_unit_id`.

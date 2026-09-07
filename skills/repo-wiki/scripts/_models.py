@@ -332,6 +332,7 @@ class KnowledgeGap(BaseModel):
     ]
     claim: ClaimText
     evidence: list[ScopePath]
+    unit_ids: list[StableId] = Field(default_factory=list)
 
 
 class SourceArea(BaseModel):

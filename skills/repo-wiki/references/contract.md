@@ -10,6 +10,9 @@ The Wiki closes four mandatory ledgers before optional depth is considered:
 - every captured OpenGauss table belongs to one Source/Domain/role table group
   and, when relevant, links to its Concepts through Model Basis records.
 
+Source Area validation compares its partition with the complete frozen file or
+table inventory and rejects uncovered paths as well as overlaps.
+
 Every persistent Concept also has one kernel-derived data-model owner. The Grep Test controls
 only optional depth such as a separate Procedure, Flow or Lifecycle page. It
 cannot remove Domain, Concept, persistence-model, Schema or Table coverage.
@@ -132,6 +135,24 @@ Domain packets project all Concepts, related detail pages and non-owning units
 in their one owned Domain without duplicating unit ownership. The projected
 units extend that Domain page's allowed scopes and prepared evidence so its
 summaries can cite the facts they describe.
+Gaps name affected authored or derived `unit_ids`; an empty list declares a
+global Gap. Packets carry scoped and global Gaps as well as model/table-linked
+Gaps. Every affected draft has partial coverage and describes each exact Gap ID
+in its localized Gaps section. Missing evidence within a writer packet triggers
+the evidence-request branch in the page reference before a Gap is declared.
+
+Page packet digests bind their own projected semantic inputs, related routes,
+evidence resources, frozen bindings and evidence policy. Global Plan and
+Composition approvals still bind the complete artifacts; an unrelated edit
+does not require preparing unchanged pages again after those approvals renew.
+Projection and related-route records contain compact semantics, with scopes and
+evidence held once in the page registry. Packets are limited to 256 KiB; packet
+plus unique cache files is limited to 1 MiB. Each Source cache contains the
+complete seed range (the complete file for a seed without a range), assembled
+from paginated reads within the Run read-byte limit. Read preserves complete
+lines. Oversized lines or seeds produce explicit diagnostics, never clipped
+citations; the coordinator narrows evidence or records a justified bounded gap.
+
 Writers own authored page bodies, evidence-ID references and coverage. The
 kernel owns locators, `sources` metadata and footnote definitions. Writers do
 not transcribe Catalog field inventories. Final bundle review owns the machine trust stamp and

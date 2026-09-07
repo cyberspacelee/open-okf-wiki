@@ -1,5 +1,4 @@
 import dataclasses
-import hashlib
 import json
 import pathlib
 import re
@@ -26,6 +25,7 @@ from _models import (
     ConceptFrontmatter,
     DraftFrontmatter,
     KnowledgePlan,
+    KnowledgeGap,
     KnowledgePlanIntent,
     KnowledgeUnit,
     PlanNarrative,
@@ -43,6 +43,7 @@ CAUSAL = re.compile(
 _INLINE_REF = re.compile(r"\[\^[^\]]+\]")
 _LFS_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 MAX_STRUCTURED_ARTIFACT_BYTES = 256 * 1024
+MAX_PAGE_INPUT_BYTES = 1024 * 1024
 _INITIAL_PROGRESS = "<!-- repo-wiki-progress:initial -->"
 _HAN = re.compile(r"[\u3400-\u9fff]")
 _LATIN = re.compile(r"[A-Za-z]")
@@ -701,6 +702,48 @@ def _validate_source_areas(
                     suggestion="use a path present in the frozen source or captured catalog",
                 )
             )
+    issues.extend(source_area_coverage(root, state, catalogs, areas, path))
+    return issues
+
+
+def source_area_coverage(
+    root: pathlib.Path, state: dict, catalogs: list[dict], areas, path: pathlib.Path
+) -> list[Issue]:
+    import _workspace
+
+    issues = []
+    workspace = _workspace.load(root)
+    for name, source in workspace.sources.items():
+        roots = [path for area in areas if area.source == name for path in area.paths]
+        if source.kind == "opengauss":
+            catalog = next((entry for entry in catalogs if entry["name"] == name), None)
+            if catalog is None:
+                continue
+            missing = [
+                table["name"]
+                for table in catalog["tables"]
+                if "." not in roots
+                and not {table["name"], table["page_slug"]} & set(roots)
+            ]
+        else:
+            revision = _revision(state, name)
+            if revision is None:
+                continue
+            pin = _workspace.pin_dir(root, state["run_id"], name)
+            files = _workspace.captured_files(source, pin, revision)
+            missing = sorted(set(files) - set(_workspace.scoped_files(files, roots)))
+        if missing:
+            issues.append(
+                issue(
+                    "error",
+                    "source-area-uncovered",
+                    str(path),
+                    f"{name}: {len(missing)} uncovered paths; first 20: {missing[:20]}",
+                    category="coverage",
+                    pointer="/source_areas",
+                    suggestion="classify every captured path exactly once, including excluded regions",
+                )
+            )
     return issues
 
 
@@ -1101,13 +1144,6 @@ def page_evidence_resources(plan: KnowledgePlan, page) -> list[str]:
         for endpoint in (relationship.from_concept_id, relationship.to_concept_id)
     )
     concepts = [concept for concept in plan.concepts if concept.id in concept_ids]
-    gap_ids = {gap_id for concept in concepts for gap_id in concept.model_basis.gap_ids}
-    gap_ids.update(
-        gap_id
-        for disposition in plan.table_dispositions
-        if disposition.domain_id in domain_ids
-        for gap_id in disposition.gap_ids
-    )
     resources = [
         resource for unit in selected_units for resource in unit.evidence_seeds
     ]
@@ -1115,7 +1151,15 @@ def page_evidence_resources(plan: KnowledgePlan, page) -> list[str]:
         resource for relationship in relationships for resource in relationship.evidence
     )
     resources.extend(
-        resource for gap in plan.gaps if gap.id in gap_ids for resource in gap.evidence
+        resource
+        for gap in page_gaps(plan, page)
+        for resource in gap.evidence
+        if any(
+            resource.split("/", 1)[0] == scope.source
+            and _path_in_scope(resource.split("/", 1)[1].split("#", 1)[0], scope.paths)
+            for unit in selected_units
+            for scope in unit.scopes
+        )
     )
     resources.extend(
         resource
@@ -1131,8 +1175,64 @@ def page_evidence_resources(plan: KnowledgePlan, page) -> list[str]:
     return list(dict.fromkeys(resources))
 
 
+def page_gaps(plan: KnowledgePlan, page) -> list[KnowledgeGap]:
+    units = {unit.id: unit for unit in plan.effective_units}
+    selected = [units[unit_id] for unit_id in page.units]
+    selected.extend(page_projection_units(plan, page))
+    unit_ids = {unit.id for unit in selected}
+    concept_ids = {concept_id for unit in selected for concept_id in unit.concept_ids}
+    domain_ids = {domain_id for unit in selected for domain_id in unit.domain_ids}
+    gap_ids = {
+        gap_id
+        for concept in plan.concepts
+        if concept.id in concept_ids
+        for gap_id in concept.model_basis.gap_ids
+    }
+    gap_ids.update(
+        gap_id
+        for disposition in plan.table_dispositions
+        if disposition.domain_id in domain_ids
+        for gap_id in disposition.gap_ids
+    )
+    return [
+        gap
+        for gap in plan.gaps
+        if (gap.id in gap_ids or not gap.unit_ids or set(gap.unit_ids) & unit_ids)
+    ]
+
+
+def page_input_budget(packet: dict) -> list[Issue]:
+    packet_bytes = len(
+        (json.dumps(packet, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    )
+    cache_bytes = sum(
+        pathlib.Path(path).stat().st_size
+        for path in {entry["cache_path"] for entry in packet.get("evidence", [])}
+    )
+    if (
+        packet_bytes > MAX_STRUCTURED_ARTIFACT_BYTES
+        or packet_bytes + cache_bytes > MAX_PAGE_INPUT_BYTES
+    ):
+        return [
+            issue(
+                "error",
+                "page-input-budget-exceeded",
+                packet["output"],
+                f"packet={packet_bytes}, cached evidence={cache_bytes} bytes; "
+                "narrow Plan seeds or split independently owned units before preparing again",
+            )
+        ]
+    return []
+
+
 def page_packet(
-    root: pathlib.Path, state: dict, plan: KnowledgePlan, page
+    root: pathlib.Path,
+    state: dict,
+    plan: KnowledgePlan,
+    page,
+    composition: CompositionMap,
+    *,
+    skill_dir: pathlib.Path | None = None,
 ) -> tuple[dict | None, list[Issue]]:
     import _state
 
@@ -1150,23 +1250,28 @@ def page_packet(
         packet = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return None, [issue("error", "page-packet-invalid", str(path), str(exc))]
+    if not isinstance(packet, dict):
+        return None, [
+            issue("error", "page-packet-invalid", str(path), "expected an object")
+        ]
     problems = []
-    if (
-        packet.get("subject_digest") != _state._composition_subject_digest(root, state)
-        or packet.get("page", {}).get("id") != page.id
-    ):
+    expected_inputs = _state._page_inputs(
+        root, state, plan, composition, page, skill_dir=skill_dir
+    )
+    if any(packet.get(key) != value for key, value in expected_inputs.items()):
         problems.append(
             issue(
                 "error",
                 "page-packet-stale",
                 str(path),
-                "page packet does not bind the approved Composition",
+                "page packet does not match its current inputs; run page prepare",
             )
         )
     evidence = packet.get("evidence")
     expected_resources = page_evidence_resources(plan, page)
     if (
         not isinstance(evidence, list)
+        or any(not isinstance(item, dict) for item in evidence)
         or [item.get("seed") for item in evidence] != expected_resources
     ):
         problems.append(
@@ -1206,10 +1311,10 @@ def page_packet(
         } | {"cache_path": str(cache_path)}
         if item != expected_entry:
             problems.append(
-                issue(
-                    "error", "page-evidence-cache-invalid", str(cache_path), evidence_id
-                )
+                issue("error", "page-evidence-cache-invalid", str(path), evidence_id)
             )
+    if not problems:
+        problems.extend(page_input_budget(packet))
     return (packet if not problems else None), problems
 
 
@@ -1562,7 +1667,9 @@ def validate_drafts(
     with tempfile.TemporaryDirectory(prefix="okf-draft-check-") as temporary:
         checked = pathlib.Path(temporary)
         for page_id in sorted(expected):
-            packet, packet_issues = page_packet(root, state, plan, expected[page_id])
+            packet, packet_issues = page_packet(
+                root, state, plan, expected[page_id], composition
+            )
             issues.extend(packet_issues)
             if packet is None:
                 continue
@@ -1583,6 +1690,28 @@ def validate_drafts(
             parsed_draft = parse_file(present[page_id])
             if not parsed_draft.errors:
                 structure = extract(parsed_draft.body)
+                if packet["gaps"]:
+                    title = "缺口" if state["language"] == "zh" else "Gaps"
+                    gap_body = "\n".join(
+                        section.content
+                        for section in structure.sections
+                        if section.title == title
+                    )
+                    if parsed_draft.meta.get("coverage") != "partial" or any(
+                        not re.search(
+                            rf"(?<![a-z0-9_.-]){re.escape(gap['id'])}(?![a-z0-9_.-])",
+                            gap_body,
+                        )
+                        for gap in packet["gaps"]
+                    ):
+                        issues.append(
+                            issue(
+                                "error",
+                                "page-gap-coverage-missing",
+                                str(present[page_id]),
+                                "use partial coverage and describe every packet Gap ID in the localized Gaps section",
+                            )
+                        )
                 allowed = {item["id"] for item in packet["evidence"]}
                 refs = {ref for ref, _line in structure.footnote_refs}
                 if structure.footnote_defs:

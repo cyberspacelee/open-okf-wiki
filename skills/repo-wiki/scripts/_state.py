@@ -590,7 +590,13 @@ def status(root: pathlib.Path) -> dict:
         prepare = [
             f"page prepare {pathlib.Path(item['path']).stem}"
             for item in errors
-            if item["code"] in {"page-prepare-required", "page-packet-stale"}
+            if item["code"]
+            in {
+                "page-prepare-required",
+                "page-packet-stale",
+                "page-evidence-cache-invalid",
+                "page-evidence-registry-invalid",
+            }
         ]
         prepare = prepare[: state["policy"]["agents"]["max_active_children"]]
         return _status_payload(
@@ -832,7 +838,9 @@ def _bind_candidate(
 
     for page in composition.pages:
         draft = work / "drafts" / f"{page.id}.md"
-        packet, packet_issues = _validate.page_packet(root, state, plan, page)
+        packet, packet_issues = _validate.page_packet(
+            root, state, plan, page, composition
+        )
         if packet is None:
             raise StateError(
                 f"cannot bind page without valid packet: {page.id}: "
@@ -1062,6 +1070,42 @@ def _evidence_cache_payload(root: pathlib.Path, state: dict, resource: str) -> d
             raise StateError(f"invalid evidence resource: {resource}")
         source_name = parsed[0]
         catalog_value = evidence_read(root, resource, frozen_state=state)
+        first_start = catalog_value["start"]
+        requested_end = parsed[3]
+        text_parts = [catalog_value["text"]]
+        text_bytes = len(text_parts[0].encode("utf-8"))
+        byte_limit = state["policy"]["evidence"]["read"]["max_output_bytes"]
+        while catalog_value["has_more"] and (
+            requested_end is None or catalog_value["end"] < requested_end
+        ):
+            next_start = catalog_value["end"] + 1
+            next_locator = (
+                f"{source_name}/{parsed[1]}#L{next_start}-L{requested_end}"
+                if requested_end is not None
+                else catalog_value["next_locator"]
+            )
+            catalog_value = evidence_read(root, next_locator, frozen_state=state)
+            text_parts.append(catalog_value["text"])
+            text_bytes += len(text_parts[-1].encode("utf-8"))
+            if text_bytes > byte_limit:
+                raise StateError(
+                    f"{resource}: prepared evidence exceeds {byte_limit} bytes; narrow the Plan seed range"
+                )
+        catalog_value.update(
+            requested_locator=resource,
+            start=first_start,
+            text="".join(text_parts),
+            returned_locator=(
+                f"{source_name}/{parsed[1]}#L{first_start}-L{catalog_value['end']}"
+                if catalog_value["end"] is not None
+                else resource
+            ),
+            limit_reached=False,
+        )
+        if compact_json_size(catalog_value) > byte_limit:
+            raise StateError(
+                f"{resource}: prepared evidence exceeds {byte_limit} bytes; narrow the Plan seed range"
+            )
         revision = next(
             (item for item in state["revisions"] if item["name"] == source_name), None
         )
@@ -1224,7 +1268,56 @@ def page_prepare(root: pathlib.Path, page_id: str) -> dict:
     if errors:
         return {"ok": False, "issues": errors, "state": status(root)}
 
-    reference_pages = _write_reference_map(root, state, plan, composition)
+    _write_reference_map(root, state, plan, composition)
+    payload = _page_inputs(root, state, plan, composition, page)
+    try:
+        payload["evidence"] = [
+            _prepared_evidence(root, state, resource)
+            for resource in _validate.page_evidence_resources(plan, page)
+        ]
+    except StateError as exc:
+        return {
+            "ok": False,
+            "issues": _errors(
+                [
+                    _validate.issue(
+                        "error",
+                        "page-evidence-prepare-failed",
+                        str(work / "plan-intent.json"),
+                        str(exc),
+                    )
+                ]
+            ),
+        }
+    if issues := _validate.page_input_budget(payload):
+        return {"ok": False, "issues": _errors(issues)}
+    packet_path = work / "page-packets" / f"{page.id}.json"
+    atomic_json(packet_path, payload)
+    return {
+        "ok": True,
+        "page_id": page.id,
+        "artifact": str(packet_path),
+        "output": payload["output"],
+        "reference": payload["reference"],
+        "language": state["language"],
+    }
+
+
+def _page_inputs(
+    root: pathlib.Path,
+    state: dict,
+    plan: KnowledgePlan,
+    composition: CompositionMap,
+    page,
+    *,
+    skill_dir: pathlib.Path | None = None,
+) -> dict:
+    import _reference
+    import _validate
+
+    work = work_dir(root, state)
+    skill_dir = skill_dir or pathlib.Path(__file__).resolve().parent.parent
+    reference_pages = _reference.derive_pages(root, state, plan, composition)
     units = {unit.id: unit for unit in plan.effective_units}
     owned_units = [units[unit_id] for unit_id in page.units]
     projection_units = _validate.page_projection_units(plan, page)
@@ -1263,9 +1356,20 @@ def page_prepare(root: pathlib.Path, page_id: str) -> dict:
         for candidate in composition.pages
     }
     related_pages = [
-        candidate.model_dump(mode="json", exclude_none=True)
+        candidate.model_dump(
+            mode="json", include={"id", "path", "type", "title", "description", "units"}
+        )
         for candidate in composition.pages
-        if candidate.id != page.id and page_domains[candidate.id] & domain_ids
+        if candidate.id != page.id
+        and (
+            page_domains[candidate.id] & domain_ids
+            or set(candidate.units)
+            & {
+                owner
+                for concept in concepts
+                for owner in (concept.owner_unit_id, concept.model_unit_id)
+            }
+        )
     ]
     references = [
         item
@@ -1274,23 +1378,18 @@ def page_prepare(root: pathlib.Path, page_id: str) -> dict:
         or (item["source"], item["table"]) in model_tables
     ]
     spec = _validate.page_spec(plan, page)
-    gap_ids = {gap_id for concept in concepts for gap_id in concept.model_basis.gap_ids}
-    gap_ids.update(
-        gap_id
-        for disposition in plan.table_dispositions
-        if disposition.domain_id in domain_ids
-        for gap_id in disposition.gap_ids
-    )
+    gaps = _validate.page_gaps(plan, page)
     resources = _validate.page_evidence_resources(plan, page)
-    evidence = [_prepared_evidence(root, state, resource) for resource in resources]
     payload = {
-        "subject_digest": _composition_subject_digest(root, state),
         "page": page.model_dump(mode="json", exclude_none=True),
         "units": [
             unit.model_dump(mode="json", exclude_defaults=True) for unit in owned_units
         ],
         "projections": [
-            unit.model_dump(mode="json", exclude_defaults=True)
+            unit.model_dump(
+                mode="json",
+                include={"id", "kind", "question", "domain_ids", "concept_ids"},
+            )
             for unit in projection_units
         ],
         "domains": [
@@ -1306,25 +1405,22 @@ def page_prepare(root: pathlib.Path, page_id: str) -> dict:
             for concept in concepts
         ],
         "relationships": [item.model_dump(mode="json") for item in relationships],
-        "gaps": [gap.model_dump(mode="json") for gap in plan.gaps if gap.id in gap_ids],
+        "gaps": [gap.model_dump(mode="json") for gap in gaps],
         "related_pages": related_pages,
         "reference_pages": [
             {key: item.get(key) for key in ("id", "path", "type", "source", "table")}
             for item in references
         ],
         "scopes": spec["scopes"],
-        "evidence": evidence,
-        "draft_frontmatter": {"coverage": "full"},
+        "draft_frontmatter": {"coverage": "partial" if gaps else "full"},
         "template": str(
-            pathlib.Path(__file__).resolve().parent.parent
+            skill_dir
             / "assets/templates"
             / state["language"]
             / _validate._TEMPLATE_NAMES[page.type]
         ),
         "output": str(work / "drafts" / f"{page.id}.md"),
-        "reference": str(
-            pathlib.Path(__file__).resolve().parent.parent / "references/page.md"
-        ),
+        "reference": str(skill_dir / "references/page.md"),
         "language": state["language"],
         "workdir": str(root),
     }
@@ -1338,23 +1434,31 @@ def page_prepare(root: pathlib.Path, page_id: str) -> dict:
             page,
             {
                 "sources": [
-                    {"id": item["id"], "resource": item["seed"]} for item in evidence
+                    {
+                        "id": f"ev-{hashlib.sha256(resource.encode()).hexdigest()[:16]}",
+                        "resource": resource,
+                    }
+                    for resource in resources
                 ],
                 "diagrams": spec["diagrams"],
             },
             "<!-- okf-generated:model -->",
         )
         payload["generated_model_preview"] = preview
-    packet_path = work / "page-packets" / f"{page.id}.json"
-    atomic_json(packet_path, payload)
-    return {
-        "ok": True,
-        "page_id": page.id,
-        "artifact": str(packet_path),
-        "output": payload["output"],
-        "reference": payload["reference"],
-        "language": state["language"],
+    sources = {resource.split("/", 1)[0] for resource in resources}
+    binding = {
+        "inputs": payload,
+        "resources": resources,
+        "revisions": [item for item in state["revisions"] if item["name"] in sources],
+        "catalogs": [item for item in state["catalogs"] if item["name"] in sources],
+        "evidence_policy": state["policy"]["evidence"],
     }
+    payload["subject_digest"] = hashlib.sha256(
+        json.dumps(
+            binding, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    return payload
 
 
 @_locked
@@ -1732,21 +1836,20 @@ def evidence_read(
     target_end = min(bounded_end, len(lines))
     for index in range(start, target_end + 1):
         line = lines[index - 1]
-        clipped = len(line) > 500
-        candidate_lines = [*numbered, f"{index}|{line[:500]}"]
-        candidate_clipped = [*clipped_lines, *([index] if clipped else [])]
+        candidate_lines = [*numbered, f"{index}|{line}"]
         more_requested = index < min(requested_end, len(lines))
         candidate = response(
             candidate_lines,
-            candidate_clipped,
-            limit_reached=more_requested or clipped,
+            [],
+            limit_reached=more_requested,
         )
         if compact_json_size(candidate) > policy.max_output_bytes:
             if not numbered:
-                raise StateError("read byte policy cannot fit one complete line item")
+                raise StateError(
+                    f"{source}/{path}#L{index}: read byte policy cannot fit one complete line item; record the bounded evidence gap"
+                )
             break
         numbered = candidate_lines
-        clipped_lines = candidate_clipped
     actual_end = start + len(numbered) - 1
     limit_reached = actual_end < min(requested_end, len(lines)) or bool(clipped_lines)
     result = response(numbered, clipped_lines, limit_reached=limit_reached)

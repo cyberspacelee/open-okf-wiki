@@ -273,6 +273,15 @@ generates citation metadata during binding. Status derives missing and invalid d
 directly from Composition. Send page repairs back to the original writer while
 it remains available.
 
+For a writer evidence request, send its page ID, unsupported claim, existing
+evidence IDs and missing neighborhood to an evidence worker. Merge the result
+into Plan seeds or a scoped Gap, repeat affected approvals, then prepare and
+resume the requesting page. Page preparation reads complete seed ranges; its
+budget diagnostics require narrower seeds or a composition repair. A page
+packet is bounded to 256 KiB and its total packet plus cached evidence to 1 MiB.
+Related inputs determine packet validity, so unrelated editorial Plan changes
+retain prepared pages after the global reviews are renewed.
+
 Use `[label][page-id]` without a definition for logical page links. The kernel
 binds known IDs to final paths; generated reference IDs come only from the
 Reference Map. Unknown or guessed IDs fail review preparation.
@@ -302,9 +311,12 @@ verbatim in the corresponding writer follow-up. Schema and Table IDs have no
 writer draft: route their classification or placement defects to the Plan or
 Composition owner, then regenerate them. A generic "read the review" request
 is not a repair packet. Repair the named Plan, Composition or page files and
-prepare a new Candidate. Follow-up review verifies every prior issue and only
-regressions introduced or unmasked by those repairs; it does not restart
-repository-wide discovery. Structural `split`, `merge` and `move` changes
+prepare a new Candidate. Follow-up review verifies every prior issue and checks
+regressions introduced or unmasked by repairs. Report newly discovered,
+evidence-backed defects too, explaining the discovery in the claim; an earlier
+approval never suppresses a known error. Keep discovery focused on the affected
+evidence rather than restarting repository-wide exploration.
+Structural `split`, `merge` and `move` changes
 belong in Composition.
 
 After approval, `next_actions` returns `publication publish`. Run it, then
