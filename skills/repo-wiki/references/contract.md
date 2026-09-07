@@ -72,10 +72,20 @@ constraints or partitions are required.
 Catalog table-existence locators and Concept `catalog_tables` are derived by the
 kernel. Catalog Group evidence records only classification or Domain ownership;
 `concept_ids` are the authored association.
-Locators are plain paths with an optional line range:
+Each Evidence Anchor is exactly one canonical Locator: `<source>/<relative-path>`
+with optional `#Lstart` or `#Lstart-Lend` for text. Paths use normalized POSIX
+segments; `.` names a Source root. Line numbers start at 1 and end at or after
+the start, within the frozen text. Examples:
 
     service/src/main/java/example/Request.java#L42-L68
     database/orders
+
+Copy locators from evidence or Catalog output. Explanations, parenthetical
+notes, column access, comma-separated resources and arrow expressions belong
+in claim text, not evidence arrays. URI schemes, backslashes, traversal,
+redundant path separators and malformed ranges are invalid. Legal filename
+characters remain legal; parsing a locator does not prove that its resource
+exists. Catalog table names use the exact percent encoding returned by commands.
 
 Catalog locators are logical Source/table identities. They never contain the
 connection scheme, host, port, database or schema; Source configuration and the
@@ -87,10 +97,11 @@ are routing inputs, never provenance.
 
 ## Artifact boundaries
 
-Plan has two authored inputs and one compiled output: `work/plan.md` is Markdown
-with identity-only frontmatter and a required analysis body;
-`work/plan-intent.json` contains semantic decisions; and the kernel writes the
-strict `work/plan-ledger.json`. All three are bound by the same review digest.
+Plan has one authored input: `work/plan-intent.json` contains decisions and
+`analysis`. The kernel generates `work/plan.md` (Plan Narrative, with localized
+sections and generated citations) and `work/plan-ledger.json` (Plan Ledger).
+All three are bound by the same review digest. Generated-file edits or an
+interrupted compile are detected by exact regeneration before approval.
 Composition is
 Markdown with small schema-validated frontmatter and an analysis body. Pages are Markdown. Plan, Composition and bundle
 reviews are strict JSON issue ledgers because they control phase transitions.
@@ -101,13 +112,15 @@ The kernel creates its initial marker; Plan review remains closed until the
 coordinator replaces that marker with findings, gaps and next actions.
 
 Plan Intent owns Domain-oriented semantics, Catalog classifications, sparse
-replica mappings, authored units, participants and gaps. The compiled ledger
+replica mappings, authored units, participants, gaps and Plan Analysis. The compiled ledger
 owns normalized groups, scopes, seeds, Concept catalog tables and derived units.
-The Plan Narrative owns global synthesis, lifecycles, cross-Source
+The Plan Narrative renders global synthesis, lifecycles, cross-Source
 relationships, evidence-backed conclusions, rejected hypotheses and unresolved
-gaps. Domains and Concepts use unit IDs to declare unique definition owners;
+gaps from Intent. Domains declare `owner_capability`, an authored unit with
+`kind=capability`; Concepts declare `owner_unit_id`. Reverse ownership and
+covered Concept Domains are derived. Each owner reference must resolve;
 the kernel derives one data-model unit from every persistent Concept's Model
-Basis. Every Domain has a distinct owner unit. Plan has no page
+Basis. Every Domain has a distinct capability owner. Plan has no page
 inventory or target page count. Composition assigns units to stable authored
 Page IDs, metadata, diagrams and final paths, and assigns each OpenGauss Source
 one Reference Root. The kernel deterministically derives Schema and Table pages
@@ -214,7 +227,7 @@ explicit `{{replace: ...}}` marker; leaving one in a draft fails validation.
 
 ## Deterministic boundary
 
-The Run contract is `compiled-plan-evidence-registry`. Reject every older Run
+The Run contract is `single-author-plan-evidence-registry`. Reject every older Run
 state rather than migrating or branching its schema; OKF remains v0.2.
 The skill bundle digest binds only runtime source files: `SKILL.md`, Markdown
 references and templates, and Python kernel files. Caches, bytecode and other

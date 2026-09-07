@@ -9,11 +9,13 @@ from _models import (
     CatalogTableRef,
     ConceptModelBasis,
     DomainConcept,
+    Domain,
     KnowledgePlan,
     KnowledgePlanIntent,
     KnowledgeUnit,
     PageScope,
     TableGroup,
+    TableReplica,
     model_unit_id,
     model_errors,
 )
@@ -25,14 +27,18 @@ class PlanDiagnostic:
     category: str
     pointer: str
     message: str
-    actual: str
+    actual: object
     suggestion: str
+    expected: str = ""
+    example: object = None
+    derived_from: object = None
 
 
 @dataclass(frozen=True)
 class CompileResult:
     plan: KnowledgePlan | None
     diagnostics: list[PlanDiagnostic]
+    derived_checked: bool = False
 
 
 def intent_digest(intent: KnowledgePlanIntent) -> str:
@@ -45,7 +51,18 @@ def intent_digest(intent: KnowledgePlanIntent) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def normalize_participants(participants, catalog_sources: set[str]):
+def normalize_participants(participants, catalogs: list[dict]):
+    catalog_paths = {
+        catalog["name"]: {
+            ".": catalog["resource"],
+            **{
+                key: table["resource"]
+                for table in catalog.get("tables", [])
+                for key in (table["name"], table["page_slug"])
+            },
+        }
+        for catalog in catalogs
+    }
     grouped: dict[str, dict[str, list[str]]] = {}
     for participant in participants:
         target = grouped.setdefault(
@@ -54,9 +71,11 @@ def normalize_participants(participants, catalog_sources: set[str]):
         target["roles"].extend(participant.roles)
         target["paths"].extend(participant.paths)
         target["evidence"].extend(participant.evidence)
-        if participant.source in catalog_sources and not participant.evidence:
+        if participant.source in catalog_paths and not participant.evidence:
             target["evidence"].extend(
-                f"{participant.source}/{'.' if path == '.' else quote(path, safe='')}"
+                catalog_paths[participant.source].get(
+                    path, f"{participant.source}/{quote(path, safe='')}"
+                )
                 for path in participant.paths
             )
     scopes = [
@@ -76,6 +95,69 @@ def normalize_participants(participants, catalog_sources: set[str]):
 
 
 def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> CompileResult:
+    try:
+        result = _compile_intent(intent, catalogs)
+        if result.plan is not None:
+            for index, concept in enumerate(result.plan.concepts):
+                if concept.model_unit_id is None:
+                    continue
+                try:
+                    result.plan._model_unit(concept)
+                except ValidationError as exc:
+                    return CompileResult(
+                        None,
+                        [
+                            PlanDiagnostic(
+                                "compiled-unit-invalid",
+                                "derived",
+                                f"/concepts/{index}",
+                                "; ".join(model_errors(exc)),
+                                concept.id,
+                                "repair the referenced model evidence; report unexpected compiler constraints",
+                                "a valid complete derived model unit",
+                                None,
+                                {
+                                    "concept": concept.id,
+                                    "catalog_tables": len(
+                                        concept.model_basis.catalog_tables
+                                    ),
+                                    "relationship_evidence": sum(
+                                        len(r.evidence)
+                                        for r in intent.relationships
+                                        if concept.id
+                                        in (r.from_concept_id, r.to_concept_id)
+                                    ),
+                                },
+                            )
+                        ],
+                        derived_checked=True,
+                    )
+        return CompileResult(
+            result.plan, result.diagnostics, derived_checked=result.plan is not None
+        )
+    except ValidationError as exc:
+        return CompileResult(
+            None,
+            [
+                PlanDiagnostic(
+                    "compiled-ledger-invalid",
+                    "derived",
+                    "/",
+                    "; ".join(model_errors(exc)),
+                    [
+                        dict(location=list(e["loc"]), type=e["type"])
+                        for e in exc.errors()
+                    ],
+                    "report this compiler defect",
+                    "valid normalized compiler output",
+                    None,
+                    "Plan Intent normalization",
+                )
+            ],
+        )
+
+
+def _compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> CompileResult:
     diagnostics: list[PlanDiagnostic] = []
 
     def report(
@@ -92,8 +174,9 @@ def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> Compile
                 category,
                 pointer,
                 message,
-                json.dumps(actual, ensure_ascii=False, sort_keys=True, default=str),
+                actual,
                 suggestion,
+                message,
             )
         )
 
@@ -120,9 +203,48 @@ def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> Compile
                     f"keep one {label} record for {item_id}",
                 )
 
-    domains = {item.id: item for item in intent.domains}
+    domain_records = [
+        Domain(
+            **item.model_dump(exclude={"owner_capability"}),
+            owner_unit_id=item.owner_capability,
+        )
+        for item in intent.domains
+    ]
+    domains = {item.id: item for item in domain_records}
     concepts = {item.id: item for item in intent.concepts}
-    units = {item.id: item for item in intent.units}
+    unit_records = []
+    for unit in intent.units:
+        concept_ids = list(
+            dict.fromkeys(
+                [
+                    *unit.concept_ids,
+                    *(
+                        concept.id
+                        for concept in intent.concepts
+                        if concept.owner_unit_id == unit.id
+                    ),
+                ]
+            )
+        )
+        domain_ids = list(
+            dict.fromkeys(
+                [
+                    *unit.domain_ids,
+                    *(
+                        domain.id
+                        for domain in domain_records
+                        if domain.owner_unit_id == unit.id
+                    ),
+                    *(concepts[c].domain_id for c in concept_ids if c in concepts),
+                ]
+            )
+        )
+        unit_records.append(
+            unit.model_copy(
+                update={"domain_ids": domain_ids, "concept_ids": concept_ids}
+            )
+        )
+    units = {item.id: item for item in unit_records}
     gaps = {item.id for item in intent.gaps}
     catalog_tables = {
         (catalog["name"], table["name"])
@@ -132,7 +254,7 @@ def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> Compile
     catalog_sources = {catalog["name"] for catalog in catalogs}
 
     effective_ids = set(units) | {
-        f"model.{concept.id}"
+        model_unit_id(concept.id)
         for concept in intent.concepts
         if concept.model_basis.basis != "none"
     }
@@ -186,7 +308,17 @@ def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> Compile
         concept.id: [] for concept in intent.concepts
     }
     normalized_groups: dict[tuple[str, str | None, str], dict] = {}
-    for index, group in enumerate(intent.catalog_groups):
+    catalog_groups = []
+    for group in intent.catalog_groups:
+        group_domains = {
+            concepts[c].domain_id for c in group.concept_ids if c in concepts
+        }
+        catalog_groups.append(
+            group.model_copy(update={"domain_id": next(iter(group_domains))})
+            if group.domain_id is None and len(group_domains) == 1
+            else group
+        )
+    for index, group in enumerate(catalog_groups):
         if len(group.tables) != len(set(group.tables)):
             report(
                 "catalog-group-table-duplicate",
@@ -347,25 +479,52 @@ def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> Compile
             "add the table to a domain, infrastructure, excluded, or unresolved group",
         )
 
+    table_refs = {
+        table["resource"]: CatalogTableRef(source=catalog["name"], table=table["name"])
+        for catalog in catalogs
+        for table in catalog.get("tables", [])
+    }
+    replica_records = []
     replica_positions: dict[tuple[str, str], list[int]] = {}
     for index, replica in enumerate(intent.table_replicas):
-        table = (replica.table.source, replica.table.table)
-        target = (replica.replica_of.source, replica.replica_of.table)
-        replica_positions.setdefault(table, []).append(index)
-        for label, reference in (("table", table), ("replica_of", target)):
-            if reference not in catalog_tables:
+        for label, reference in (
+            ("table", replica.table),
+            ("replica_of", replica.replica_of),
+        ):
+            if reference not in table_refs:
                 report(
                     "replica-table-invalid",
                     "cross-artifact",
                     f"/table_replicas/{index}/{label}",
                     "replica mapping references a table outside captured catalogs",
-                    {"source": reference[0], "table": reference[1]},
+                    reference,
                     "use a table returned by catalog tables",
                 )
+        if replica.table not in table_refs or replica.replica_of not in table_refs:
+            continue
+        if replica.table == replica.replica_of:
+            report(
+                "replica-self-reference",
+                "structural",
+                f"/table_replicas/{index}/replica_of",
+                "replica must reference a different captured table",
+                replica.replica_of,
+                "select the original table",
+            )
+            continue
+        replica_records.append(
+            TableReplica(
+                table=table_refs[replica.table],
+                replica_of=table_refs[replica.replica_of],
+                evidence=replica.evidence,
+            )
+        )
+        table = (table_refs[replica.table].source, table_refs[replica.table].table)
+        replica_positions.setdefault(table, []).append(index)
         group_indexes = classified.get(table, [])
         if (
             len(group_indexes) == 1
-            and intent.catalog_groups[group_indexes[0]].role != "replica"
+            and catalog_groups[group_indexes[0]].role != "replica"
         ):
             report(
                 "replica-role-invalid",
@@ -386,7 +545,7 @@ def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> Compile
                 "keep one proven replica mapping",
             )
     for table, indexes in classified.items():
-        if len(indexes) == 1 and intent.catalog_groups[indexes[0]].role == "replica":
+        if len(indexes) == 1 and catalog_groups[indexes[0]].role == "replica":
             mappings = replica_positions.get(table, [])
             if len(mappings) != 1:
                 report(
@@ -462,6 +621,15 @@ def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> Compile
                 basis.structure_evidence,
                 "remove structure_evidence",
             )
+        if basis.basis != "opengauss" and tables:
+            report(
+                "concept-catalog-model-unexpected",
+                "cross-artifact",
+                f"/concepts/{index}/model_basis/basis",
+                "Concepts linked to Catalog tables require basis=opengauss",
+                basis.basis,
+                "use opengauss for captured physical structure or remove an incorrect Concept association",
+            )
         if basis.basis == "code" and not basis.structure_evidence:
             report(
                 "concept-structure-evidence-missing",
@@ -498,7 +666,16 @@ def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> Compile
         for concept in intent.concepts
         if concept.model_basis.basis != "none"
     }
-    for index, unit in enumerate(intent.units):
+    for index, unit in enumerate(unit_records):
+        if not unit.domain_ids:
+            report(
+                "unit-domain-missing",
+                "cross-artifact",
+                f"/units/{index}/domain_ids",
+                "unit requires an owned or covered Domain",
+                [],
+                "assign definition ownership, cover a Concept, or add a domain_id",
+            )
         if unit.id in derived_ids:
             report(
                 "unit-id-reserved",
@@ -528,22 +705,7 @@ def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> Compile
                 unknown_concepts,
                 "use concept ids declared in /concepts",
             )
-        wrong_domains = sorted(
-            concept_id
-            for concept_id in unit.concept_ids
-            if concept_id in concepts
-            and concepts[concept_id].domain_id not in unit.domain_ids
-        )
-        if wrong_domains:
-            report(
-                "unit-concept-domain-invalid",
-                "cross-artifact",
-                f"/units/{index}",
-                "unit must include each covered concept's domain",
-                wrong_domains,
-                "add the owning domains or remove the concepts",
-            )
-        scopes, evidence = normalize_participants(unit.participants, catalog_sources)
+        scopes, evidence = normalize_participants(unit.participants, catalogs)
         for participant_index, participant in enumerate(unit.participants):
             if participant.source not in catalog_sources and not participant.evidence:
                 report(
@@ -594,7 +756,7 @@ def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> Compile
             )
 
     owners: dict[str, list[str]] = {}
-    for domain in intent.domains:
+    for domain in domain_records:
         owners.setdefault(domain.owner_unit_id, []).append(domain.id)
     for owner_unit_id, domain_ids in owners.items():
         if len(domain_ids) > 1:
@@ -607,24 +769,20 @@ def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> Compile
                 "assign a distinct capability unit to each Domain",
             )
 
-    for index, domain in enumerate(intent.domains):
+    for index, domain in enumerate(domain_records):
         owner = units.get(domain.owner_unit_id)
-        if (
-            owner is None
-            or owner.kind != "capability"
-            or domain.id not in owner.domain_ids
-        ):
+        if owner is None or owner.kind != "capability":
             report(
                 "domain-owner-invalid",
                 "cross-artifact",
-                f"/domains/{index}/owner_unit_id",
-                "domain owner unit must cover the domain",
-                domain.owner_unit_id,
-                "reference an authored capability unit covering this domain",
+                f"/domains/{index}/owner_capability",
+                "Domain owner must reference a dedicated authored unit with kind=capability",
+                {"id": domain.owner_unit_id, "kind": owner.kind if owner else None},
+                "reference an existing unit with kind=capability; Domain coverage is derived",
             )
     for index, concept in enumerate(intent.concepts):
         owner = units.get(concept.owner_unit_id)
-        if owner is None or concept.id not in owner.concept_ids:
+        if owner is None:
             report(
                 "concept-owner-invalid",
                 "cross-artifact",
@@ -665,31 +823,16 @@ def compile_intent(intent: KnowledgePlanIntent, catalogs: list[dict]) -> Compile
         )
         for group in normalized_groups.values()
     ]
-    try:
-        plan = KnowledgePlan(
-            kind="knowledge-plan-ledger",
-            intent_digest=intent_digest(intent),
-            source_areas=intent.source_areas,
-            domains=intent.domains,
-            concepts=compiled_concepts,
-            table_groups=table_groups,
-            table_replicas=intent.table_replicas,
-            relationships=intent.relationships,
-            units=compiled_units,
-            gaps=intent.gaps,
-        )
-    except ValidationError as exc:
-        return CompileResult(
-            None,
-            [
-                PlanDiagnostic(
-                    "compiled-ledger-invalid",
-                    "structural",
-                    "/",
-                    "; ".join(model_errors(exc)),
-                    "kernel output",
-                    "report this compiler defect",
-                )
-            ],
-        )
+    plan = KnowledgePlan(
+        kind="knowledge-plan-ledger",
+        intent_digest=intent_digest(intent),
+        source_areas=intent.source_areas,
+        domains=domain_records,
+        concepts=compiled_concepts,
+        table_groups=table_groups,
+        table_replicas=replica_records,
+        relationships=intent.relationships,
+        units=compiled_units,
+        gaps=intent.gaps,
+    )
     return CompileResult(plan, [])

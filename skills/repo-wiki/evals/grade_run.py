@@ -19,8 +19,11 @@ SKILL = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL / "scripts"))
 
 from _frontmatter import parse_file
+from _files import json_text
 from _markdown import extract
-from _models import CompositionMap, KnowledgePlan
+from _models import CompositionMap, KnowledgePlan, KnowledgePlanIntent
+from _plan import compile_intent
+from _plan_render import render_narrative
 import _validate
 from semantic_eval import grade_semantic
 
@@ -436,7 +439,7 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
 
     check(
         "Run uses compiled Plan and prepared evidence without scheduler state",
-        state.get("contract") == "compiled-plan-evidence-registry"
+        state.get("contract") == "single-author-plan-evidence-registry"
         and manifest.get("policy") == state.get("policy")
         and manifest.get("skill_bundle_digest") == state.get("skill_bundle_digest")
         and not any(
@@ -460,6 +463,20 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
     intent = load(work / "plan-intent.json")
     plan = load(work / "plan-ledger.json")
     parsed_plan = KnowledgePlan.model_validate(plan)
+    parsed_intent = KnowledgePlanIntent.model_validate(intent)
+    compilation = compile_intent(parsed_intent, catalogs)
+    check(
+        "Plan Intent alone reproduces the complete Ledger and Narrative",
+        not compilation.diagnostics
+        and compilation.plan == parsed_plan
+        and (work / "plan-ledger.json").read_bytes()
+        == json_text(parsed_plan.model_dump(mode="json", exclude_defaults=True)).encode(
+            "utf-8"
+        )
+        and (work / "plan.md").read_text(encoding="utf-8")
+        == render_narrative(parsed_intent, parsed_plan, state["language"]),
+        str([item.code for item in compilation.diagnostics]),
+    )
     authored_units = intent.get("units", [])
     units = effective_units(plan)
     source_areas = plan.get("source_areas", [])
@@ -689,8 +706,6 @@ def grade(ws: pathlib.Path, scenario: str) -> list[dict]:
         and not any(unit.get("kind") == "data-model" for unit in authored_units)
         and all(
             "id" in unit
-            and unit.get("domain_ids")
-            and "concept_ids" in unit
             and unit.get("participants")
             and "scopes" not in unit
             and "evidence_seeds" not in unit

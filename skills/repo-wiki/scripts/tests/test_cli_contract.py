@@ -1,4 +1,5 @@
 import pathlib
+import json
 import re
 import shlex
 
@@ -33,3 +34,22 @@ def test_catalog_tables_replaces_catalog_show():
     assert parsed.action == "tables"
     with pytest.raises(SystemExit):
         okf.build_parser().parse_args(["catalog", "show"])
+
+
+def test_plan_schema_and_template_are_public_without_a_workspace(
+    tmp_path, monkeypatch, capsys
+):
+    from _models import KnowledgePlanIntent
+
+    monkeypatch.chdir(tmp_path)
+    for action in ("schema", "template"):
+        args = okf.build_parser().parse_args(["plan", action, "--json"])
+        assert okf.cmd_plan(args) == 0
+        value = json.loads(capsys.readouterr().out)
+        if action == "schema":
+            assert value == KnowledgePlanIntent.model_json_schema()
+            assert "analysis" in value["required"]
+            assert value["$defs"]["IntentDomain"]["properties"]["owner_capability"]
+        else:
+            assert KnowledgePlanIntent.model_validate(value)
+            assert "domain_ids" not in value["units"][0]

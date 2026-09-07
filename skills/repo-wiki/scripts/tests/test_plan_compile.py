@@ -5,6 +5,16 @@ from _models import KnowledgePlanIntent
 def intent(**overrides):
     value = {
         "kind": "knowledge-plan-intent",
+        "analysis": {
+            "global_model": "Orders owns acceptance and fulfillment.",
+            "lifecycles": "Accepted orders proceed to fulfillment.",
+            "conclusions": [
+                {
+                    "claim": "The entry owns acceptance.",
+                    "evidence": ["app/src/orders/Order.java#L1-L20"],
+                }
+            ],
+        },
         "source_areas": [
             {
                 "id": "app.orders",
@@ -19,7 +29,7 @@ def intent(**overrides):
                 "id": "orders",
                 "name": "Orders",
                 "definition": "Owns order acceptance and fulfillment.",
-                "owner_unit_id": "order-capability",
+                "owner_capability": "order-capability",
             }
         ],
         "concepts": [
@@ -226,3 +236,110 @@ def test_gap_routes_accept_derived_units_and_reject_unknown_units():
             KnowledgePlanIntent.model_validate(value), catalogs()
         ).diagnostics
     }
+
+
+def test_ownership_and_catalog_domain_are_derived_without_reverse_links():
+    value = intent()
+    value["units"][0].pop("domain_ids")
+    value["units"][0].pop("concept_ids")
+    value["catalog_groups"][0].pop("domain_id")
+    result = _plan.compile_intent(KnowledgePlanIntent.model_validate(value), catalogs())
+    assert not result.diagnostics
+    assert result.plan.units[0].domain_ids == ["orders"]
+    assert result.plan.units[0].concept_ids == ["order"]
+    assert result.plan.table_groups[0].domain_id == "orders"
+
+
+def test_large_derived_models_and_participant_unions_preserve_all_evidence():
+    value = intent()
+    names = [f"orders_{i}" for i in range(45)]
+    value["catalog_groups"][0]["tables"] = names
+    captured = catalogs()
+    captured[0]["tables"] = [
+        {"name": n, "page_slug": n, "resource": f"database/{n}"} for n in names
+    ]
+    value["units"][0]["participants"] = [
+        {
+            "source": "app",
+            "roles": ["owner"],
+            "paths": [f"src/orders/p{i}" for i in range(start, start + 32)],
+            "evidence": [
+                f"app/src/orders/p{i}/Order.java#L1" for i in range(start, start + 16)
+            ],
+        }
+        for start in (0, 32)
+    ]
+    result = _plan.compile_intent(KnowledgePlanIntent.model_validate(value), captured)
+    assert result.diagnostics == []
+    assert len(result.plan.units[0].scopes[0].paths) == 64
+    assert len(result.plan.units[0].evidence_seeds) == 32
+    assert len(result.plan.effective_units[-1].evidence_seeds) == 45
+    assert result.plan.effective_units[-1].evidence_seeds[-1] == "database/orders_44"
+
+
+def test_flat_replica_locators_resolve_captured_identity_and_reject_unknowns():
+    value = intent()
+    captured = catalogs() + [
+        {
+            "name": "analytics",
+            "resource": "analytics/.",
+            "tables": [
+                {
+                    "name": "order copy",
+                    "page_slug": "order-copy",
+                    "resource": "analytics/order%20copy",
+                }
+            ],
+        }
+    ]
+    value["catalog_groups"].append(
+        {"source": "analytics", "role": "replica", "tables": ["order copy"]}
+    )
+    value["table_replicas"] = [
+        {
+            "table": "analytics/order%20copy",
+            "replica_of": "database/orders",
+            "evidence": ["app/src/orders/Order.java#L1-L20"],
+        }
+    ]
+    result = _plan.compile_intent(KnowledgePlanIntent.model_validate(value), captured)
+    assert not result.diagnostics
+    assert result.plan.table_replicas[0].table.table == "order copy"
+    scopes, evidence = _plan.normalize_participants(
+        [
+            _plan.KnowledgePlanIntent.model_validate(value)
+            .units[0]
+            .participants[0]
+            .model_copy(
+                update={"source": "analytics", "paths": ["order-copy"], "evidence": []}
+            )
+        ],
+        captured,
+    )
+    assert evidence == ["analytics/order%20copy"]
+    value["table_replicas"][0]["replica_of"] = "database/missing"
+    result = _plan.compile_intent(KnowledgePlanIntent.model_validate(value), captured)
+    assert any(
+        d.pointer == "/table_replicas/0/replica_of" and d.actual == "database/missing"
+        for d in result.diagnostics
+    )
+
+
+def test_long_concept_ids_use_the_same_derived_id_for_gap_routing():
+    value = intent()
+    concept_id = "order-" + "x" * 58
+    value["concepts"][0]["id"] = concept_id
+    value["units"][0]["concept_ids"] = [concept_id]
+    value["catalog_groups"][0]["concept_ids"] = [concept_id]
+    value["gaps"] = [
+        {
+            "id": "recovery",
+            "category": "source-coverage",
+            "claim": "Recovery is outside registered Sources.",
+            "evidence": [],
+            "unit_ids": [_plan.model_unit_id(concept_id)],
+        }
+    ]
+    result = _plan.compile_intent(KnowledgePlanIntent.model_validate(value), catalogs())
+    assert not result.diagnostics
+    assert result.plan.effective_units[-1].id == value["gaps"][0]["unit_ids"][0]

@@ -19,6 +19,8 @@ evidence`; use ordinary filesystem tools only on fixed work Artifact paths
 returned by status. Treat `okf` as an opaque kernel: do not read its private
 `scripts/_*.py` files or probe `--help` to rediscover commands documented here.
 Use `status.sources` as the registered Source-name list.
+The public Plan contract is available through `okf plan schema --json`,
+`okf plan template --json` and [references/plan.md](references/plan.md).
 
 ## Resume
 
@@ -95,7 +97,7 @@ commands or repairs to execute:
 
 | Phase | Load and act |
 | --- | --- |
-| `plan` | Author `plan.md` and `plan-intent.json`; run `plan inspect`, then `plan compile` |
+| `plan` | Author decisions and analysis in `plan-intent.json`; run `plan inspect`, then `plan compile` to generate Narrative and Ledger |
 | `plan-review` | Run `review plan`; its reviewer loads the returned reference |
 | `composition` | Run `composition prepare`, then create or repair `composition.md` |
 | `composition-review` | Run `review composition`; its reviewer loads the returned reference |
@@ -207,11 +209,14 @@ Search and read limits come from `status.policy.evidence`, not per-call
 overrides. When `has_more` is true, continue with the returned `next_after` or
 `next_locator`; never restart the same bounded search from the beginning.
 
-Finish Plan semantics, then run `okf plan inspect --json` and repair its complete
-diagnostic set. Run `okf plan compile --json` only when inspection is clean.
-The compiler normalizes participants, evidence, Catalog groups and derived model
-units. Any later authored Plan edit makes the ledger stale and invalidates the
-digest-bound approval.
+Finish Plan decisions and `analysis` in the sole authored `plan-intent.json`,
+then run `okf plan inspect --json`. Repair all diagnostics at their JSON pointers;
+`checks_ran` and `skip_reasons` explain which checks could run. Run
+`okf plan compile --json` when inspection is clean. The compiler derives owner
+coverage, participants, complete Evidence Seeds, Catalog groups and model units,
+and generates both `plan.md` and `plan-ledger.json`. It renders citations and Gap
+IDs from Intent. Repair the Intent and recompile when either generated file is
+stale; every authored Plan change invalidates the digest-bound approval.
 When the Plan passes deterministic validation, `next_actions` returns `review
 plan`. Run that exact action; do not substitute the later bundle action `review
 prepare`.
@@ -275,7 +280,7 @@ it remains available.
 
 For a writer evidence request, send its page ID, unsupported claim, existing
 evidence IDs and missing neighborhood to an evidence worker. Merge the result
-into Plan seeds or a scoped Gap, repeat affected approvals, then prepare and
+into Intent participant/model evidence or a scoped Gap, recompile and repeat affected approvals, then prepare and
 resume the requesting page. Page preparation reads complete seed ranges; its
 budget diagnostics require narrower seeds or a composition repair. A page
 packet is bounded to 256 KiB and its total packet plus cached evidence to 1 MiB.

@@ -8,7 +8,7 @@ import shutil
 import time
 from datetime import datetime, timedelta, timezone
 
-from _files import atomic_json, compact_json_size, directory_digest
+from _files import atomic_json, atomic_text, compact_json_size, directory_digest
 from _frontmatter import parse_file, parse_page, render
 from _models import (
     CompositionMap,
@@ -22,7 +22,7 @@ from _models import (
 from pydantic import ValidationError
 
 VERSION = 1
-CONTRACT = "compiled-plan-evidence-registry"
+CONTRACT = "single-author-plan-evidence-registry"
 LOCK_TIMEOUT_SEC = 60
 MAX_STATUS_ISSUES = 10
 
@@ -49,6 +49,7 @@ def _skill_bundle_digest() -> str:
     files.extend(sorted((skill / "references").glob("*.md")))
     files.extend(sorted((skill / "scripts").glob("*.py")))
     files.extend(sorted((skill / "assets").rglob("*.md")))
+    files.extend(sorted((skill / "assets").rglob("*.json")))
     digest = hashlib.sha256()
     for path in files:
         if not path.is_file():
@@ -491,11 +492,11 @@ def status(root: pathlib.Path) -> dict:
     )
     errors = _errors(plan_issues)
     if errors:
-        derived = {"plan-compile-required", "plan-ledger-stale"}
+        derived = {"plan-compile-required", "plan-ledger-stale", "plan-narrative-stale"}
         next_actions = (
             ["plan compile"]
             if {item["code"] for item in errors} <= derived
-            else ["repair work/plan.md and work/plan-intent.json", "plan inspect"]
+            else ["repair work/plan-intent.json", "plan inspect", "plan compile"]
         )
         return _status_payload(
             root,
@@ -642,15 +643,18 @@ def plan_compile(root: pathlib.Path) -> dict:
     state = _require_run(root, {"active"})
     assert_revisions_current(root, state)
     work = work_dir(root, state)
-    plan, issues = _validate.compile_plan_sources(root, state, work / "plan.md")
-    errors = _errors(issues)
+    inspection = _validate.compile_plan_sources(root, state, work / "plan.md")
+    plan = inspection.plan
+    errors = _errors(inspection.issues)
     if plan is None or errors:
         return {"ok": False, "issues": errors, "state": status(root)}
     target = work / "plan-ledger.json"
-    atomic_json(target, plan.model_dump(mode="json", exclude_defaults=True))
+    atomic_text(target, inspection.ledger_text)
+    atomic_text(work / "plan.md", inspection.narrative)
     return {
         "ok": True,
         "artifact": str(target),
+        "artifacts": {"ledger": str(target), "narrative": str(work / "plan.md")},
         "intent_digest": plan.intent_digest,
         "counts": {
             "domains": len(plan.domains),
@@ -669,7 +673,8 @@ def plan_inspect(root: pathlib.Path) -> dict:
     state = _require_run(root, {"active"})
     assert_revisions_current(root, state)
     work = work_dir(root, state)
-    plan, issues = _validate.compile_plan_sources(root, state, work / "plan.md")
+    inspection = _validate.compile_plan_sources(root, state, work / "plan.md")
+    plan, issues = inspection.plan, inspection.issues
     diagnostics = [item.to_dict() for item in issues]
     categories: dict[str, int] = {}
     for item in diagnostics:
@@ -679,23 +684,10 @@ def plan_inspect(root: pathlib.Path) -> dict:
         "ok": plan is not None and not _errors(issues),
         "diagnostics": diagnostics,
         "diagnostic_counts": categories,
-        "skipped_checks": [],
+        "checks_ran": inspection.checks_ran,
+        "skipped_checks": list(inspection.skip_reasons),
+        "skip_reasons": inspection.skip_reasons,
     }
-    if any(
-        item["code"] in {"plan-intent-missing", "schema-invalid"}
-        for item in diagnostics
-    ):
-        result["skipped_checks"] = [
-            "semantic-compilation",
-            "intent-environment",
-            "compiled-ledger-validation",
-            "plan-narrative-alignment",
-        ]
-    elif plan is None:
-        result["skipped_checks"] = [
-            "compiled-ledger-validation",
-            "plan-narrative-alignment",
-        ]
     if plan is not None:
         result["derived"] = {
             "domains": len(plan.domains),

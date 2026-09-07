@@ -45,7 +45,7 @@ def workspace(
 
 def start(root: pathlib.Path) -> pathlib.Path:
     result = _state.start_run(root)
-    assert result["contract"] == "compiled-plan-evidence-registry"
+    assert result["contract"] == "single-author-plan-evidence-registry"
     assert result["language"] in ("en", "zh")
     assert result["sources"] == ["src"]
     assert result["phase"] == "plan"
@@ -87,7 +87,6 @@ def plan_meta(units: list[dict] | None = None) -> dict:
             concept_units.setdefault(concept_id, item)
     concepts = []
     for concept_id, owner in concept_units.items():
-        source_path = owner["participants"][0]["paths"][0]
         concepts.append(
             {
                 "id": concept_id,
@@ -101,6 +100,7 @@ def plan_meta(units: list[dict] | None = None) -> dict:
         )
     return {
         "kind": "knowledge-plan-intent",
+        "analysis": analysis(),
         "source_areas": [
             {
                 "id": "src.answers",
@@ -115,7 +115,7 @@ def plan_meta(units: list[dict] | None = None) -> dict:
                 "id": "answers",
                 "name": "Answers",
                 "definition": "Owns answer behavior and its service boundary.",
-                "owner_unit_id": next(
+                "owner_capability": next(
                     item["id"] for item in units if item["kind"] == "capability"
                 ),
             }
@@ -128,37 +128,23 @@ def plan_meta(units: list[dict] | None = None) -> dict:
     }
 
 
-def plan(language: str = "en", extra: str = "") -> str:
-    if language == "zh":
-        body = (
-            "# 知识规划\n\n"
-            "## 全局模型\n\nAnswers Domain 负责答案行为。\n\n"
-            "## 生命周期与跨源关系\n\n答案由入口创建；该夹具没有跨源交接。\n\n"
-            "## 证据支持的结论\n\n冻结入口定义该能力。[^entry]\n\n"
-            "## 被拒绝的假设\n\n未发现需要保留的被拒绝假设。\n\n"
-            "## 未解决的缺口\n\n当前没有未解决缺口。\n\n"
-            "[^entry]: `src/app.py#L1-L2`\n"
-        )
-    else:
-        body = (
-            "# Knowledge Plan\n\n"
-            "## Global model\n\nThe Answers Domain owns answer behavior.\n\n"
-            "## Lifecycles and cross-source relationships\n\n"
-            "The entry creates answers; this fixture has no cross-source handoff.\n\n"
-            "## Evidence-backed conclusions\n\n"
-            "The frozen entry point defines the capability.[^entry]\n\n"
-            "## Rejected hypotheses\n\nNo rejected hypothesis remains.\n\n"
-            "## Unresolved gaps\n\nNo unresolved gap remains.\n\n"
-            "[^entry]: `src/app.py#L1-L2`\n"
-        )
-    return render(
-        {
-            "kind": "knowledge-plan-narrative",
-            "intent": "plan-intent.json",
-            "ledger": "plan-ledger.json",
-        },
-        body + extra,
-    )
+def analysis(language: str = "en") -> dict:
+    return {
+        "global_model": "Answers Domain 负责答案行为。"
+        if language == "zh"
+        else "The Answers Domain owns answer behavior.",
+        "lifecycles": "答案由入口创建；没有跨源交接。"
+        if language == "zh"
+        else "The entry creates answers; this fixture has no cross-source handoff.",
+        "conclusions": [
+            {
+                "claim": "冻结入口定义该能力。"
+                if language == "zh"
+                else "The frozen entry point defines the capability.",
+                "evidence": ["src/app.py#L1-L2"],
+            }
+        ],
+    }
 
 
 def write_plan(
@@ -169,8 +155,11 @@ def write_plan(
     extra: str = "",
 ) -> None:
     work = run / "work"
-    write(work / "plan.md", plan(language, extra))
-    write(work / "plan-intent.json", json.dumps(value or plan_meta()))
+    value = value or plan_meta()
+    if language == "zh":
+        value["analysis"] = analysis(language)
+    value["analysis"]["global_model"] += extra
+    write(work / "plan-intent.json", json.dumps(value))
     (work / "plan-ledger.json").unlink(missing_ok=True)
     _state.plan_compile(run.parents[2])
 
@@ -202,7 +191,7 @@ def test_each_domain_requires_a_dedicated_owner_unit(tmp_path):
     owner = next(
         item
         for item in value["units"]
-        if item["id"] == value["domains"][0]["owner_unit_id"]
+        if item["id"] == value["domains"][0]["owner_capability"]
     )
     value["source_areas"][0]["domain_ids"].append("audit")
     owner["domain_ids"].append("audit")
@@ -211,7 +200,7 @@ def test_each_domain_requires_a_dedicated_owner_unit(tmp_path):
             "id": "audit",
             "name": "Audit",
             "definition": "Owns an independent audit responsibility.",
-            "owner_unit_id": owner["id"],
+            "owner_capability": owner["id"],
         }
     )
     path = run / "work/plan.md"
@@ -446,12 +435,11 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
         "changes_requested",
     )
     assert _state.status(root)["phase"] == "plan"
-    plan_path = run / "work/plan.md"
-    write(
-        plan_path,
-        plan_path.read_text(encoding="utf-8")
-        + "\nThe missing subsystem is now accounted for.\n",
+    value = json.loads((run / "work/plan-intent.json").read_text())
+    value["analysis"]["global_model"] += (
+        "\nThe missing subsystem is now accounted for.\n"
     )
+    write_plan(run, value)
     repaired_plan_packet = _state.plan_review_prepare(root)
     assert repaired_plan_packet["subject_digest"] != plan_packet["subject_digest"]
     assert repaired_plan_packet["previous_review"]["issues"][0]["id"] == (
@@ -525,6 +513,7 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
     completed = _state.review_complete(root)
     assert completed["state"]["status"] == "approved"
 
+    plan_path = run / "work/plan.md"
     approved_plan = plan_path.read_text(encoding="utf-8")
     write(plan_path, approved_plan + "\nTampered after approval.\n")
     with pytest.raises(_publish.PublishError, match="working artifacts changed"):
@@ -564,7 +553,7 @@ def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
 def test_plan_without_domain_concept_ledger_is_rejected(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
-    write(run / "work/plan.md", plan())
+    write(run / "work/plan.md", "# Legacy authored Plan\n")
     write(run / "work/plan-ledger.json", json.dumps({"kind": "knowledge-plan"}))
     write(run / "work/progress.md", "# Progress\n\nPlan attempted.\n")
 
@@ -748,13 +737,13 @@ def test_page_packet_routes_cross_domain_owners_and_gaps(tmp_path):
     value["units"][0]["kind"] = "capability"
     value["units"][1]["domain_ids"] = ["infrastructure"]
     value["concepts"][1]["domain_id"] = "infrastructure"
-    value["domains"][0]["owner_unit_id"] = "answer"
+    value["domains"][0]["owner_capability"] = "answer"
     value["domains"].append(
         {
             "id": "infrastructure",
             "name": "Infrastructure",
             "definition": "Owns service infrastructure.",
-            "owner_unit_id": "architecture",
+            "owner_capability": "architecture",
         }
     )
     value["source_areas"][0]["domain_ids"].append("infrastructure")
@@ -779,14 +768,7 @@ def test_page_packet_routes_cross_domain_owners_and_gaps(tmp_path):
         }
     ]
     write_plan(run, value)
-    write(
-        run / "work/plan.md",
-        plan().replace(
-            "No unresolved gap remains.",
-            "missing-recovery: recovery is outside registered Sources.",
-        ),
-    )
-    assert _state.plan_compile(root)["ok"]
+    assert "`missing-recovery`" in (run / "work/plan.md").read_text()
     write(run / "work/composition.md", composition())
     approve_plan(root, run)
     approve_composition(root, run)
@@ -817,7 +799,7 @@ def test_page_packet_routes_cross_domain_owners_and_gaps(tmp_path):
     assert [gap["id"] for gap in other["gaps"]] == ["missing-recovery"]
 
 
-def test_page_packet_survives_unrelated_plan_narrative_edit(tmp_path):
+def test_page_packet_survives_unrelated_plan_analysis_edit(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
     write_work(run)
@@ -825,8 +807,9 @@ def test_page_packet_survives_unrelated_plan_narrative_edit(tmp_path):
     approve_composition(root, run)
     packet_path = run / "work/page-packets/answer.json"
     before = packet_path.read_bytes()
-    narrative = run / "work/plan.md"
-    write(narrative, narrative.read_text() + "\nEditorial clarification.\n")
+    value = json.loads((run / "work/plan-intent.json").read_text())
+    value["analysis"]["global_model"] += "\nEditorial clarification.\n"
+    write_plan(run, value)
     approve_plan(root, run)
     _state.composition_prepare(root)
     packet = _state.composition_review_prepare(root)
@@ -887,29 +870,189 @@ def test_draft_can_only_cite_prepared_evidence_ids(tmp_path):
     }
 
 
-def test_plan_narrative_requires_analysis_sections_and_resolved_evidence(tmp_path):
+def test_plan_analysis_checks_run_despite_semantic_schema_errors(tmp_path):
     root = workspace(tmp_path)
     run = start(root)
-    write(run / "work/plan-intent.json", json.dumps(plan_meta()))
-    write(
-        run / "work/plan.md",
-        render(
-            {
-                "kind": "knowledge-plan-narrative",
-                "intent": "plan-intent.json",
-                "ledger": "plan-ledger.json",
-            },
-            "# Knowledge Plan\n\n## Global model\n\nOnly a summary.\n",
-        ),
+    value = plan_meta()
+    value["domains"][0]["owner_capability"] = []
+    value["analysis"]["conclusions"][0]["evidence"] = ["src/missing.py#L1"]
+    write(run / "work/plan-intent.json", json.dumps(value))
+    result = _state.plan_inspect(root)
+    assert {item["code"] for item in result["diagnostics"]} >= {
+        "schema-invalid",
+        "evidence-unresolved",
+    }
+    assert "analysis-validation" in result["checks_ran"]
+    assert "semantic-compilation" in result["skipped_checks"]
+    assert (
+        next(
+            item
+            for item in result["diagnostics"]
+            if item["code"] == "evidence-unresolved"
+        )["pointer"]
+        == "/analysis/conclusions/0/evidence/0"
     )
 
-    _plan, issues = _validate.validate_plan_artifact(
-        root, _state.read(root), run / "work/plan.md"
+
+def test_semantic_checks_run_despite_analysis_schema_errors(tmp_path):
+    root = workspace(tmp_path)
+    run = start(root)
+    value = plan_meta()
+    value["analysis"]["conclusions"] = []
+    value["domains"][0]["owner_capability"] = "missing"
+    write(run / "work/plan-intent.json", json.dumps(value))
+    result = _state.plan_inspect(root)
+    assert {d["code"] for d in result["diagnostics"]} >= {
+        "schema-invalid",
+        "domain-owner-invalid",
+    }
+    assert "semantic-compilation" in result["checks_ran"]
+    assert "analysis-validation" in result["skipped_checks"]
+
+
+def test_replica_schema_errors_do_not_hide_participant_evidence_errors(tmp_path):
+    root = workspace(tmp_path)
+    run = start(root)
+    value = plan_meta()
+    value["table_replicas"] = [
+        {
+            "table": {"source": "database", "table": "orders"},
+            "replica_of": "database/original",
+            "evidence": ["src/app.py#L1"],
+        }
+    ]
+    value["units"][0]["participants"][0]["evidence"] = ["src/missing.py#L1"]
+    write(run / "work/plan-intent.json", json.dumps(value))
+    result = _state.plan_inspect(root)
+    assert {d["code"] for d in result["diagnostics"]} >= {
+        "schema-invalid",
+        "evidence-unresolved",
+    }
+    assert "intent-environment.units" in result["checks_ran"]
+    assert "intent-environment.table_replicas" in result["skipped_checks"]
+    assert (
+        next(d for d in result["diagnostics"] if d["code"] == "evidence-unresolved")[
+            "pointer"
+        ]
+        == "/units/0/participants/0/evidence/0"
     )
 
-    codes = {item.code for item in issues}
-    assert "plan-section-missing" in codes
-    assert "plan-evidence-missing" in codes
+
+@pytest.mark.parametrize("language", ["en", "zh"])
+def test_plan_compilation_generates_and_binds_narrative_and_ledger(tmp_path, language):
+    root = workspace(tmp_path, language)
+    run = start(root)
+    value = plan_meta()
+    value["analysis"] = analysis(language)
+    value["gaps"] = [
+        {
+            "id": "external-recovery",
+            "category": "source-coverage",
+            "claim": "Recovery is outside registered Sources.",
+            "evidence": ["src/app.py#L1-L2"],
+        }
+    ]
+    work = run / "work"
+    write(work / "plan-intent.json", json.dumps(value))
+    assert _state.plan_inspect(root)["ok"]
+    assert not (work / "plan.md").exists()
+    assert _state.plan_compile(root)["ok"]
+    before = {
+        name: (work / name).read_bytes() for name in ("plan.md", "plan-ledger.json")
+    }
+    parsed = parse_file(work / "plan.md")
+    assert "`external-recovery`" in parsed.body
+    structure = extract(parsed.body)
+    assert len(structure.footnote_defs) == 1
+    assert {ref for ref, _ in structure.footnote_refs} == set(structure.footnote_defs)
+    assert (
+        "未解决的缺口" in parsed.body
+        if language == "zh"
+        else "Unresolved gaps" in parsed.body
+    )
+    assert _state.plan_compile(root)["ok"]
+    assert all((work / name).read_bytes() == data for name, data in before.items())
+    write(work / "plan.md", parsed.body + "\nTampered.\n")
+    assert _state.plan_inspect(root)["ok"]
+    assert not _state.plan_review_prepare(root)["ok"]
+    assert "plan-narrative-stale" in {d["code"] for d in _state.status(root)["issues"]}
+    assert _state.status(root)["next_actions"] == ["plan compile"]
+    assert _state.plan_compile(root)["ok"]
+    assert (work / "plan.md").read_bytes() == before["plan.md"]
+    write(work / "plan-ledger.json", json.dumps(json.loads(before["plan-ledger.json"])))
+    assert _state.status(root)["next_actions"] == ["plan compile"]
+    assert "plan-ledger-stale" in {d["code"] for d in _state.status(root)["issues"]}
+
+
+def test_interrupted_plan_output_replacement_requires_recompilation(
+    tmp_path, monkeypatch
+):
+    root = workspace(tmp_path)
+    run = start(root)
+    write_plan(run)
+    value = json.loads((run / "work/plan-intent.json").read_text())
+    value["analysis"]["global_model"] += " Updated explanation."
+    write(run / "work/plan-intent.json", json.dumps(value))
+    atomic_text = _state.atomic_text
+
+    def interrupted(path, text):
+        if path.name == "plan.md":
+            raise OSError("interrupted narrative replacement")
+        atomic_text(path, text)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(_state, "atomic_text", interrupted)
+        with pytest.raises(OSError, match="interrupted"):
+            _state.plan_compile(root)
+    assert _state.status(root)["next_actions"] == ["plan compile"]
+    assert not _state.plan_review_prepare(root)["ok"]
+    assert _state.plan_compile(root)["ok"]
+
+
+def test_derived_ledger_budget_is_reported_before_outputs_are_written(
+    tmp_path, monkeypatch
+):
+    import _plan
+    from _files import json_text
+    from _models import KnowledgePlanIntent
+
+    root = workspace(tmp_path)
+    run = start(root)
+    value = plan_meta()
+    raw = json.dumps(value)
+    compiled = _plan.compile_intent(KnowledgePlanIntent.model_validate(value), []).plan
+    output = json_text(compiled.model_dump(mode="json", exclude_defaults=True))
+    assert len(output.encode()) > len(raw.encode())
+    monkeypatch.setattr(_validate, "MAX_STRUCTURED_ARTIFACT_BYTES", len(raw.encode()))
+    write(run / "work/plan-intent.json", raw)
+    inspection = _state.plan_inspect(root)
+    error = next(
+        d
+        for d in inspection["diagnostics"]
+        if d["code"] == "plan-ledger-output-too-large"
+    )
+    assert error["actual"]["bytes"] == len(output.encode())
+    assert error["derived_from"]["concepts"] == len(value["concepts"])
+    assert not _state.plan_compile(root)["ok"]
+    assert not (run / "work/plan-ledger.json").exists()
+    assert not (run / "work/plan.md").exists()
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        "src/../app.py",
+        "src/./app.py",
+        "src//app.py",
+        "src/app.py/",
+        "src\\app.py",
+        "https://src/app.py",
+        "src/app.py#L0",
+        "src/app.py#L2-L1",
+    ],
+)
+def test_locator_rejects_noncanonical_paths_and_ranges(locator):
+    assert _validate.parse_resource(locator) is None
 
 
 def test_plan_rejects_participant_evidence_from_another_source(tmp_path):
@@ -1224,7 +1367,7 @@ def test_candidate_validation_collects_independent_errors_after_bad_plan(tmp_pat
     root = workspace(tmp_path)
     run = start(root)
     state = _state.read(root)
-    write(run / "work/plan.md", "---\nkind: wrong\n---\n\n# Bad plan\n")
+    write(run / "work/plan-intent.json", '{"kind": "wrong"}')
     page = run / "candidate/answer.md"
     write(
         page,
@@ -1273,7 +1416,7 @@ def test_block_resume_and_legacy_state_rejection(tmp_path):
     state = json.loads(path.read_text(encoding="utf-8"))
     state["contract"] = "artifact-loop-routing-closure"
     write(path, json.dumps(state))
-    with pytest.raises(_state.StateError, match="compiled-plan-evidence-registry"):
+    with pytest.raises(_state.StateError, match="single-author-plan-evidence-registry"):
         _state.read(root)
 
 
@@ -1345,7 +1488,6 @@ def test_thin_catalog_state_validates_grouped_table_coverage(tmp_path, monkeypat
     _state.start_run(root)
     run = _state.run_dir(root, _state.read(root)["run_id"])
     state = _state.read(root)
-    catalog = _db.load_index(root, state["catalogs"][0]["storage_key"])
     broken = plan_meta()
     broken["catalog_groups"] = [
         {"source": "database", "role": "working", "tables": ["orders"]}
@@ -1361,8 +1503,9 @@ def test_thin_catalog_state_validates_grouped_table_coverage(tmp_path, monkeypat
         "source-area-coverage-invalid",
     }
     assert inspection["skipped_checks"] == [
-        "compiled-ledger-validation",
-        "plan-narrative-alignment",
+        "derived-unit-validation",
+        "ledger-output-budget",
+        "narrative-rendering",
     ]
 
     value = plan_meta()

@@ -96,6 +96,22 @@ def knowledge_plan(units: list[dict]) -> dict:
     web_ref = "WebUI/src/main/java/example/App.java#L1-L2"
     return {
         "kind": "knowledge-plan-intent",
+        "analysis": {
+            "global_model": "The API owns routing and WebUI participates at the source boundary.",
+            "lifecycles": "A maintenance question enters API routing and crosses to WebUI when the selected boundary requires it.",
+            "conclusions": [
+                {
+                    "claim": "Both source entry points are present in the frozen revisions.",
+                    "evidence": [api_ref, web_ref],
+                }
+            ],
+            "rejected_hypotheses": [
+                {
+                    "claim": "The handoff uses a durable queue.",
+                    "reason": "The captured entries do not establish persistence.",
+                }
+            ],
+        },
         "source_areas": [
             {
                 "id": "api.workspace",
@@ -117,7 +133,7 @@ def knowledge_plan(units: list[dict]) -> dict:
                 "id": "workspace",
                 "name": "Workspace routing",
                 "definition": "Owns maintainer routing and the API-to-WebUI boundary.",
-                "owner_unit_id": "workspace-routing",
+                "owner_capability": "workspace-routing",
             }
         ],
         "concepts": [
@@ -166,30 +182,6 @@ def knowledge_plan(units: list[dict]) -> dict:
             }
         ],
     }
-
-
-def plan_narrative() -> str:
-    return markdown(
-        {
-            "kind": "knowledge-plan-narrative",
-            "intent": "plan-intent.json",
-            "ledger": "plan-ledger.json",
-        },
-        "# Knowledge Plan\n\n"
-        "## Global model\n\n"
-        "The API owns routing and WebUI participates at the source boundary.\n\n"
-        "## Lifecycles and cross-source relationships\n\n"
-        "A maintenance question enters API routing and crosses to WebUI when the "
-        "selected boundary requires it.\n\n"
-        "## Evidence-backed conclusions\n\n"
-        "Both source entry points are present in the frozen revisions. [^api] [^web]\n\n"
-        "## Rejected hypotheses\n\n"
-        "The sources do not prove a durable queue or database-backed handoff.\n\n"
-        "## Unresolved gaps\n\n"
-        "external-recovery: recovery belongs to an unregistered dependency.\n\n"
-        "[^api]: `API/src/main/java/example/App.java#L1-L2`\n"
-        "[^web]: `WebUI/src/main/java/example/App.java#L1-L2`",
-    )
 
 
 def page(resources: list[str], logical_link: str, page_type: str, gaps=()) -> str:
@@ -321,7 +313,7 @@ def evaluate(base: pathlib.Path) -> dict:
         or started["policy"]["evidence"]["read"]["max_lines"] != 1
         or started["sources"] != ["API", "WebUI"]
         or started["next_actions"]
-        != ["repair work/plan.md and work/plan-intent.json", "plan inspect"]
+        != ["repair work/plan-intent.json", "plan inspect", "plan compile"]
     ):
         raise RuntimeError(f"Run did not enter Plan: {started}")
     search = run(ws, "evidence", "search", "public", "--source", "API")
@@ -357,7 +349,10 @@ def evaluate(base: pathlib.Path) -> dict:
     write(
         work / "evidence/API/api-entry.md", f"# API entry\n\nEvidence: `{locator}`.\n"
     )
-    write(work / "plan.md", plan_narrative())
+    schema = run(ws, "plan", "schema")
+    template = run(ws, "plan", "template")
+    if "analysis" not in schema["required"] or "analysis" not in template:
+        raise RuntimeError("public Plan schema/template omit authored analysis")
     write(
         work / "plan-intent.json",
         json.dumps(
@@ -436,8 +431,12 @@ def evaluate(base: pathlib.Path) -> dict:
     )
     if run(ws, "run", "status")["phase"] != "plan":
         raise RuntimeError("rejected Plan review did not return to planning")
-    plan_path = work / "plan.md"
-    write(plan_path, plan_path.read_text(encoding="utf-8") + "\n")
+    intent = json.loads(intent_path.read_text())
+    intent["analysis"]["global_model"] += (
+        " This bounded fixture does not establish failure behavior."
+    )
+    write(intent_path, json.dumps(intent))
+    run(ws, "plan", "compile")
     plan_packet = run(ws, "review", "plan")
     if plan_packet.get("previous_review", {}).get("issues", [{}])[0].get("id") != (
         "domain.failure-handling"
@@ -721,10 +720,10 @@ def evaluate(base: pathlib.Path) -> dict:
         raise RuntimeError("full coverage accepted a Gaps section")
     write(full_draft, full_page)
 
-    write(
-        work / "plan.md",
-        (work / "plan.md").read_text() + "\nEditorial clarification.\n",
-    )
+    intent = json.loads(intent_path.read_text())
+    intent["analysis"]["global_model"] += "\nEditorial clarification.\n"
+    write(intent_path, json.dumps(intent))
+    run(ws, "plan", "compile")
     for command in ("plan", "composition"):
         if command == "composition":
             run(ws, "composition", "prepare")

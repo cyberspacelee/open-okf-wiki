@@ -18,10 +18,11 @@ def compact_json_size(data) -> int:
 
 
 def atomic_json(path: pathlib.Path, data: dict) -> None:
-    atomic_text(
-        path,
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-    )
+    atomic_text(path, json_text(data))
+
+
+def json_text(data: dict) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
 
 
 def atomic_text(path: pathlib.Path, text: str) -> None:

@@ -305,6 +305,20 @@ def cmd_review(args) -> int:
 
 def cmd_plan(args) -> int:
     import _state
+    from _models import KnowledgePlanIntent
+
+    if args.action == "schema":
+        emit(KnowledgePlanIntent.model_json_schema(), args.json)
+        return 0
+    if args.action == "template":
+        template = (
+            pathlib.Path(__file__).resolve().parent.parent / "assets/plan-intent.json"
+        )
+        value = KnowledgePlanIntent.model_validate_json(
+            template.read_text(encoding="utf-8")
+        )
+        emit(value.model_dump(mode="json", exclude_defaults=True), args.json)
+        return 0
 
     result = (
         _state.plan_compile(workspace_root())
@@ -572,6 +586,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan = commands.add_parser("plan", help="inspect or compile semantic Plan intent")
     plan_actions = plan.add_subparsers(dest="action", required=True)
+    leaf(
+        plan_actions.add_parser(
+            "schema", help="show the public Plan Intent JSON Schema"
+        )
+    )
+    leaf(
+        plan_actions.add_parser(
+            "template", help="show a schema-valid illustrative Plan Intent"
+        )
+    )
     leaf(
         plan_actions.add_parser(
             "inspect", help="report all actionable Plan diagnostics"

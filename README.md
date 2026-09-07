@@ -30,7 +30,7 @@ versioned bundle, not a development link: reinstall it after upgrading this
 repository and commit its `skills-lock.json` entry. Verify that the harness
 resolves `repo-wiki` to the intended path when discovery scopes overlap.
 Before starting a Run on another machine, update the installed skill. A current
-Run reports contract `compiled-plan-evidence-registry`; another contract identifies a
+Run reports contract `single-author-plan-evidence-registry`; another contract identifies a
 stale bundle or legacy Run. Preserve that Workspace for forensics and start from
 a new hub after reinstalling rather than resuming or migrating it.
 
@@ -158,8 +158,10 @@ uv run $REPO_WIKI_SKILL/scripts/okf.py run status --json
 The host agent runs one explicit loop until Publication or a real external
 block. `run status` derives the next phase from fixed Plan, progress,
 Composition, draft and review Artifacts. One long-lived planner owns the
-cross-Source model in readable `plan.md` plus semantic `plan-intent.json`; the
-Kernel compiles strict `plan-ledger.json`. Focused workers write bounded evidence
+cross-Source model and analysis in the sole authored `plan-intent.json`; the
+Kernel generates readable `plan.md` and strict `plan-ledger.json`. Public
+`okf plan schema --json` and `okf plan template --json` expose the input contract.
+Focused workers write bounded evidence
 notes. After Composition approval, `page prepare <page-id>` creates one bounded,
 cached evidence packet for each independent writer. One fresh
 reviewer checks the complete Candidate. Validation and review defects return to

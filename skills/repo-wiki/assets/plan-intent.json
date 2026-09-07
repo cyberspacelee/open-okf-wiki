@@ -1,0 +1,56 @@
+{
+  "kind": "knowledge-plan-intent",
+  "analysis": {
+    "global_model": "Requests owns admission and completion of a request.",
+    "lifecycles": "The entry point accepts a request and returns its result.",
+    "conclusions": [
+      {
+        "claim": "The entry point implements request admission.",
+        "evidence": ["app/src/request.py#L1"]
+      }
+    ]
+  },
+  "source_areas": [
+    {
+      "id": "app.requests",
+      "source": "app",
+      "paths": ["."],
+      "disposition": "domain",
+      "domain_ids": ["requests"]
+    }
+  ],
+  "domains": [
+    {
+      "id": "requests",
+      "name": "Requests",
+      "definition": "Owns request admission and completion.",
+      "owner_capability": "request-capability"
+    }
+  ],
+  "concepts": [
+    {
+      "id": "request",
+      "domain_id": "requests",
+      "kind": "entity",
+      "name": "Request",
+      "definition": "A unit of admitted work.",
+      "owner_unit_id": "request-capability",
+      "model_basis": {"basis": "none"}
+    }
+  ],
+  "units": [
+    {
+      "id": "request-capability",
+      "kind": "capability",
+      "question": "What does request admission own and enforce?",
+      "participants": [
+        {
+          "source": "app",
+          "roles": ["owner"],
+          "paths": ["src"],
+          "evidence": ["app/src/request.py#L1"]
+        }
+      ]
+    }
+  ]
+}

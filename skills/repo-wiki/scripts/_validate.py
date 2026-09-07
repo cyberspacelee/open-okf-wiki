@@ -4,7 +4,7 @@ import pathlib
 import re
 import tempfile
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import unquote, urlparse
 
 from _db import (
@@ -16,7 +16,7 @@ from _db import (
     load_indexes,
 )
 from _diagram import validate as validate_diagrams
-from _files import directory_digest
+from _files import directory_digest, json_text
 from _frontmatter import parse_file, render
 from _markdown import extract
 from _models import (
@@ -28,13 +28,24 @@ from _models import (
     KnowledgeGap,
     KnowledgePlanIntent,
     KnowledgeUnit,
-    PlanNarrative,
+    PlanAnalysis,
+    PlanSemantics,
     PlanReviewReport,
     ReviewReport,
     RunPolicy,
     model_errors,
 )
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
+
+_PLAN_SECTION_ADAPTERS = {
+    name: TypeAdapter(
+        Annotated[field.annotation, *field.metadata]
+        if field.metadata
+        else field.annotation
+    )
+    for name, field in PlanSemantics.model_fields.items()
+    if name != "kind"
+}
 
 _LINE_ANCHOR = re.compile(r"#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?$")
 CAUSAL = re.compile(
@@ -89,22 +100,6 @@ _TABLE_SECTIONS = {
     ("zh", "DataModel"): "代码与数据映射",
 }
 _TABLE_SEPARATOR = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*$", re.MULTILINE)
-_PLAN_SECTIONS = {
-    "en": (
-        "Global model",
-        "Lifecycles and cross-source relationships",
-        "Evidence-backed conclusions",
-        "Rejected hypotheses",
-        "Unresolved gaps",
-    ),
-    "zh": (
-        "全局模型",
-        "生命周期与跨源关系",
-        "证据支持的结论",
-        "被拒绝的假设",
-        "未解决的缺口",
-    ),
-}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -117,8 +112,11 @@ class Issue:
     phase: str | None = None
     category: str | None = None
     pointer: str | None = None
-    actual: str | None = None
+    actual: object = None
     suggestion: str | None = None
+    expected: str | None = None
+    example: object = None
+    derived_from: object = None
 
     def to_dict(self) -> dict:
         result = {
@@ -127,7 +125,17 @@ class Issue:
             "path": self.path,
             "message": self.message,
         }
-        for name in ("line", "phase", "category", "pointer", "actual", "suggestion"):
+        for name in (
+            "line",
+            "phase",
+            "category",
+            "pointer",
+            "actual",
+            "suggestion",
+            "expected",
+            "example",
+            "derived_from",
+        ):
             value = getattr(self, name)
             if value is not None:
                 result[name] = value
@@ -154,8 +162,11 @@ def issue(
     *,
     category: str | None = None,
     pointer: str | None = None,
-    actual: str | None = None,
+    actual: object = None,
     suggestion: str | None = None,
+    expected: str | None = None,
+    example: object = None,
+    derived_from: object = None,
 ) -> Issue:
     return Issue(
         severity,
@@ -168,6 +179,9 @@ def issue(
         pointer,
         actual,
         suggestion,
+        expected,
+        example,
+        derived_from,
     )
 
 
@@ -224,13 +238,15 @@ def parse_resource(resource: str) -> tuple[str, str, int | None, int | None] | N
     if "#" in raw:
         return None
     source, sep, rel = raw.partition("/")
-    if not sep or not source or not rel:
+    if not sep or not source or not rel or ":" in source:
         return None
     pure = pathlib.PurePosixPath(rel)
-    if pure.is_absolute() or ".." in pure.parts:
+    if pure.is_absolute() or ".." in pure.parts or pure.as_posix() != rel:
         return None
     lo = int(match.group(1)) if match else None
     hi = int(match.group(2) or match.group(1)) if match else None
+    if lo is not None and hi < lo:
+        return None
     return source, rel, lo, hi
 
 
@@ -401,104 +417,97 @@ def _model_issues(
                 error["msg"],
                 category="schema",
                 pointer="/" + "/".join(str(part) for part in error["loc"]),
-                actual=repr(error.get("input")),
+                actual=error.get("input"),
                 suggestion="match the documented artifact schema at this pointer",
+                expected=error["msg"],
+                example=(
+                    "app/src/request.py#L1"
+                    if isinstance(error["loc"][-1], int)
+                    else ["app/src/request.py#L1"]
+                )
+                if any(
+                    part in ("evidence", "structure_evidence") for part in error["loc"]
+                )
+                else (
+                    "okf plan schema --json" if model is KnowledgePlanIntent else None
+                ),
             )
             for error in exc.errors(include_url=False)
         ]
 
 
-def _plan_narrative_issues(
-    root: pathlib.Path,
-    state: dict,
-    path: pathlib.Path,
-    plan: KnowledgePlan,
-) -> list[Issue]:
-    parsed = parse_file(path)
-    structure = extract(parsed.body)
-    issues = []
-    required = _PLAN_SECTIONS[state["language"]]
-    sections = {item.title: item for item in structure.sections if item.level == 2}
-    for title in required:
-        section = sections.get(title)
-        if section is None:
-            issues.append(
-                issue(
-                    "error",
-                    "plan-section-missing",
-                    str(path),
-                    f"required Plan section is missing: {title}",
-                )
-            )
-        elif not section.content.strip():
-            issues.append(
-                issue(
-                    "error",
-                    "plan-section-empty",
-                    str(path),
-                    f"required Plan section is empty: {title}",
-                    section.start_line,
-                )
-            )
-
-    evidence_section = sections.get(required[2])
-    evidence_refs = (
-        {ref for ref, _line in extract(evidence_section.content).footnote_refs}
-        if evidence_section is not None
-        else set()
+def _plan_analysis_issues(analysis: PlanAnalysis, path: pathlib.Path) -> list[Issue]:
+    texts = [
+        ("/analysis/global_model", analysis.global_model),
+        ("/analysis/lifecycles", analysis.lifecycles),
+    ]
+    texts.extend(
+        (f"/analysis/conclusions/{i}/claim", item.claim)
+        for i, item in enumerate(analysis.conclusions)
     )
-    if not evidence_refs:
-        issues.append(
-            issue(
-                "error",
-                "plan-evidence-missing",
-                str(path),
-                "evidence-backed conclusions require at least one locator footnote",
-                evidence_section.start_line if evidence_section else None,
-            )
+    texts.extend(
+        (f"/analysis/rejected_hypotheses/{i}/{field}", getattr(item, field))
+        for i, item in enumerate(analysis.rejected_hypotheses)
+        for field in ("claim", "reason")
+    )
+    return [
+        issue(
+            "error",
+            "plan-analysis-citation-authored",
+            str(path),
+            "Plan citations are generated from evidence arrays",
+            category="content",
+            pointer=pointer,
+            actual=text,
+            expected="analysis without authored footnote syntax",
+            example={
+                "claim": "The entry accepts requests.",
+                "evidence": ["app/src/request.py#L1"],
+            },
+            suggestion="move locators into evidence arrays and remove footnote syntax",
         )
-    refs = {ref for ref, _line in structure.footnote_refs}
-    definitions = structure.footnote_defs
-    if refs != set(definitions):
-        issues.append(
-            issue(
-                "error",
-                "plan-citation-join-invalid",
-                str(path),
-                "Plan footnote references and definitions must match exactly",
-            )
-        )
-    catalogs = load_indexes(root, state["catalogs"])
-    for source_id, definition in definitions.items():
-        resource = definition.strip().strip("`")
+        for pointer, text in texts
+        if "[^" in text
+    ]
+
+
+def _plan_evidence_issues(root, state, catalogs, resources, path) -> list[Issue]:
+    issues = []
+    for pointer, resource in resources:
         if _catalog_locator(catalogs, resource) is not None:
             continue
-        resolved = _resolve_resource(root, state, resource)
+        parsed = parse_resource(resource)
+        resolved = _resolve_resource(root, state, resource) if parsed else None
+        expected = "one existing source/path locator, optionally #Lstart-Lend for text"
         if resolved is None:
             issues.append(
                 issue(
                     "error",
-                    "plan-evidence-unresolved",
+                    "evidence-unresolved" if parsed else "evidence-locator-invalid",
                     str(path),
-                    f"{source_id}: {resource}",
+                    "evidence resource does not resolve"
+                    if parsed
+                    else "invalid locator syntax",
+                    category="evidence",
+                    pointer=pointer,
+                    actual=resource,
+                    expected=expected,
+                    example="app/src/request.py#L1-L20",
+                    suggestion="copy one exact locator from evidence or catalog output; keep explanations in claim text",
                 )
             )
-            continue
-        issues.extend(_check_range(*resolved, resource))
-
-    gap_section = sections.get(required[4])
-    if gap_section is not None:
-        for gap in plan.gaps:
-            if gap.id not in gap_section.content:
-                issues.append(
-                    issue(
-                        "error",
-                        "plan-gap-undocumented",
-                        str(path),
-                        f"Plan narrative must discuss gap {gap.id}",
-                        gap_section.start_line,
-                    )
+        else:
+            issues.extend(
+                dataclasses.replace(
+                    item,
+                    path=str(path),
+                    pointer=pointer,
+                    actual=resource,
+                    expected="a range within the frozen text",
+                    example="app/src/request.py#L1",
                 )
+                for item in _check_range(*resolved, resource)
+            )
     return issues
 
 
@@ -610,7 +619,7 @@ def _validate_scopes(
             issues.append(
                 issue(
                     "error",
-                    "evidence-unresolved",
+                    "evidence-unresolved" if parsed else "evidence-locator-invalid",
                     str(path),
                     resource,
                     category="evidence",
@@ -751,59 +760,53 @@ def _validate_intent_environment(
     root: pathlib.Path,
     state: dict,
     catalogs: list[dict],
-    intent: KnowledgePlanIntent,
+    sections: dict,
     path: pathlib.Path,
 ) -> list[Issue]:
     import _plan
 
-    issues = _validate_source_areas(root, state, catalogs, intent.source_areas, path)
-    catalog_sources = {catalog["name"] for catalog in catalogs}
-    for unit in intent.units:
-        scopes, evidence = _plan.normalize_participants(
-            unit.participants, catalog_sources
-        )
-        issues.extend(
-            _validate_scopes(root, state, catalogs, unit.id, scopes, evidence, path)
-        )
-
-    resources = [
-        *(
-            resource
-            for concept in intent.concepts
-            for resource in concept.model_basis.structure_evidence
-        ),
-        *(resource for group in intent.catalog_groups for resource in group.evidence),
-        *(
-            resource
-            for replica in intent.table_replicas
-            for resource in replica.evidence
-        ),
-        *(
-            resource
-            for relation in intent.relationships
-            for resource in relation.evidence
-        ),
-        *(resource for gap in intent.gaps for resource in gap.evidence),
-    ]
-    for resource in sorted(set(resources)):
-        if _catalog_locator(catalogs, resource) is not None:
-            continue
-        resolved = _resolve_resource(root, state, resource)
-        if resolved is None:
-            issues.append(
-                issue(
-                    "error",
-                    "evidence-unresolved",
-                    str(path),
-                    resource,
-                    category="evidence",
-                    pointer="/",
-                    actual=resource,
-                    suggestion="use a canonical locator returned by evidence or catalog commands",
+    issues = (
+        _validate_source_areas(root, state, catalogs, sections["source_areas"], path)
+        if "source_areas" in sections
+        else []
+    )
+    for unit_index, unit in enumerate(sections.get("units", [])):
+        scopes, evidence = _plan.normalize_participants(unit.participants, catalogs)
+        pointers: dict[str, list[str]] = {}
+        for participant_index, participant in enumerate(unit.participants):
+            for index, resource in enumerate(participant.evidence):
+                pointers.setdefault(resource, []).append(
+                    f"/units/{unit_index}/participants/{participant_index}/evidence/{index}"
                 )
-            )
-            continue
-        issues.extend(_check_range(*resolved, resource))
+        for item in _validate_scopes(
+            root, state, catalogs, unit.id, scopes, evidence, path
+        ):
+            for pointer in pointers.get(
+                item.message, [f"/units/{unit_index}/participants"]
+            ):
+                issues.append(
+                    dataclasses.replace(
+                        item,
+                        pointer=pointer,
+                        actual=item.actual or item.message,
+                        expected=item.expected
+                        or "existing participant paths with in-scope canonical evidence",
+                        example="app/src/request.py#L1-L20",
+                    )
+                )
+    resources = []
+    for collection in ("catalog_groups", "table_replicas", "relationships", "gaps"):
+        resources.extend(
+            (f"/{collection}/{index}/evidence/{j}", resource)
+            for index, item in enumerate(sections.get(collection, []))
+            for j, resource in enumerate(item.evidence)
+        )
+    resources.extend(
+        (f"/concepts/{index}/model_basis/structure_evidence/{j}", resource)
+        for index, item in enumerate(sections.get("concepts", []))
+        for j, resource in enumerate(item.model_basis.structure_evidence)
+    )
+    issues.extend(_plan_evidence_issues(root, state, catalogs, resources, path))
     return issues
 
 
@@ -1219,7 +1222,7 @@ def page_input_budget(packet: dict) -> list[Issue]:
                 "page-input-budget-exceeded",
                 packet["output"],
                 f"packet={packet_bytes}, cached evidence={cache_bytes} bytes; "
-                "narrow Plan seeds or split independently owned units before preparing again",
+                "narrow Intent evidence ranges or split independently owned units, then recompile and prepare again",
             )
         ]
     return []
@@ -1386,45 +1389,103 @@ def _validate_page_draft(
     return issues
 
 
+@dataclasses.dataclass
+class PlanInspection:
+    plan: KnowledgePlan | None
+    narrative: str | None
+    ledger_text: str | None
+    issues: list[Issue]
+    checks_ran: list[str]
+    skip_reasons: dict[str, str]
+
+
 def compile_plan_sources(
     root: pathlib.Path,
     state: dict,
     path: pathlib.Path,
-) -> tuple[KnowledgePlan | None, list[Issue]]:
+) -> PlanInspection:
     import _plan
+    from _plan_render import render_narrative
 
     issues = []
-    narrative = None
-    if path.is_file():
-        narrative, narrative_issues = _model_issues(path, PlanNarrative, markdown=True)
-        issues.extend(narrative_issues)
-    else:
-        issues.append(
-            issue("error", "plan-missing", str(path), "write the Plan narrative")
-        )
-
+    checks_ran = ["schema"]
+    skipped = {}
     intent_path = path.with_name("plan-intent.json")
     intent = None
+    semantics = None
+    analysis = None
+    sections = {}
     if intent_path.is_file():
         intent, intent_issues = _model_issues(intent_path, KnowledgePlanIntent)
         issues.extend(intent_issues)
+        if intent is not None:
+            semantics, analysis = intent, intent.analysis
+            sections = {name: getattr(intent, name) for name in _PLAN_SECTION_ADAPTERS}
+        elif intent_path.stat().st_size <= MAX_STRUCTURED_ARTIFACT_BYTES:
+            try:
+                raw = json.loads(intent_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                raw = None
+            if isinstance(raw, dict):
+                for name, adapter in _PLAN_SECTION_ADAPTERS.items():
+                    field = PlanSemantics.model_fields[name]
+                    if name not in raw and field.is_required():
+                        continue
+                    try:
+                        sections[name] = adapter.validate_python(
+                            raw.get(name, field.get_default(call_default_factory=True)),
+                            strict=True,
+                        )
+                    except ValidationError:
+                        pass
+                # Analysis and semantic decisions have independent prerequisites.
+                try:
+                    semantics = PlanSemantics.model_validate(
+                        {k: v for k, v in raw.items() if k != "analysis"}
+                    )
+                except ValidationError:
+                    pass
+                try:
+                    analysis = PlanAnalysis.model_validate(raw.get("analysis"))
+                except ValidationError:
+                    pass
     else:
         issues.append(
             issue(
                 "error",
                 "plan-intent-missing",
                 str(intent_path),
-                "write semantic Plan intent",
+                "write Plan Intent using plan template and the public schema",
+                category="schema",
+                pointer="/",
+                expected="one Plan Intent JSON object",
+                suggestion="okf plan template --json",
             )
         )
 
     compiled = None
-    if intent is not None:
-        catalogs = load_indexes(root, state["catalogs"])
-        issues.extend(
-            _validate_intent_environment(root, state, catalogs, intent, intent_path)
-        )
-        result = _plan.compile_intent(intent, catalogs)
+    catalogs = load_indexes(root, state["catalogs"])
+    environment_sections = (
+        "source_areas",
+        "units",
+        "concepts",
+        "catalog_groups",
+        "table_replicas",
+        "relationships",
+        "gaps",
+    )
+    for name in environment_sections:
+        check = f"intent-environment.{name}"
+        if name in sections:
+            checks_ran.append(check)
+        else:
+            skipped[check] = f"/{name} has schema errors or is missing"
+    issues.extend(
+        _validate_intent_environment(root, state, catalogs, sections, intent_path)
+    )
+    if semantics is not None:
+        checks_ran.append("semantic-compilation")
+        result = _plan.compile_intent(semantics, catalogs)
         issues.extend(
             issue(
                 "error",
@@ -1435,14 +1496,75 @@ def compile_plan_sources(
                 pointer=item.pointer,
                 actual=item.actual,
                 suggestion=item.suggestion,
+                expected=item.expected or item.message,
+                example=item.example,
+                derived_from=item.derived_from,
             )
             for item in result.diagnostics
         )
         compiled = result.plan
-
-    if compiled is not None and narrative is not None:
-        issues.extend(_plan_narrative_issues(root, state, path, compiled))
-    return compiled, issues
+        if result.derived_checked:
+            checks_ran.append("derived-unit-validation")
+        else:
+            skipped["derived-unit-validation"] = (
+                "semantic compilation did not produce a complete ledger"
+            )
+    else:
+        for check in ("semantic-compilation", "derived-unit-validation"):
+            skipped[check] = "semantic input sections have schema errors or are missing"
+    if analysis is not None:
+        checks_ran.append("analysis-validation")
+        issues.extend(_plan_analysis_issues(analysis, intent_path))
+        resources = [
+            (f"/analysis/{collection}/{i}/evidence/{j}", resource)
+            for collection in ("conclusions", "rejected_hypotheses")
+            for i, item in enumerate(getattr(analysis, collection))
+            for j, resource in enumerate(item.evidence)
+        ]
+        issues.extend(
+            _plan_evidence_issues(root, state, catalogs, resources, intent_path)
+        )
+    else:
+        skipped["analysis-validation"] = "analysis has schema errors or is missing"
+    ledger_text = None
+    if compiled is not None:
+        checks_ran.append("ledger-output-budget")
+        ledger_text = json_text(compiled.model_dump(mode="json", exclude_defaults=True))
+        size = len(ledger_text.encode("utf-8"))
+        if size > MAX_STRUCTURED_ARTIFACT_BYTES:
+            issues.append(
+                issue(
+                    "error",
+                    "plan-ledger-output-too-large",
+                    str(intent_path),
+                    "compiled Ledger exceeds the structured Artifact byte budget",
+                    category="derived",
+                    pointer="/",
+                    actual={"bytes": size},
+                    expected=f"at most {MAX_STRUCTURED_ARTIFACT_BYTES} bytes",
+                    derived_from={
+                        "concepts": len(compiled.concepts),
+                        "catalog_associations": sum(
+                            len(c.model_basis.catalog_tables) for c in compiled.concepts
+                        ),
+                        "authored_units": len(compiled.units),
+                    },
+                    suggestion="report compiler output expansion; remove only semantically redundant associations, never valid evidence",
+                )
+            )
+    else:
+        skipped["ledger-output-budget"] = (
+            "semantic compilation did not produce a ledger"
+        )
+    narrative = None
+    if intent is not None and compiled is not None and not issues:
+        checks_ran.append("narrative-rendering")
+        narrative = render_narrative(intent, compiled, state["language"])
+    else:
+        skipped["narrative-rendering"] = (
+            "Plan inputs must pass all checks before rendering"
+        )
+    return PlanInspection(compiled, narrative, ledger_text, issues, checks_ran, skipped)
 
 
 def validate_plan_artifact(
@@ -1450,7 +1572,32 @@ def validate_plan_artifact(
     state: dict,
     path: pathlib.Path,
 ) -> tuple[KnowledgePlan | None, list[Issue]]:
-    compiled, issues = compile_plan_sources(root, state, path)
+    inspection = compile_plan_sources(root, state, path)
+    compiled, issues = inspection.plan, inspection.issues
+    if inspection.narrative is not None:
+        expected_narrative = inspection.narrative.encode("utf-8")
+        try:
+            actual_narrative = (
+                path.read_bytes()
+                if path.is_file() and path.stat().st_size == len(expected_narrative)
+                else None
+            )
+        except (OSError, UnicodeDecodeError):
+            actual_narrative = None
+        if actual_narrative != expected_narrative:
+            issues.append(
+                issue(
+                    "error",
+                    "plan-narrative-stale"
+                    if path.is_file()
+                    else "plan-compile-required",
+                    str(path),
+                    "generated Plan Narrative is missing or differs from Plan Intent",
+                    category="derived",
+                    expected="the deterministic rendering of current Plan Intent",
+                    suggestion="okf plan compile",
+                )
+            )
     ledger_path = path.with_name("plan-ledger.json")
     ledger = None
     if compiled is not None and not ledger_path.is_file():
@@ -1467,7 +1614,14 @@ def validate_plan_artifact(
     elif ledger_path.is_file():
         ledger, ledger_issues = _model_issues(ledger_path, KnowledgePlan)
         issues.extend(ledger_issues)
-        if compiled is not None and ledger is not None and ledger != compiled:
+        if (
+            compiled is not None
+            and ledger is not None
+            and (
+                ledger != compiled
+                or ledger_path.read_bytes() != inspection.ledger_text.encode("utf-8")
+            )
+        ):
             issues.append(
                 issue(
                     "error",

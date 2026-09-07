@@ -28,12 +28,17 @@ groups, behaviors, failure paths and handoffs. Create only the knowledge units
 needed to own those findings; Composition decides later whether units become
 separate pages.
 
-Continuously overwrite the authored `work/plan.md` and `work/plan-intent.json`.
+Continuously overwrite the sole authored Plan input `work/plan-intent.json`.
+Before authoring, read `okf plan schema --json` and `okf plan template --json`.
+The schema exposes required fields, defaults, enums and collection limits; the
+template is illustrative and its Sources, paths and claims must be replaced
+with the current Run's evidence. This reference supplies cross-record semantics.
 Run `okf plan inspect --json` after each meaningful merge; it reports all
 independently diagnosable schema, structural, evidence, coverage and
 cross-artifact errors with JSON pointers and repair suggestions. Once clean,
 run `okf plan compile --json`. The kernel alone writes
-`work/plan-ledger.json`; never edit that derived Artifact. For long work, keep
+both `work/plan-ledger.json` and `work/plan.md`; repair their originating Intent
+instead of editing generated files. For long work, keep
 `work/progress.md` sufficient to resume without conversation history: completed
 investigations, current findings, rejected hypotheses, gaps and next actions.
 Evidence notes belong under `work/evidence/`; copy conclusions into the Plan
@@ -66,38 +71,13 @@ revisions lack the evidence, it belongs to an unregistered Source, bounded
 navigation failed to establish the claim, or the remaining uncertainty is a
 real semantic boundary.
 
-`work/plan.md` is the readable synthesis. Its frontmatter is identity-only and
-its five analysis sections are mandatory and non-empty. The evidence-backed
-conclusions section uses ordinary locator footnotes; every ledger Gap ID appears
-in the unresolved-gaps section. For a Chinese workspace, use the exact headings
-`全局模型`, `生命周期与跨源关系`, `证据支持的结论`, `被拒绝的假设` and `未解决的缺口`.
-
-```yaml
----
-kind: knowledge-plan-narrative
-intent: plan-intent.json
-ledger: plan-ledger.json
----
-
-# Knowledge Plan
-
-## Global model
-...
-
-## Lifecycles and cross-source relationships
-...
-
-## Evidence-backed conclusions
-... [^request]
-
-## Rejected hypotheses
-...
-
-## Unresolved gaps
-No unresolved gaps.
-
-[^request]: `API/api-core/src/main/java/example/request/Request.java#L20-L48`
-```
+`work/plan.md` is the generated readable synthesis, with identity-only
+frontmatter and five localized analysis sections. Author the explanation under
+Intent `analysis`: `global_model`, `lifecycles`, evidence-backed `conclusions`,
+and optional `rejected_hypotheses`. The compiler renders Domain and Concept
+definitions, relationships, Gap IDs, Gap claims and locator footnotes from their
+authoritative records. Write analysis in the Workspace language. Citation IDs,
+footnote definitions and a second Gap list are generated, not authored.
 
 `work/plan-intent.json` is the authored semantic Artifact. Write strict JSON,
 not YAML-in-Markdown:
@@ -105,6 +85,14 @@ not YAML-in-Markdown:
 ```json
 {
   "kind": "knowledge-plan-intent",
+  "analysis": {
+    "global_model": "Requests owns admission, state and recovery across the API and database.",
+    "lifecycles": "The API admits a request, persists it and coordinates completion or recovery.",
+    "conclusions": [{
+      "claim": "Request admission is implemented in the API entry.",
+      "evidence": ["API/api-core/src/main/java/example/request/Request.java#L20-L48"]
+    }]
+  },
   "source_areas": [
     {
       "id": "api-request-domain",
@@ -125,7 +113,7 @@ not YAML-in-Markdown:
     "id": "requests",
     "name": "Requests",
     "definition": "Owns request admission, state and recovery.",
-    "owner_unit_id": "request-capability"
+    "owner_capability": "request-capability"
   }],
   "concepts": [{
     "id": "request",
@@ -140,7 +128,6 @@ not YAML-in-Markdown:
   }],
   "catalog_groups": [{
     "source": "database",
-    "domain_id": "requests",
     "role": "entity",
     "tables": ["requests"],
     "concept_ids": ["request"]
@@ -149,8 +136,6 @@ not YAML-in-Markdown:
     "id": "request-capability",
     "kind": "capability",
     "question": "What does the request capability own and enforce?",
-    "domain_ids": ["requests"],
-    "concept_ids": ["request"],
     "participants": [{
       "source": "API",
       "roles": ["owner"],
@@ -166,7 +151,8 @@ Omit optional empty arrays. `coverage` defaults to `full`; write it only for
 one Source, unions their roles, paths and evidence, converts them to ledger
 scopes and seeds, derives Concept catalog tables from Catalog Group
 `concept_ids`, groups classifications by `(source, domain_id, role)`, and
-derives `model.<concept-id>` units. Semantic definitions, relationships,
+derives model units (normally `model.<concept-id>`, with deterministic shortening
+for long IDs). Inspection returns their exact IDs. Semantic definitions, relationships,
 ownership, classification and Gaps remain authored decisions.
 Source Areas partition every registered Source, including each OpenGauss
 Source; use `.` when the whole captured Catalog belongs to one area.
@@ -179,15 +165,19 @@ are:
 
 | Record | Required fields | Optional fields and defaults |
 | --- | --- | --- |
-| Plan Intent | `kind`, non-empty `source_areas`, `domains`, `concepts`, `units` | `catalog_groups`, `table_replicas`, `relationships`, `gaps`: `[]` |
+| Plan Intent | `kind`, `analysis`, non-empty `source_areas`, `domains`, `concepts`, `units` | `catalog_groups`, `table_replicas`, `relationships`, `gaps`: `[]` |
+| Analysis | non-empty `global_model`, `lifecycles`, `conclusions` | `rejected_hypotheses`: `[]` |
+| Conclusion | `claim`, non-empty `evidence` | none |
+| Rejected Hypothesis | `claim`, `reason` | `evidence`: `[]` |
 | Source Area | `id`, `source`, non-empty `paths`, `disposition`, `domain_ids` | none |
-| Domain | `id`, `name`, `definition`, `owner_unit_id` | none |
+| Domain | `id`, `name`, `definition`, `owner_capability` | none |
 | Concept | `id`, `domain_id`, `kind`, `name`, `definition`, `owner_unit_id`, `model_basis` | none |
 | Model Basis | `basis` | `coverage`: `full`; `structure_evidence`, `gap_ids`: `[]` |
-| Catalog Group | `source`, `role`, non-empty `tables` | `domain_id`: absent; `concept_ids`, `evidence`, `gap_ids`: `[]` |
+| Catalog Group | `source`, `role`, non-empty `tables` | `domain_id`: absent/null, inferred from Concepts when unambiguous; `concept_ids`, `evidence`, `gap_ids`: `[]` |
+| Table Replica | `table`, `replica_of`: canonical Catalog locator strings; non-empty `evidence` | none |
 | Relationship | `id`, `from_concept_id`, `to_concept_id`, `level`, `cardinality`, non-empty `evidence`, `include_in_er` | none |
-| Authored Unit | `id`, `kind`, `question`, non-empty `domain_ids`, `concept_ids`, non-empty `participants` | none |
-| Participant | `source`, non-empty `roles`, non-empty `paths` | `evidence`: `[]` only for Catalog participants, otherwise non-empty |
+| Authored Unit | `id`, `kind`, `question`, 1-16 `participants` | `domain_ids`, `concept_ids`: additional coverage, `[]`; owned definitions and Concept Domains are derived |
+| Participant | `source`, 1-6 `roles`, 1-32 `paths` | `evidence`: 0-16 locators, empty only for Catalog participants |
 | Gap | `id`, `category`, `claim`, `evidence` | `unit_ids`: `[]` (global) |
 
 Exact enums:
@@ -213,6 +203,17 @@ Every other evidence collection marked non-empty above contains a locator. A
 `partial` Model Basis requires `gap_ids`; `full` forbids them. An `excluded`
 Table Group requires evidence, and an `unresolved` group requires `gap_ids`;
 all other group roles forbid `gap_ids`.
+Each evidence element is exactly one existing locator. Copy it from evidence
+or Catalog output; put explanations, column names and relationship expressions
+in claim text. [Scope and locators](contract.md#scope-and-locators) defines the
+syntax and evidence responsibilities.
+
+Derived units and merged participants keep their complete deduplicated scopes
+and Evidence Seeds. There is no 16-seed or 32-path limit on a normalized unit.
+The structured input and generated Ledger each have a 256 KiB Artifact budget.
+Inspection checks generated size before writing and reports expansion counts
+under `derived_from`; valid evidence is never silently removed to meet a budget.
+Page preparation applies its own input/read budgets without clipping evidence.
 
 Authored kinds are `capability`, `lifecycle`, `flow`, `integration` and
 `operations`; `data-model` is compiled. IDs are stable lowercase semantic
@@ -229,8 +230,9 @@ Close each ledger before Plan review:
   domain areas name their `domain_ids`; participants own evidence routing.
   The kernel checks the complete frozen file/table inventory for uncovered
   paths as well as overlaps; registering a Source name alone does not close it.
-- `domains` records a stable definition and one `owner_unit_id`.
-  Each Domain has its own owner unit; one owner unit cannot own several Domains.
+- `domains` records a stable definition and one `owner_capability`, referencing
+  an existing authored unit with `kind=capability`. Each Domain has a dedicated
+  owner; one owner cannot own several Domains. The compiler adds Domain coverage.
 - `concepts` assigns every Concept to one Domain and one `owner_unit_id`.
   The kernel derives a model unit for persistent Concepts; `none` Concepts have
   no model unit.
@@ -238,14 +240,16 @@ Close each ledger before Plan review:
   the ledger representation by Source, Domain and role. Roles are `entity`,
   `association`, `history`, `reference`, `read-model`, `working`,
   `infrastructure`, `replica`, `excluded` or `unresolved`. `domain_id` is
-  omitted when no Domain owns the group. Optional `evidence` explains the
+  inferred when `concept_ids` identify one Domain; absent and null have the same
+  meaning. An explicit Domain must agree with every linked Concept. Split groups
+  that span Domains. Optional `evidence` explains the
   role or Domain judgment; it never repeats the table-existence locator that
   the kernel derives from `source` and `tables`. `gap_ids` appears only on an
   `unresolved` group. A name suffix is a search hint, not evidence for the role.
   `concept_ids` assign tables to Concepts; the compiler derives each Concept's
   `model_basis.catalog_tables`, so table identity is authored once.
 - `table_replicas` is omitted unless a real replica exists. Each entry maps one
-  `{source, table}` to its `replica_of` `{source, table}` and supplies evidence;
+  canonical table locator to a distinct captured original and supplies evidence;
   every table in a `replica` group has exactly one entry and other roles have
   none. Same-name tables are only candidates until proven.
 - `relationships` records Concept relationships as `declared`, `mapped`,
@@ -253,9 +257,41 @@ Close each ledger before Plan review:
   `observed` relationships may set `include_in_er: true`; physical ER remains
   limited to captured constraints.
 
-Every unit names the `domain_ids` and `concept_ids` it covers. The owner IDs in
-the Domain and Concept records must resolve to those units, which makes
-definition and model ownership exact without duplicating it in Composition.
+Units may name additional `domain_ids` and `concept_ids`. Owned Concepts,
+owned Domains and the Domains of all covered Concepts are added by the compiler.
+Every effective unit must cover at least one Domain. Definition owner references
+must resolve to authored units; model ownership is derived.
+
+A complete replica entry is:
+
+```json
+{
+  "table": "analytics/requests",
+  "replica_of": "database/requests",
+  "evidence": ["API/src/ReplicationJob.java#L12-L35"]
+}
+```
+
+The evidence must establish replication; identical table names or columns alone
+do not establish it. Use the exact percent-encoded locator returned for a table
+whose name contains special characters.
+
+## Inspection and repair
+
+`inspect` is read-only and works before either generated Plan file exists.
+Diagnostics identify `code`, Artifact `path`, JSON `pointer`, `expected`,
+`actual`, repair `suggestion`, and an `example` when relevant. Derived failures
+also identify `derived_from`. `checks_ran`, `skipped_checks` and `skip_reasons`
+describe actual execution. A skipped check may expose more issues after its
+prerequisites are repaired. Analysis checks run independently of semantic
+compilation, and semantic checks run independently of Analysis schema errors.
+
+Repair every reported Intent issue, inspect again, then compile. Compilation
+generates both outputs only after successful validation. Review detects missing,
+stale or edited generated files and requires recompilation. Changes to Intent
+invalidate the previous Plan review; repeat affected downstream approvals.
+
+## Model and unit coverage
 
 Each Concept has a structured `model_basis`:
 

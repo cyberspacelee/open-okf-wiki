@@ -118,16 +118,43 @@ cite.
 _Avoid_: package task, inventory
 
 **Knowledge Plan**:
-The evolving, readable Domain-oriented cross-Source analysis in `plan.md`. It
-explains the global model, lifecycles, relationships, conclusions, rejected
-hypotheses and gaps without carrying the machine coverage ledger.
+The Domain-oriented account of responsibilities, Concepts, causal behavior,
+evidence and uncertainty across Sources.
 _Avoid_: page tree, Source shard
 
 **Plan Intent**:
-The authored semantic Artifact in `plan-intent.json` defining Source Areas,
-Domains, Concepts, relationships, Catalog classifications, participants and
-Gaps.
-_Avoid_: normalized scopes, derived units, repeated table associations
+The sole authored Plan input: semantic decisions and their explanatory analysis.
+It owns Source classifications, definitions, relationships, ownership and Gaps.
+_Avoid_: Plan Ledger, generated Narrative, repeated routing facts
+
+**Plan Analysis**:
+The planner's global explanation, causal account, evidence-backed conclusions
+and rejected hypotheses within Plan Intent.
+_Avoid_: generated summary, coverage ledger
+
+**Plan Narrative**:
+The readable, generated view of Plan Analysis and authoritative Plan facts.
+_Avoid_: authored Plan input, independently maintained Gap list
+
+**Domain Owner**:
+The dedicated capability that owns one Domain's definition.
+_Avoid_: arbitrary unit, shared Domain owner
+
+**Definition Owner**:
+The authored Knowledge Unit responsible for a Concept's definition.
+_Avoid_: data-model owner, every unit mentioning the Concept
+
+**Participant**:
+A Source's roles and investigation paths within an authored Knowledge Unit.
+_Avoid_: scheduler worker, normalized scope
+
+**Evidence Anchor**:
+One exact Locator supporting an authored judgment or identifying captured evidence.
+_Avoid_: explanation, column expression, resource list
+
+**Evidence Seeds**:
+The complete deduplicated Evidence Anchors supporting a Knowledge Unit.
+_Avoid_: sampled evidence, reading budget
 
 **Plan Ledger**:
 The strict machine Artifact compiled into `plan-ledger.json`, defining

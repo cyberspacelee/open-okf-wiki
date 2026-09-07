@@ -16,7 +16,7 @@ Plan and evidence notes are synthesis inputs, not provenance.
 When prepared evidence cannot support a required claim, return an evidence
 request to the coordinator: page ID, claim, existing evidence IDs, missing
 neighborhood and the packet output path. Keep the existing draft intact. The
-coordinator investigates through the evidence worker, updates Plan seeds or a
+coordinator investigates through the evidence worker, updates Intent evidence or a
 structured Gap, obtains the affected approvals, and prepares the page again.
 Resume writing from the replacement packet. A missing prepared excerpt is work
 to repair, not evidence that the frozen Source lacks the behavior.

@@ -213,14 +213,6 @@ class DraftFrontmatter(BaseModel):
     coverage: Literal["full", "partial"]
 
 
-class PlanNarrative(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    kind: Literal["knowledge-plan-narrative"]
-    intent: Literal["plan-intent.json"]
-    ledger: Literal["plan-ledger.json"]
-
-
 def _portable_page_path(value: str) -> str:
     if ".." in value.split("/") or "//" in value:
         raise ValueError("path must be a normalized bundle-relative path")
@@ -240,7 +232,7 @@ class PageScope(BaseModel):
     roles: list[
         Literal["owner", "producer", "contract", "consumer", "feedback", "model"]
     ] = Field(min_length=1, max_length=6)
-    paths: list[ScopePath] = Field(min_length=1, max_length=32)
+    paths: list[ScopePath] = Field(min_length=1)
 
     @field_validator("paths")
     @classmethod
@@ -287,8 +279,8 @@ class KnowledgeUnit(BaseModel):
     question: ClaimText
     domain_ids: list[StableId] = Field(min_length=1)
     concept_ids: list[StableId]
-    scopes: list[PageScope] = Field(min_length=1, max_length=16)
-    evidence_seeds: list[ScopePath] = Field(min_length=1, max_length=16)
+    scopes: list[PageScope] = Field(min_length=1)
+    evidence_seeds: list[ScopePath] = Field(min_length=1)
 
     @model_validator(mode="after")
     def integration_and_scopes_are_unambiguous(self):
@@ -363,6 +355,17 @@ class Domain(BaseModel):
     name: ShortText
     definition: ClaimText
     owner_unit_id: StableId
+
+
+class IntentDomain(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: StableId
+    name: ShortText
+    definition: ClaimText
+    owner_capability: StableId = Field(
+        description="ID of a dedicated authored unit with kind=capability."
+    )
 
 
 class CatalogTableRef(BaseModel):
@@ -460,8 +463,14 @@ class IntentKnowledgeUnit(BaseModel):
     id: StableId
     kind: Literal["capability", "lifecycle", "flow", "integration", "operations"]
     question: ClaimText
-    domain_ids: list[StableId] = Field(min_length=1)
-    concept_ids: list[StableId]
+    domain_ids: list[StableId] = Field(
+        default_factory=list,
+        description="Additional covered Domains; ownership and Concept Domains are derived.",
+    )
+    concept_ids: list[StableId] = Field(
+        default_factory=list,
+        description="Additional covered Concepts; owned Concepts are derived.",
+    )
     participants: list[PlanParticipant] = Field(min_length=1, max_length=16)
 
 
@@ -562,6 +571,21 @@ class TableReplica(BaseModel):
         return self
 
 
+class IntentTableReplica(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    table: ScopePath = Field(
+        description="Exact replica table locator from Catalog output."
+    )
+    replica_of: ScopePath = Field(
+        description="Exact original table locator from Catalog output."
+    )
+    evidence: list[ScopePath] = Field(
+        min_length=1,
+        description="Locators proving replication, not just table existence.",
+    )
+
+
 class TableDisposition(BaseModel):
     """Expanded in-memory table classification; never authored in Plan YAML."""
 
@@ -597,18 +621,46 @@ class DomainRelationship(BaseModel):
         return self
 
 
-class KnowledgePlanIntent(BaseModel):
+class PlanConclusion(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    claim: ClaimText
+    evidence: list[ScopePath] = Field(min_length=1)
+
+
+class RejectedHypothesis(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    claim: ClaimText
+    reason: ClaimText
+    evidence: list[ScopePath] = Field(default_factory=list)
+
+
+class PlanAnalysis(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    global_model: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    lifecycles: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    conclusions: list[PlanConclusion] = Field(min_length=1)
+    rejected_hypotheses: list[RejectedHypothesis] = Field(default_factory=list)
+
+
+class PlanSemantics(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     kind: Literal["knowledge-plan-intent"]
     source_areas: list[SourceArea] = Field(min_length=1)
-    domains: list[Domain] = Field(min_length=1)
+    domains: list[IntentDomain] = Field(min_length=1)
     concepts: list[IntentConcept] = Field(min_length=1)
     catalog_groups: list[CatalogGroup] = Field(default_factory=list)
-    table_replicas: list[TableReplica] = Field(default_factory=list)
+    table_replicas: list[IntentTableReplica] = Field(default_factory=list)
     relationships: list[DomainRelationship] = Field(default_factory=list)
     units: list[IntentKnowledgeUnit] = Field(min_length=1)
     gaps: list[KnowledgeGap] = Field(default_factory=list)
+
+
+class KnowledgePlanIntent(PlanSemantics):
+    analysis: PlanAnalysis
 
 
 class KnowledgePlan(BaseModel):
