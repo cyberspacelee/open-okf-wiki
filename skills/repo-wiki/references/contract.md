@@ -205,7 +205,9 @@ participant.
 
 ## Citations and links
 
-Every load-bearing claim uses an ID from its prepared evidence registry. A draft
+Every load-bearing claim uses an ID from its prepared evidence registry. For
+behavioral claims, include a short evidence excerpt next to the claim; a bare
+locator is acceptable for generated structural reference pages. A draft
 writes only `[^ev-id]` references; it never writes `sources` or footnote
 definitions. Binding selects the cited registry entries, generates both, and
 requires their exact join. Partial

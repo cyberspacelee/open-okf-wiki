@@ -10,8 +10,9 @@ Composition review owns initial task routing and page cohesion. Verify that the
 bundle carries both through honestly and that writing introduced no routing
 regression; do not repeat either pre-write review from scratch.
 
-Sweep the complete bundle and report every independently supportable issue in
-one pass; do not stop after the first failure. When the packet includes
+Review the complete bundle for structural consistency, but use risk-driven
+semantic depth: inspect every P0 behavior page and sample ordinary Reference
+pages. Do not claim that one pass deeply verifies every page. When the packet includes
 `previous_review`, read its complete ledger before replacement. Preserve every
 issue ID, mark verified repairs `resolved`, and retain failures as `open`.
 Add a new ID for a regression, a newly assessable check, or a newly discovered
@@ -64,10 +65,18 @@ Write strict JSON to the packet's fixed `artifact` path:
     "resolution": "Split them into independently routable pages.",
     "area": "composition",
     "page_ids": ["request-recovery"],
-    "operation": "split"
+    "operation": "split",
+    "evidence": [{
+      "locator": "service/src/State.java#L10-L22",
+      "excerpt": "SUBMITTED, APPROVED, COMPLETED",
+      "comparison": "The page diagram claims four states; the source defines three."
+    }]
   }]
 }
 ```
+
+For semantic issues, include at least one evidence record. Structural-only issues
+may leave `evidence` empty.
 
 Areas are `plan`, `composition` and `page`. Page issues name at least one
 `page_id`. Operations are `repair`, `split`, `merge` and `move`; structural

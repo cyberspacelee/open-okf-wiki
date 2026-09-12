@@ -87,7 +87,9 @@ force the reader to reconstruct one causal chain. Also merge related units when
 they share the same reader entry point, evidence neighborhood and maintenance
 session and neither remains independently useful after the split. Do not map
 units to pages mechanically: units are coverage obligations, not a requested
-page count. Record the overall routing analysis in the body.
+page count. Treat page-count pressure as invalid reasoning; merge or split
+according to reader routing and behavior boundaries. Record the overall routing
+analysis in the body.
 A page may own several tightly coupled units, but unrelated knowledge compressed
 into a few umbrella pages fails routing and ownership closure.
 

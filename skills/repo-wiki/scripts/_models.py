@@ -917,6 +917,16 @@ class CompositionMap(BaseModel):
         return self
 
 
+class ReviewEvidence(BaseModel):
+    """Small, reviewable proof attached to a semantic finding."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    locator: NonEmpty
+    excerpt: NonEmpty
+    comparison: NonEmpty
+
+
 class ReviewIssue(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -942,6 +952,7 @@ class ReviewIssue(BaseModel):
     resolution: ClaimText
     area: Literal["plan", "composition", "page"]
     page_ids: list[StableId] = Field(default_factory=list, max_length=16)
+    evidence: list[ReviewEvidence] = Field(default_factory=list, max_length=8)
     operation: Literal["repair", "split", "merge", "move"] = "repair"
 
     @model_validator(mode="after")

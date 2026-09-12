@@ -43,8 +43,9 @@ Apply the Task Routing Test before page fan-out:
   reference coverage remains complete and Table paths preserve Domain or
   unowned-role grouping; neither targets a page count.
 
-Sweep every page and report all independently supportable issues in one report;
-do not stop after the first routing or cohesion failure. Skip only a check whose
+Inspect every composed unit for routing coverage and apply deeper checks to
+behavior pages; sample ordinary generated references. Report all independently
+supportable issues in one report. Skip only a check whose
 required Plan or Composition data is invalid.
 
 If a page cannot be split because its single Plan unit already combines the

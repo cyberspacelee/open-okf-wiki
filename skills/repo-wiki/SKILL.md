@@ -16,8 +16,11 @@ Run commands from the Workspace root. `<skill>` is this directory; `okf` means:
 The Workspace root is a control directory, not a Git repository. Begin with
 `okf run status --json`. Navigate registered Source content only with `okf
 evidence`; use ordinary filesystem tools only on fixed work Artifact paths
-returned by status. Treat `okf` as an opaque kernel: do not read its private
-`scripts/_*.py` files or probe `--help` to rediscover commands documented here.
+returned by status. Treat `okf` as the deterministic kernel by default. If a
+kernel result conflicts with frozen evidence, enter diagnostic mode, record the
+conflict in `work/progress.md`, and stop publication until it is resolved.
+`--help` is not a workflow substitute, but may be used during diagnosis; copy
+any discovered contract into the relevant reference documentation.
 Use `status.sources` as the registered Source-name list.
 The public Plan contract is available through `okf plan schema --json`,
 `okf plan template --json` and [references/plan.md](references/plan.md).
@@ -101,7 +104,7 @@ commands or repairs to execute:
 | `plan-review` | Run `review plan`; its reviewer loads the returned reference |
 | `composition` | Run `composition prepare`, then create or repair `composition.md` |
 | `composition-review` | Run `review composition`; its reviewer loads the returned reference |
-| `write` | Run `page prepare` for each page, then write drafts from those packets |
+| `write` | Prepare authored pages in sensible batches, then write drafts from those packets |
 | `review` | Run `review prepare` or `review complete`; its reviewer loads the returned reference |
 | `repair` | Repair the Plan, Composition or page Artifacts named by the final review |
 | `publish` | Run `publication publish` |
