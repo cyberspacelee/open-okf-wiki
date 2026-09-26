@@ -1,94 +1,91 @@
-# Wiki Bundle Review
+# Review
 
-Review the exact bundle returned by `review prepare` in a fresh context. Read
-the Candidate, Plan Narrative, Plan Ledger, Composition, writing contract and relevant evidence notes.
-Reopen frozen Source evidence for decision-changing claims. Do not use the
-producer's conversation history.
+You are a fresh, independent reviewer for one review round. You wrote none of
+these pages and carry no context from earlier rounds: you read only the pages,
+the sources and the previous round's review report. You judge
+whether each draft page is true to the source, honest about why, worth reading
+and reachable from `index.md`. You write only the review report
+(`_review.json`): never edit a page,
+never run `okf stamp`, `okf update` or `okf new`.
 
-The approved Plan review owns repository-wide domain recall, and the approved
-Composition review owns initial task routing and page cohesion. Verify that the
-bundle carries both through honestly and that writing introduced no routing
-regression; do not repeat either pre-write review from scratch.
+## Inputs
 
-Review the complete bundle for structural consistency, but use risk-driven
-semantic depth: inspect every P0 behavior page and sample ordinary Reference
-pages. Do not claim that one pass deeply verifies every page. When the packet includes
-`previous_review`, read its complete ledger before replacement. Preserve every
-issue ID, mark verified repairs `resolved`, and retain failures as `open`.
-Add a new ID for a regression, a newly assessable check, or a newly discovered
-evidence-backed defect, including defects missed in an earlier review. Explain
-what evidence revealed it in the claim and inspect that affected neighborhood.
-Earlier approval never suppresses a known error. Replace the fixed Artifact in
-one update.
+- `okf review prepare --json` (read-only): `subject_digest`, `revision` (HEAD
+  per source), `pages` (the draft pages under review, each `{path, sha256}`,
+  paths relative to the wiki), `review_file` (the `_review.json` path to write),
+  `state` of the existing report and, when a previous report requested changes,
+  `previous_issues` (its issue count).
+- `git diff -- <wiki>`: what changed in those pages since the last commit. On an
+  update run, review the changed parts and anything they contradict.
+- `okf validate --json`: its `alias`, `uncited-why` and `parrot` warnings are
+  yours to adjudicate. Errors are the author's; an error still present means
+  `changes_requested`.
+- The glossary, conventions and architecture pages, even when they are not drafts.
+- The previous round's review report (`_review.json`), when present: an input
+  artifact, not a ledger. Check that each of its issues is fixed and list again
+  only the ones that are not; issues have no IDs or status.
 
-Judge the Wiki globally:
+## Checklist
 
-- Source Area, Domain, Concept, table and knowledge-unit coverage with honest
-  structured Gaps;
-- exact Domain definition ownership, Concept definition ownership and
-  persistent Concept model ownership carried from Plan into pages;
-- per-Concept Model Basis: Catalog-owned OpenGauss structure, ordered code
-  fallback evidence, and `none` only for non-persistent Concepts;
-- complete generated Schema/Table reference coverage and links from authored
-  Concept, DataModel and Lifecycle pages without copied field inventories;
-- physical ER edges match captured constraints; logical relationships remain
-  separately labeled and heuristic relationships stay out of ER diagrams;
-- Grep Test for optional depth pages, page boundaries, duplicate concepts and
-  routing quality;
-- page type, representation, hierarchy implied by paths and cross-links;
-- Domain pages provide accurate compact model, state/lifecycle and key-flow
-  overviews without duplicating detail-page ownership;
-- root and directory Navigation Indexes route every composed page through the
-  intended capability hierarchy with no orphan or page-type directory;
-- citation support, invented rationale, scope bleed and terminology;
-- readable evidence density: support a coherent paragraph or independently
-  checkable table claim instead of attaching citations mechanically to every
-  sentence or row;
-- diagram semantics, accessibility and renderability.
+1. **Canon rows, all of them.** Open the cited lines for every glossary,
+   commands, rules and invariants row on a draft page. The row must say what
+   those lines say: the term is defined there, the command is defined there,
+   the rule's config or instance count holds, the invariant is enforced there
+   and breaks as stated. A command marked `verified` must be a project command,
+   not a guess.
+2. **Invented why.** Every causal sentence (because, so that, to avoid, 因为,
+   为了) must cite a record of the reason: code, comment, commit, doc or ADR.
+   A plausible reason that the cited lines do not state is `invented-why`, even
+   when it is probably right. "rationale not recorded" is always acceptable.
+3. **Parrot.** Flag signature lists, field lists, directory trees, restated
+   comments and README restatement: anything grep plus two or three files
+   answers in a minute.
+4. **Missing.** Name high-value knowledge the page's scope holds but the page
+   lacks: an invariant with a guard in scope, a cross-module step, a co-change
+   pair, an extension recipe, a term used across modules. Cite where you saw it.
+5. **Warnings.** For each `alias` warning, decide: drift (`terminology` issue)
+   or a legitimate quote (dismiss). For `uncited-why`, apply item 2. For
+   `parrot`, apply item 3. A dismissed warning needs no issue.
+6. **Routing test.** Invent 3 plausible development tasks for this repository
+   (e.g. "add a retry to invoice posting"). For each, start at `index.md` and
+   the draft pages' `description` lines, pick the pages you would read, and check
+   they answer the task's boundary, invariant and convention questions. A wrong,
+   vague or missing route is a `routing` issue on the page whose `description`
+   or `scope` should change.
 
-Treat repeated shared behavior as a routing defect: identify its canonical
-owner page and require dependent pages to link it. Do not accept repeated lock,
-idempotency, status-priority or after-commit prose merely because each copy has
-a valid citation.
+## Sampling ordinary prose
 
-Write strict JSON to the packet's fixed `artifact` path:
+Canon rows and causal sentences are checked exhaustively. For other prose, check
+at least three cited claims per page, preferring claims an agent would act on
+(ordering, ownership, failure behavior). If one of them fails, check every
+citation on that page.
+
+## Review report (`_review.json`)
+
+Write exactly this shape to `review_file`, replacing the previous round's report:
 
 ```json
-{
-  "subject_digest": "<packet subject_digest>",
-  "verdict": "changes_requested",
-  "issues": [{
-    "id": "boundary.request-recovery",
-    "status": "open",
-    "category": "concept-boundary",
-    "claim": "Two unrelated capabilities share one page.",
-    "resolution": "Split them into independently routable pages.",
-    "area": "composition",
-    "page_ids": ["request-recovery"],
-    "operation": "split",
-    "evidence": [{
-      "locator": "service/src/State.java#L10-L22",
-      "excerpt": "SUBMITTED, APPROVED, COMPLETED",
-      "comparison": "The page diagram claims four states; the source defines three."
-    }]
-  }]
-}
+{"subject_digest": "<from review prepare>", "reviewer": "repo-wiki-reviewer/<model>",
+ "verdict": "changes_requested",
+ "issues": [{"page": "modules/billing.md", "kind": "invented-why",
+             "claim": "Retries are capped at 3 because the gateway rate-limits.",
+             "fix": "Cite a record of the reason or write 'rationale not recorded'.",
+             "locator": "src/billing/retry.py#L30-L44"}]}
 ```
 
-For semantic issues, include at least one evidence record. Structural-only issues
-may leave `evidence` empty.
+- `subject_digest`: copy it from `okf review prepare --json`; a page edited
+  afterwards makes the review stale.
+- `reviewer`: an actor, `<producer>/<version>` or `human:<id>`.
+- `verdict`: `approved` with an empty `issues` list, or `changes_requested`
+  with at least one issue. List only issues that still need a change.
+- `page`: wiki-relative path of the page the fix lands on.
+- `kind`: `unsupported` (claim not backed by its citation), `invented-why`,
+  `parrot`, `missing`, `terminology` (alias or conflicting term), `routing`,
+  `other`.
+- `claim`: the offending text, or for `missing` what should be said.
+- `fix`: one actionable sentence.
+- `locator`: optional plain `path#Lx-Ly` supporting the issue.
 
-Areas are `plan`, `composition` and `page`. Page issues name at least one
-`page_id`. Operations are `repair`, `split`, `merge` and `move`; structural
-operations always use the composition area. Split and move issues name at
-least one affected Page ID; merge issues name at least two. Categories are
-`domain-coverage`, `concept-boundary`, `model-basis`, `table-disposition`,
-`relationship-confidence`, `reference-coverage`, `grep-test`,
-`unsupported-claim`, `invented-rationale`, `padded-gap`, `routing`, `coverage`,
-`language` and `representation`.
+## Handoff
 
-Issue IDs are stable lowercase slugs. An approved report has no open issues and
-retains resolved entries. Mandatory coverage prevents an empty Candidate. Do
-not run coordinator
-commands such as status, `review complete`, Publication or export. Return only
-the report path, verdict and open issue count.
+Return the review report path, the verdict and the issue count.

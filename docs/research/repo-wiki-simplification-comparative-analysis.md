@@ -1,5 +1,7 @@
 # Repo Wiki simplification: comparative implementation analysis
 
+> Historical research: written for the Run / Plan pipeline removed by [ADR 0027](../adr/0027-repository-knowledge-layer.md); the commands, artifacts and source locations it names no longer exist. Current design: [repository-knowledge-layer.md](../design/repository-knowledge-layer.md).
+
 Date: 2026-08-29
 
 ## Executive conclusion
@@ -68,7 +70,7 @@ read-only packet. Delete producer/reviewer session parameters and their state.
 
 `task_start` already increments `target["attempts"]`, then appends 64 random
 bits to produce tokens such as `a2-...`; every packet/checkpoint/complete call
-must carry the token ([`_state.py`](../../skills/repo-wiki/scripts/_state.py)).
+must carry the token (`_state.py` (`skills/repo-wiki/scripts/_state.py`, removed)).
 The needed invariant is only "a result belongs to the currently active
 attempt." A monotonic integer is sufficient.
 

@@ -1,6 +1,6 @@
 # Artifact loop and host-owned orchestration
 
-Status: accepted
+Status: superseded by ADR 0027
 
 Supersedes the orchestration and recovery decisions in ADR 0018. It keeps
 Index compaction, Markdown planning, stable page IDs and late path binding.

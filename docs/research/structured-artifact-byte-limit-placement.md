@@ -1,5 +1,7 @@
 # 结构化 Artifact 字节上限应放在哪里
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-08-28
 问题：`plan` / `review` worker 生成 JSON Attempt Artifact 时，内核以
 `256 * 1024` 字节硬拒绝超限文件。这个精确值是否应写进 agent-facing

@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import pathlib
+import stat
 import tempfile
 import time
 from collections.abc import Collection
@@ -25,14 +26,53 @@ def json_text(data: dict) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
 
 
+def normalize_newlines(text: str) -> str:
+    """CRLF and lone CR as LF, so a Windows autocrlf checkout reads like the commit."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def text_lines(text: str | bytes) -> list[str]:
+    """Lines as git counts them: split on LF only, one trailing CR dropped per line.
+
+    Unlike ``str.splitlines`` this does not break on form feed, U+2028 or other
+    Unicode separators, so line numbers agree with ``git blame`` and editors.
+    """
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="replace")
+    if not text:
+        return []
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return [line.removesuffix("\r") for line in lines]
+
+
+def _new_file_mode() -> int:
+    mask = os.umask(0)
+    os.umask(mask)
+    return 0o666 & ~mask
+
+
 def atomic_text(path: pathlib.Path, text: str) -> None:
+    """Replace ``path`` atomically, keeping the permissions of an existing file
+    (a new file gets the usual 0666 & ~umask, not mkstemp's 0600).
+
+    A symlink is written through: its target is replaced and the link stays
+    (CLAUDE.md -> AGENTS.md keeps pointing at AGENTS.md)."""
+    if path.is_symlink():
+        path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        mode = _new_file_mode()
     fd, temp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+        os.chmod(temp, mode)
         for attempt in range(5):
             try:
                 os.replace(temp, path)

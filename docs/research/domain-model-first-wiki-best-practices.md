@@ -1,5 +1,7 @@
 # Domain/Concept-first Repo Wiki：数据模型证据与完整实现建议
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-09-01  
 范围：面向大型、业务逻辑混乱的代码库；数据库能力只支持 OpenGauss；不考虑历史兼容；本文是实现设计输入，不是运行契约。
 

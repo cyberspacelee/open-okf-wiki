@@ -1,0 +1,5 @@
+# The kernel modules (_config, _page, ...), the test helpers (helpers, kit) and the
+# evals import each other as top-level modules from their own directories. Declaring
+# those directories as sources makes them first-party, so imports sort as stdlib,
+# third-party, then local.
+src = ["scripts", "scripts/tests", "evals"]

@@ -1,5 +1,7 @@
 # Page planning owns representation questions
 
+Status: superseded by ADR 0027
+
 Page planning now selects a closed Page Type and zero or more Diagram Specs,
 while page work implements those exact questions as evidence-anchored Mermaid.
 The State Gate enforces the type matrix, plan/body correspondence, basic

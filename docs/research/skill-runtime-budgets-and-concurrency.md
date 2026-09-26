@@ -1,5 +1,7 @@
 # Repo Wiki Skill 的运行预算、并发与版本一致性设计
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-08-31  
 范围：由 `SKILL.md` 编排、确定性 CLI kernel 提供 bounded evidence
 navigation、host agent 调度 subagents 的 repo-wiki skill。本文只研究设计，不修改实现。

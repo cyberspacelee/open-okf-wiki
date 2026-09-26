@@ -1,23 +1,22 @@
----
-coverage: full
----
+<!-- okf:todo
+-->
 
-## Responsibility map
+## Boundaries and dependencies
 
-{{replace: participating modules or systems, ownership, and planned flowcharts}}
+<!-- Add one mermaid flowchart: modules as nodes, edges in dependency direction. -->
 
-## Boundary contracts
+## Not covered
 
-{{replace: boundary direction, crossing contract, and owner-page links}}
+| Path | Reason |
+|---|---|
 
-## Failure and change propagation
-
-{{replace: compact failure/change propagation and validation-surface table}}
-
-## Recorded decisions
-
-{{replace: existing ADR links and recorded rationale}}
-
-## Observed patterns
-
-{{replace: observed implementation patterns with locators and intent labels}}
+<!-- Optional sections, only when there is grounded content:
+## Design rationale
+## Cross-module invariants
+| Invariant | Enforced at | Breaks when |
+|---|---|---|
+## Change impact
+| Change | Also change or check |
+|---|---|
+## Decision records (links to existing ADRs)
+-->

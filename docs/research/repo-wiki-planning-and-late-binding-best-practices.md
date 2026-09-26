@@ -1,5 +1,7 @@
 # Repo Wiki：规划、持久状态与路径晚绑定最佳实践
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-08-29  
 访问日期：2026-08-29  
 范围：greenfield contract，不考虑旧 Run、旧 Artifact 或旧 Target ID 的兼容与迁移。资料只采用官方文档、规范、官方源码/测试计划和原始标准。

@@ -1,871 +1,401 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
+# dependencies = ["PyYAML>=6,<7"]
 # ///
-"""Deterministic end-to-end exercise of the artifact loop."""
+"""Tier-1 deterministic end-to-end run of the okf CLI on a fixture repository.
 
-import argparse
-import hashlib
+Plays the host agent with fixed page text: init -> discover -> structure ->
+research -> write -> review -> stamp -> done, then changes the code (moved
+lines, changed invariant, new module, HEAD moved under a draft) and checks
+impact, update, status and a second stamp. Exits non-zero on the first failure.
+"""
+
 import json
-import pathlib
-import shutil
+import os
 import subprocess
+import sys
 import tempfile
+from pathlib import Path
 
-OKF = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "okf.py"
+OKF = Path(__file__).resolve().parent.parent / "scripts" / "okf.py"
+
+FIXTURE = {
+    "README.md": "# Shop\n\nSmall billing service.\n",
+    "Makefile": "test:\n\tpython -m pytest -q\n\nlint:\n\truff check .\n",
+    "ruff.toml": "line-length = 100\n",
+    "src/billing/__init__.py": "",
+    "src/billing/run.py": (
+        "from payments.client import Client\n"
+        "\n"
+        "\n"
+        "class BillingRun:\n"
+        "    \"\"\"Scheduled pass that turns due subscriptions into invoices.\"\"\"\n"
+        "\n"
+        "    def post(self, invoice):\n"
+        "        if invoice.posted:\n"
+        "            raise ValueError(\"posted invoices are immutable\")\n"
+        "        invoice.posted = True\n"
+        "        return Client().charge(invoice)\n"
+    ),
+    "src/billing/retry.py": (
+        "MAX_ATTEMPTS = 3\n"
+        "\n"
+        "\n"
+        "def schedule(attempt):\n"
+        "    if attempt >= MAX_ATTEMPTS:\n"
+        "        return None\n"
+        "    return attempt + 1\n"
+    ),
+    "src/payments/__init__.py": "",
+    "src/payments/client.py": (
+        "class Client:\n"
+        "    def charge(self, invoice):\n"
+        "        return invoice.total\n"
+    ),
+    "tests/test_billing.py": "def test_post():\n    assert True\n",
+    "tests/test_retry.py": "def test_retry():\n    assert True\n",
+    "third_party/vendor.py": "X = 1\n",
+}
+
+ARCHITECTURE = """## Boundaries and dependencies
+
+Billing depends on payments only through `payments.Client`.[^seam]
+
+```mermaid
+flowchart LR
+  billing --> payments
+```
+
+| Invariant | Enforced at | Breaks when |
+|---|---|---|
+| Billing reaches the gateway only through `Client`. | `BillingRun.post`[^seam] | Charges bypass payment retries. |
+
+## Change impact
+
+| Change | Also change or check |
+|---|---|
+| `MAX_ATTEMPTS` | `tests/test_retry.py`[^retry-cap] |
+
+## Not covered
+
+| Path | Reason |
+|---|---|
+| `third_party/` | Vendored upstream code; never modified here. |
+| `src/payments/` | A thin gateway client; its only seam is described above. |
+| `tests/` | Tests are listed per page under Related tests. |
+
+[^seam]: src/billing/run.py#L1-L11
+[^retry-cap]: src/billing/retry.py#L1
+"""
+
+GLOSSARY = """| Term | Meaning | Avoid | Where |
+|---|---|---|---|
+| Billing run | Scheduled pass that turns due subscriptions into invoices. | invoice job | `BillingRun`[^billing-run] |
+
+[^billing-run]: src/billing/run.py#L4-L5
+"""
+
+CONVENTIONS = """## Commands
+
+| Purpose | Command | Status |
+|---|---|---|
+| Unit tests | `python -m pytest -q`[^test] | not-run |
+| Lint | `ruff check .`[^lint] | verified |
+
+## Rules
+
+| Area | Rule | Enforced by |
+|---|---|---|
+| build-ci | Lines stay within 100 characters.[^ruff] | lint |
+
+[^test]: Makefile#L1-L2
+[^lint]: Makefile#L4-L5
+[^ruff]: ruff.toml#L1
+"""
+
+BILLING = """## Responsibility and boundaries
+
+Billing owns invoice posting and charge retries.
+
+| Invariant | Enforced at | Breaks when |
+|---|---|---|
+| A posted invoice is never posted again. | `BillingRun.post`[^posted] | Customers are charged twice. |
+| At most 3 charge attempts. | `schedule`[^retry-cap] | Repeated charges after a gateway timeout. |
+
+Why 3 attempts: rationale not recorded.
+
+[^posted]: src/billing/run.py#L7-L10
+[^retry-cap]: src/billing/retry.py#L1-L7
+"""
 
 
-def invoke(
-    cwd: pathlib.Path, *args: str, check: bool = True
-) -> subprocess.CompletedProcess:
-    command = ["uv", "run", str(OKF), *args, "--json"]
+class Failure(Exception):
+    pass
+
+
+def git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def put(repo: Path, files: dict[str, str | None]) -> None:
+    for rel, text in files.items():
+        target = repo / rel
+        if text is None:
+            target.unlink()
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8", newline="\n")
+
+
+def commit(repo: Path, message: str, files: dict[str, str | None] | None = None) -> None:
+    put(repo, files or {})
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--allow-empty", "-m", message)
+
+
+def okf(repo: Path, *args: str, code: int = 0) -> dict | str:
+    env = os.environ | {"PYTHONUTF8": "1"}
     result = subprocess.run(
-        command, cwd=cwd, capture_output=True, text=True, check=False
+        [sys.executable, str(OKF), *args], cwd=repo, capture_output=True, text=True, env=env,
+        check=False,  # the exit code is compared with the expected one below
     )
-    if check and result.returncode:
-        raise RuntimeError(
-            f"{' '.join(command)} failed ({result.returncode}): "
-            f"{result.stderr.strip() or result.stdout.strip()}"
-        )
-    return result
+    if result.returncode != code:
+        raise Failure(f"okf {' '.join(args)} exited {result.returncode}, expected {code}:\n{result.stdout}\n{result.stderr}")
+    return json.loads(result.stdout) if "--json" in args else result.stdout
 
 
-def run(cwd: pathlib.Path, *args: str) -> dict:
-    return json.loads(invoke(cwd, *args).stdout)
+def expect(condition: bool, message: str) -> None:
+    if not condition:
+        raise Failure(message)
 
 
-def write(path: pathlib.Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
+def phase(repo: Path, expected: str) -> dict:
+    status = okf(repo, "status", "--json")
+    expect(status["phase"] == expected, f"phase {status['phase']!r}, expected {expected!r}: {json.dumps(status, indent=2)}")
+    return status
 
 
-def markdown(meta: dict, body: str) -> str:
-    return f"---\n{json.dumps(meta, ensure_ascii=False)}\n---\n\n{body.rstrip()}\n"
+def set_body(page: Path, body: str) -> None:
+    text = page.read_text(encoding="utf-8")
+    head, _, _ = text.partition("\n---\n")
+    page.write_text(f"{head}\n---\n\n{body}", encoding="utf-8", newline="\n")
 
 
-def source(path: pathlib.Path, label: str) -> pathlib.Path:
-    path.mkdir()
-    subprocess.run(["git", "init", "-q", str(path)], check=True)
-    subprocess.run(
-        ["git", "-C", str(path), "config", "user.email", "e2e@example.test"], check=True
-    )
-    subprocess.run(["git", "-C", str(path), "config", "user.name", "E2E"], check=True)
-    write(path / "pom.xml", "<project/>\n")
-    write(
-        path / "src/main/java/example/App.java",
-        "package example;\n"
-        f'public class App {{ public static String name = "{label}"; }} // '
-        + "x"
-        * 600
-        + " end-of-line\n"
-        "public interface Named {}\n",
-    )
-    subprocess.run(["git", "-C", str(path), "add", "."], check=True)
-    subprocess.run(["git", "-C", str(path), "commit", "-qm", "initial"], check=True)
-    return path
+def approve(repo: Path, reviewer: str = "repo-wiki-reviewer/e2e") -> None:
+    subject = okf(repo, "review", "prepare", "--json")
+    report = {"subject_digest": subject["subject_digest"], "reviewer": reviewer, "verdict": "approved", "issues": []}
+    (repo / subject["review_file"]).write_text(json.dumps(report), encoding="utf-8")
 
 
-def unit(
-    unit_id: str, source_names: list[str], kind: str, concept_ids: list[str]
-) -> dict:
-    roles = (
-        ["producer", "consumer", *(["contract"] * (len(source_names) - 2))]
-        if kind == "integration"
-        else ["owner"] * len(source_names)
-    )
-    return {
-        "id": unit_id,
-        "kind": kind,
-        "question": f"How does {unit_id} work across the captured sources?",
-        "domain_ids": ["workspace"],
-        "concept_ids": concept_ids,
-        "participants": [
-            {
-                "source": name,
-                "roles": [role],
-                "paths": ["."],
-                "evidence": [f"{name}/src/main/java/example/App.java#L1-L2"],
-            }
-            for name, role in zip(source_names, roles, strict=True)
-        ],
+def run(base: Path) -> None:
+    # init refuses a repository without a commit and leaves nothing behind.
+    empty = base / "empty"
+    empty.mkdir()
+    git(empty, "init", "-q", "-b", "main")
+    refused = okf(empty, "init", "--json", code=2)
+    expect("no commit yet" in refused["error"] and not (empty / "docs").exists(), f"init without HEAD: {refused}")
+    phase(empty, "init")
+
+    repo = base / "shop"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.name", "E2E")
+    git(repo, "config", "user.email", "e2e@example.com")
+    git(repo, "config", "commit.gpgsign", "false")
+    commit(repo, "init", FIXTURE)
+    wiki = repo / "docs/wiki"
+
+    phase(repo, "init")
+    okf(repo, "init", "--json")
+    commit(repo, "wiki stubs")  # a wiki-only commit must not make drafts stale
+    phase(repo, "discover")
+
+    scan = okf(repo, "scan", "--json")
+    modules = sorted(m["path"] for m in scan["modules"])
+    # src/ is a code root: its packages are the modules; tests/ is no module.
+    expect(modules == ["src/billing", "src/payments", "third_party"], f"scan modules {modules}")
+    expect(any(c["command"] == "python -m pytest -q" and c["kind"] == "test" for c in scan["commands"]),
+           f"scan misses the test command: {scan['commands']}")
+    expect(all(c["kind"] in ("build", "test", "lint", "format", "typecheck", "other")
+               for c in scan["commands"]), f"scan command kinds {scan['commands']}")
+    expect(scan["sources"][0]["shallow"] is False, f"scan sources {scan['sources']}")
+    expect(set(scan["truncated"]) == {"entry_points", "terms", "commands", "docs", "ci", "configs"},
+           f"scan truncated keys {scan['truncated']}")
+
+    okf(repo, "new", "modules/billing.md", "--type", "Module", "--description",
+        "Read before changing invoice posting or charge retries.", "--scope", "src/billing/**", "--json")
+    status = phase(repo, "discover")  # a stub without a brief while the canon briefs are empty
+    expect("modules/billing.md" in status["next_actions"][0], f"discover actions {status['next_actions']}")
+    set_body(wiki / "modules/billing.md", "<!-- okf:todo\nInvariant: posted invoice never reposted src/billing/run.py#L7-L10\n-->\n\n## Responsibility and boundaries\n")
+    status = phase(repo, "structure")  # src/payments and third_party are in no scope yet
+    expect(status["issues"][0]["code"] == "coverage", f"structure issues {status['issues']}")
+    set_body(wiki / "architecture.md", ARCHITECTURE)
+    set_body(wiki / "glossary.md", GLOSSARY)
+    set_body(wiki / "conventions.md", CONVENTIONS)
+    phase(repo, "write")  # canon done; billing still holds its todo block
+    set_body(wiki / "modules/billing.md", BILLING.replace("Billing owns", "The invoice job owns"))
+    validation = okf(repo, "validate", "--json")
+    expect(any(i["code"] == "alias" for i in validation["issues"]), "alias drift not reported")
+    set_body(wiki / "modules/billing.md", BILLING)
+    validation = okf(repo, "validate", "--json")
+    expect(validation["errors"] == 0 and validation["pending"] == 0, f"validate: {json.dumps(validation, indent=2)}")
+
+    status = phase(repo, "review")
+    expect(any("--unreviewed" in a for a in status["next_actions"]), "no unreviewed fallback offered")
+    subject = okf(repo, "review", "prepare", "--json")
+    expect(len(subject["pages"]) == 4, f"review subject pages {subject['pages']}")
+    report = {
+        "subject_digest": subject["subject_digest"], "reviewer": "repo-wiki-reviewer/e2e",
+        "verdict": "changes_requested",
+        "issues": [{"page": "modules/billing.md", "kind": "missing", "claim": "posting calls payments",
+                    "fix": "Mention that posting charges through Client.", "locator": "src/billing/run.py#L11"}],
     }
+    (repo / subject["review_file"]).write_text(json.dumps(report), encoding="utf-8")
+    status = phase(repo, "review")
+    expect(not any("--unreviewed" in a for a in status["next_actions"]), f"--unreviewed offered: {status}")
+    okf(repo, "stamp", "--by", "repo-wiki/e2e", "--json", code=1)  # changes requested blocks stamp
+    refused = okf(repo, "stamp", "--by", "repo-wiki/e2e", "--unreviewed", "--json", code=1)
+    expect(any("requests changes (1 issues)" in i["message"] for i in refused["issues"]), f"unreviewed stamp: {refused}")
 
+    set_body(wiki / "modules/billing.md", BILLING.replace(
+        "retries.\n", "retries. Posting charges through `payments.Client`.[^charge]\n"
+    ) + "[^charge]: src/billing/run.py#L11\n")
+    phase(repo, "review")  # the old report is stale now
+    approve(repo)
+    phase(repo, "stamp")
+    stamped = okf(repo, "stamp", "--by", "repo-wiki/e2e", "--json")
+    expect(len(stamped["stamped"]) == 4 and stamped["verified_by"] == "repo-wiki-reviewer/e2e", f"stamp: {stamped}")
+    expect(isinstance(stamped["warnings"], list) and stamped["index_changed"] is True, f"stamp: {stamped}")
+    expect(not (wiki / "_review.json").exists(), "_review.json survived stamp")
+    index = (wiki / "index.md").read_text(encoding="utf-8")
+    expect("[Billing](modules/billing.md)" in index and "`third_party/` - Not covered" in index, f"index:\n{index}")
+    commit(repo, "wiki v1")
+    status = phase(repo, "done")
+    expect(status["next_actions"] == ["nothing to do: the wiki is committed and current"], f"done: {status}")
 
-def knowledge_plan(units: list[dict]) -> dict:
-    api_ref = "API/src/main/java/example/App.java#L1-L2"
-    web_ref = "WebUI/src/main/java/example/App.java#L1-L2"
-    return {
-        "kind": "knowledge-plan-intent",
-        "analysis": {
-            "global_model": "The API owns routing and WebUI participates at the source boundary.",
-            "lifecycles": "A maintenance question enters API routing and crosses to WebUI when the selected boundary requires it.",
-            "conclusions": [
-                {
-                    "claim": "Both source entry points are present in the frozen revisions.",
-                    "evidence": [api_ref, web_ref],
-                }
-            ],
-            "rejected_hypotheses": [
-                {
-                    "claim": "The handoff uses a durable queue.",
-                    "reason": "The captured entries do not establish persistence.",
-                }
-            ],
-        },
-        "source_areas": [
-            {
-                "id": "api.workspace",
-                "source": "API",
-                "paths": ["."],
-                "disposition": "domain",
-                "domain_ids": ["workspace"],
-            },
-            {
-                "id": "web.workspace",
-                "source": "WebUI",
-                "paths": ["."],
-                "disposition": "domain",
-                "domain_ids": ["workspace"],
-            },
-        ],
-        "domains": [
-            {
-                "id": "workspace",
-                "name": "Workspace routing",
-                "definition": "Owns maintainer routing and the API-to-WebUI boundary.",
-                "owner_capability": "workspace-routing",
-            }
-        ],
-        "concepts": [
-            {
-                "id": "routing",
-                "domain_id": "workspace",
-                "kind": "process",
-                "name": "Routing",
-                "definition": "Selects one maintainer route for a workspace question.",
-                "owner_unit_id": "workspace-routing",
-                "model_basis": {
-                    "basis": "code",
-                    "structure_evidence": [api_ref],
-                },
-            },
-            {
-                "id": "source-boundary",
-                "domain_id": "workspace",
-                "kind": "service",
-                "name": "Source boundary",
-                "definition": "Coordinates the API and WebUI handoff without persistence.",
-                "owner_unit_id": "workspace-routing",
-                "model_basis": {"basis": "none"},
-            },
-        ],
-        "catalog_groups": [],
-        "relationships": [
-            {
-                "id": "routing-selects-boundary",
-                "from_concept_id": "routing",
-                "to_concept_id": "source-boundary",
-                "level": "observed",
-                "cardinality": "one-to-one",
-                "evidence": [api_ref, web_ref],
-                "include_in_er": True,
-            }
-        ],
-        "units": units,
-        "gaps": [
-            {
-                "id": "external-recovery",
-                "category": "source-coverage",
-                "claim": "Recovery belongs to an unregistered dependency.",
-                "evidence": [],
-                "unit_ids": ["source-boundaries"],
-            }
-        ],
-    }
+    pointer = okf(repo, "pointer")
+    expect("ruff check ." in pointer and "python -m pytest" not in pointer, f"pointer:\n{pointer}")
+    expect(len(pointer.strip().splitlines()) <= 15, "pointer longer than 15 lines")
+    files = okf(repo, "impact", "--files", "src/billing/retry.py", "third_party/vendor.py", "--json")["files"]
+    retry = files["src/billing/retry.py"]
+    expect(retry["read"] == ["modules/billing.md"] and retry["update"] == ["architecture.md", "modules/billing.md"]
+           and [r["change"] for r in retry["change_impact"]] == ["MAX_ATTEMPTS"]
+           and retry["canon"] == ["glossary.md", "conventions.md"] and retry["note"] is None,
+           f"impact --files: {retry}")
+    expect(files["third_party/vendor.py"]["note"] == "not covered: Vendored upstream code; never modified here.",
+           f"impact --files not covered: {files}")
+    files = okf(repo, "impact", "--files", str(repo / "src/billing"), "--json")
+    expect("modules/billing.md" in files["files"]["src/billing"]["read"], f"impact --files on a directory: {files}")
+    okf(repo, "validate", "modules/nosuch.md", code=2)  # a page filter must name a page
+    # Read-only commands walk up from a subdirectory; relative paths start there.
+    files = okf(repo / "src/billing", "impact", "--files", "retry.py", "--json")["files"]
+    expect(files["src/billing/retry.py"]["read"] == ["modules/billing.md"], f"impact from a subdirectory: {files}")
+    expect(okf(repo / "src", "status", "--json")["phase"] == "done", "status from a subdirectory")
+    wrong = okf(repo, "--wiki", "kb", "status", "--json")
+    expect(wrong["phase"] == "blocked" and "--wiki docs/wiki" in wrong["next_actions"][0], f"wrong --wiki: {wrong}")
 
+    # A stable page edited by hand is caught.
+    billing = (wiki / "modules/billing.md").read_text(encoding="utf-8")
+    (wiki / "modules/billing.md").write_text(billing + "\nExtra.\n", encoding="utf-8")
+    validation = okf(repo, "validate", "--json", code=1)
+    expect(any(i["code"] == "unreviewed-edit" for i in validation["issues"]), "hand edit not caught")
+    (wiki / "modules/billing.md").write_text(billing, encoding="utf-8")
 
-def page(resources: list[str], logical_link: str, page_type: str, gaps=()) -> str:
-    citations = " ".join(
-        f"[^ev-{hashlib.sha256(resource.encode()).hexdigest()[:16]}]"
-        for resource in resources
-    )
-    if page_type == "Overview":
-        body = (
-            "## Scope and boundaries\n\n"
-            f"Pinned entry points bound this Wiki. {citations}\n\n"
-            "## Task entry points\n\n"
-            "| Task | Start here |\n| --- | --- |\n"
-            f"| Change a boundary | {logical_link} |"
-        )
-    elif page_type == "DataModel":
-        body = (
-            "## Model basis\n\n"
-            f"Routing uses code-derived structure from the pinned API entry. {citations}\n\n"
-            "## Physical model\n\n"
-            "<!-- okf-generated:model -->\n\n"
-            "## Logical relationships\n\n"
-            "```mermaid\n"
-            "%% okf-id: routing-model\n"
-            "erDiagram\n"
-            "    accTitle: Routing model\n"
-            "    accDescr: Routing selects the API-to-WebUI source boundary.\n"
-            "    ROUTING ||--|| SOURCE_BOUNDARY : selects\n"
-            "```\n\n"
-            f"The code-derived relationship is anchored in both entry points. {citations}\n\n"
-            "## Ownership and boundaries\n\nAPI owns routing; WebUI participates in the handoff.\n\n"
-            f"## Reference model\n\nNo OpenGauss reference exists for this code-only fixture. {logical_link}\n\n"
-            "## Code-to-data mapping\n\n"
-            "| Concept | Code projection | Owner |\n"
-            "| --- | --- | --- |\n"
-            "| Routing | App entry | API |\n\n"
-        )
-    elif page_type == "Procedure":
-        body = (
-            "## Responsibility and boundaries\n\n"
-            f"The workspace routing procedure owns ordered entry selection. {citations}\n\n"
-            "## Inputs and outputs\n\n"
-            "A maintenance question enters and one capability route is produced.\n\n"
-            "## Execution and algorithm\n\n"
-            f"Classify the question, select its capability, then follow {logical_link}\n\n"
-            "## Rules and failure modes\n\n"
-            "| Rule | Enforcement point | Observable failure |\n"
-            "| --- | --- | --- |\n"
-            "| Select one route. | Routing procedure | Ambiguous destination |\n\n"
-            "## Change points\n\nChange the routing procedure and its tests.\n\n"
-        )
-    elif page_type == "Flow":
-        body = (
-            "## Trigger and outcome\n\n"
-            f"An API boundary request reaches WebUI. {citations}\n\n"
-            "## Operational flow\n\n"
-            "```mermaid\n"
-            "%% okf-id: source-handoff\n"
-            "sequenceDiagram\n"
-            "    accTitle: Source handoff\n"
-            "    accDescr: API sends the boundary request to WebUI.\n"
-            "    API->>WebUI: Boundary request\n"
-            "```\n\n"
-            f"The handoff requires both captured participants. {citations}\n\n"
-            "## Alternatives and recovery\n\n"
-            "| Failure | Recovery | Terminal outcome |\n"
-            "| --- | --- | --- |\n"
-            "| Participant missing | Restore the boundary | Request rejected |\n\n"
-            "## Change points\n\nChange both participants and their contract tests.\n\n"
-            f"{logical_link}"
-        )
-    else:
-        body = (
-            "## Purpose and system context\n\n"
-            f"This domain routes maintenance work across the workspace. {citations}\n\n"
-            "## Responsibility and public surface\n\n"
-            f"Pinned entry points define this boundary. {citations}\n\n"
-            "## Invariants and rules\n\n"
-            "| Rule | Enforcement point | Observable failure |\n"
-            "| --- | --- | --- |\n"
-            "| Both sides remain explicit. | Source boundary | Missing handoff |\n\n"
-            "## Data model overview\n\n"
-            f"Routing has a code-derived structural view. {logical_link}\n\n"
-            "## State and lifecycle\n\n"
-            "The bounded fixture exposes entry and handoff, but no durable state.\n\n"
-            "## Key flows\n\n"
-            f"The API-to-WebUI boundary is the primary cross-source flow. {logical_link}\n\n"
-            f"## Concepts\n\n{logical_link}\n\n"
-            "## Change points\n\nChange both boundary participants and tests.\n\n"
-        )
-    if gaps:
-        body += "\n\n## Gaps\n\n" + "\n".join(
-            f"{gap['id']}: {gap['claim']}" for gap in gaps
-        )
-    return markdown({"coverage": "partial" if gaps else "full"}, body)
+    # Code changes: lines move in run.py, the retry cap changes, a module appears.
+    commit(repo, "change code", {
+        "src/billing/run.py": "# billing entry\n\n" + FIXTURE["src/billing/run.py"],
+        "src/billing/retry.py": FIXTURE["src/billing/retry.py"].replace("3", "5"),
+        "worker/jobs.py": "def nightly():\n    pass\n",
+    })
+    report = okf(repo, "impact", "--json")
+    by_page = {p["page"]: p["reasons"] for p in report["pages"]}
+    kinds = {r["kind"] for r in by_page.get("modules/billing.md", [])}
+    expect({"cited-moved", "cited-changed"} <= kinds, f"billing reasons {by_page}")
+    moved = [r for r in by_page["modules/billing.md"] if r["kind"] == "cited-moved" and r["label"] == "posted"]
+    expect(moved and moved[0]["suggested"] == "src/billing/run.py#L9-L12", f"moved suggestion {moved}")
+    expect(report["unmapped_modules"] == ["worker"], f"unmapped {report['unmapped_modules']}")
+    phase(repo, "update")
 
+    update = okf(repo, "update", "--json")
+    expect("modules/billing.md" in update["drafted"] and "architecture.md" in update["drafted"], f"update {update}")
+    billing = (wiki / "modules/billing.md").read_text(encoding="utf-8")
+    expect("status: draft" in billing and "suggested src/billing/run.py#L9-L12" in billing, billing)
+    expect(" (since " in billing, f"reason lines lack their base revision:\n{billing}")
+    phase(repo, "structure")  # worker is unmapped
 
-def evaluate(base: pathlib.Path) -> dict:
-    ws = base / "workspace"
-    ws.mkdir()
-    api = source(base / "API", "api")
-    web = source(base / "WebUI", "web")
-    run(
-        ws,
-        "workspace",
-        "init",
-        "--lang",
-        "en",
-        "--freshness-days",
-        "30",
-        "--max-active-children",
-        "4",
-        "--search-max-results",
-        "1",
-        "--read-default-lines",
-        "1",
-        "--read-max-lines",
-        "1",
-    )
-    run(ws, "source", "add", "link", str(api), "--name", "API")
-    run(ws, "source", "add", "link", str(web), "--name", "WebUI")
+    # HEAD moves under the drafts: status asks for update, update rebases.
+    commit(repo, "unrelated", {"README.md": "# Shop\n\nBilling service.\n"})
+    phase(repo, "update")
+    okf(repo, "update", "--json")
+    phase(repo, "structure")
 
-    started = run(ws, "run", "start")
-    if (
-        started["phase"] != "plan"
-        or started["language"] != "en"
-        or started["policy"]["agents"]["max_active_children"] != 4
-        or started["policy"]["evidence"]["search"]["max_results"] != 1
-        or started["policy"]["evidence"]["read"]["max_lines"] != 1
-        or started["sources"] != ["API", "WebUI"]
-        or started["next_actions"]
-        != ["repair work/plan-intent.json", "plan inspect", "plan compile"]
-    ):
-        raise RuntimeError(f"Run did not enter Plan: {started}")
-    search = run(ws, "evidence", "search", "public", "--source", "API")
-    locator = search.get("items", [{}])[0].get("locator")
-    continued = run(
-        ws,
-        "evidence",
-        "search",
-        "public",
-        "--source",
-        "API",
-        "--after",
-        search.get("next_after", ""),
-    )
-    bounded_read = run(
-        ws,
-        "evidence",
-        "read",
-        "API/src/main/java/example/App.java#L1-L3",
-    )
-    if (
-        not locator
-        or search.get("limit_reached") is not True
-        or continued.get("items", [{}])[0].get("locator") == locator
-        or bounded_read.get("end") != 1
-        or bounded_read.get("limit_reached") is not True
-        or not bounded_read.get("next_locator")
-    ):
-        raise RuntimeError("bounded evidence search/read failed")
+    arch = (wiki / "architecture.md").read_text(encoding="utf-8")
+    arch = arch.replace("| `tests/` |", "| `worker/` | Scheduled jobs, documented later. |\n| `tests/` |")
+    arch = arch.split("<!-- okf:todo", 1)[0] + arch.split("-->\n", 1)[1].lstrip("\n")
+    (wiki / "architecture.md").write_text(arch, encoding="utf-8")
+    body = BILLING.replace("At most 3", "At most 5").replace("Why 3", "Why 5").replace(
+        "#L7-L10", "#L9-L12")
+    set_body(wiki / "modules/billing.md", body)
+    arch_body = (wiki / "architecture.md").read_text(encoding="utf-8").replace("run.py#L1-L11", "run.py#L1-L13")
+    (wiki / "architecture.md").write_text(arch_body, encoding="utf-8")
+    glossary = (wiki / "glossary.md").read_text(encoding="utf-8")
+    expect("suggested src/billing/run.py#L6-L7" in glossary, f"glossary not redrafted:\n{glossary}")
+    set_body(wiki / "glossary.md", GLOSSARY.replace("#L4-L5", "#L6-L7"))
+    status = okf(repo, "status", "--json")
+    expect(status["phase"] == "review", f"after repair: {json.dumps(status, indent=2)}")
+    stamped = okf(repo, "stamp", "--by", "repo-wiki/e2e", "--unreviewed", "--json")
+    billing = (wiki / "modules/billing.md").read_text(encoding="utf-8")
+    expect("verified:" not in billing and "status: stable" in billing, "unreviewed stamp wrote verified")
+    commit(repo, "wiki v2")
+    phase(repo, "done")
 
-    work = pathlib.Path(started["run_dir"]) / "work"
-    write(work / "progress.md", "# Progress\n\nPlan complete; pages remain.\n")
-    write(
-        work / "evidence/API/api-entry.md", f"# API entry\n\nEvidence: `{locator}`.\n"
-    )
-    schema = run(ws, "plan", "schema")
-    template = run(ws, "plan", "template")
-    if "analysis" not in schema["required"] or "analysis" not in template:
-        raise RuntimeError("public Plan schema/template omit authored analysis")
-    write(
-        work / "plan-intent.json",
-        json.dumps(
-            knowledge_plan(
-                [
-                    unit(
-                        "workspace-routing",
-                        ["API", "WebUI"],
-                        "capability",
-                        ["routing", "source-boundary"],
-                    ),
-                    unit("workspace-algorithm", ["API"], "flow", ["routing"]),
-                    unit(
-                        "source-boundaries",
-                        ["API", "WebUI"],
-                        "integration",
-                        ["source-boundary"],
-                    ),
-                ]
-            )
-        ),
-    )
-    intent_path = work / "plan-intent.json"
-    intent = json.loads(intent_path.read_text())
-    incomplete = json.loads(intent_path.read_text())
-    incomplete["source_areas"][0]["paths"] = ["pom.xml"]
-    write(intent_path, json.dumps(incomplete))
-    rejected = json.loads(invoke(ws, "plan", "inspect", check=False).stdout)
-    if "source-area-uncovered" not in {
-        item["code"] for item in rejected["diagnostics"]
-    }:
-        raise RuntimeError("Source Area coverage omitted a frozen subtree")
-    write(intent_path, json.dumps(intent))
-    inspected = run(ws, "plan", "inspect")
-    if not inspected["ok"]:
-        raise RuntimeError(f"Plan inspection failed: {inspected}")
-    compiled = run(ws, "plan", "compile")
-    if compiled["counts"]["derived_units"] != 1:
-        raise RuntimeError(f"Plan compilation omitted the model unit: {compiled}")
+    # A reviewer entry added by hand to an --unreviewed stamp is an unreviewed edit.
+    billing = (wiki / "modules/billing.md").read_text(encoding="utf-8")
+    forged = billing.replace("stamp:\n", "verified:\n- by: repo-wiki-reviewer/fake\n  at: '2099-01-01T00:00:00Z'\nstamp:\n", 1)
+    expect(forged != billing, "could not forge verified")
+    (wiki / "modules/billing.md").write_text(forged, encoding="utf-8")
+    validation = okf(repo, "validate", "--json", code=1)
+    expect(any(i["code"] == "unreviewed-edit" for i in validation["issues"]), "forged verified not caught")
+    (wiki / "modules/billing.md").write_text(billing, encoding="utf-8")
 
-    plan_packet = run(ws, "review", "plan")
-    write(
-        pathlib.Path(plan_packet["artifact"]),
-        json.dumps(
-            {
-                "subject_digest": plan_packet["subject_digest"],
-                "verdict": "changes_requested",
-                "merge_probes": [
-                    {
-                        "unit_ids": ["workspace-routing", "source-boundaries"],
-                        "decision": "keep-separate",
-                        "rationale": "Workspace routing and boundary maintenance are independent questions.",
-                    },
-                    {
-                        "unit_ids": ["workspace-routing", "workspace-algorithm"],
-                        "decision": "keep-separate",
-                        "rationale": "Entry navigation and the routing algorithm answer different maintenance questions.",
-                    },
-                    {
-                        "unit_ids": ["workspace-algorithm", "model.routing"],
-                        "decision": "keep-separate",
-                        "rationale": "Routing behavior and its code-derived model answer different questions.",
-                    },
-                ],
-                "issues": [
-                    {
-                        "id": "domain.failure-handling",
-                        "status": "open",
-                        "category": "domain-coverage",
-                        "claim": "The Plan does not explain failure handling.",
-                        "resolution": "Record the bounded fixture's lack of failure behavior.",
-                    }
-                ],
-            }
-        ),
-    )
-    if run(ws, "run", "status")["phase"] != "plan":
-        raise RuntimeError("rejected Plan review did not return to planning")
-    intent = json.loads(intent_path.read_text())
-    intent["analysis"]["global_model"] += (
-        " This bounded fixture does not establish failure behavior."
-    )
-    write(intent_path, json.dumps(intent))
-    run(ws, "plan", "compile")
-    plan_packet = run(ws, "review", "plan")
-    if plan_packet.get("previous_review", {}).get("issues", [{}])[0].get("id") != (
-        "domain.failure-handling"
-    ):
-        raise RuntimeError("follow-up Plan review omitted the prior report")
-    write(
-        pathlib.Path(plan_packet["artifact"]),
-        json.dumps(
-            {
-                "subject_digest": plan_packet["subject_digest"],
-                "verdict": "approved",
-                "merge_probes": [
-                    {
-                        "unit_ids": ["workspace-routing", "source-boundaries"],
-                        "decision": "keep-separate",
-                        "rationale": "Workspace routing and boundary maintenance are independent questions.",
-                    },
-                    {
-                        "unit_ids": ["workspace-routing", "workspace-algorithm"],
-                        "decision": "keep-separate",
-                        "rationale": "Entry navigation and the routing algorithm answer different maintenance questions.",
-                    },
-                    {
-                        "unit_ids": ["workspace-algorithm", "model.routing"],
-                        "decision": "keep-separate",
-                        "rationale": "Routing behavior and its code-derived model answer different questions.",
-                    },
-                ],
-                "issues": [
-                    {
-                        "id": "domain.failure-handling",
-                        "status": "resolved",
-                        "category": "domain-coverage",
-                        "claim": "The Plan does not explain failure handling.",
-                        "resolution": "Record the bounded fixture's lack of failure behavior.",
-                    }
-                ],
-            }
-        ),
-    )
-    write(
-        work / "composition.md",
-        markdown(
-            {
-                "kind": "composition-map",
-                "reference_roots": [],
-                "pages": [
-                    {
-                        "id": "architecture",
-                        "path": "system/architecture.md",
-                        "type": "Flow",
-                        "title": "Architecture",
-                        "description": "Open before changing Source boundaries.",
-                        "tags": ["architecture"],
-                        "units": ["source-boundaries"],
-                        "diagrams": [
-                            {
-                                "id": "source-handoff",
-                                "kind": "sequence",
-                                "question": "How does the boundary cross Sources?",
-                                "sources": ["API", "WebUI"],
-                            }
-                        ],
-                    },
-                    {
-                        "id": "overview",
-                        "path": "routing/overview.md",
-                        "type": "Domain",
-                        "title": "Overview",
-                        "description": "Open first to route work.",
-                        "tags": ["overview"],
-                        "units": ["workspace-routing"],
-                        "diagrams": [],
-                    },
-                    {
-                        "id": "data-model",
-                        "path": "routing/data-model.md",
-                        "type": "DataModel",
-                        "title": "Routing model",
-                        "description": "Open before changing routing structure.",
-                        "tags": ["routing", "model"],
-                        "units": ["model.routing"],
-                        "diagrams": [
-                            {
-                                "id": "routing-model",
-                                "kind": "er",
-                                "question": "How does routing select a source boundary?",
-                                "sources": ["API", "WebUI"],
-                            }
-                        ],
-                    },
-                    {
-                        "id": "procedure",
-                        "path": "routing/workspace-procedure.md",
-                        "type": "Procedure",
-                        "title": "Workspace routing procedure",
-                        "description": "Open before changing the routing algorithm.",
-                        "tags": ["routing"],
-                        "units": ["workspace-algorithm"],
-                        "diagrams": [],
-                    },
-                ],
-                "gaps": [],
-            },
-            "# Composition\n\nStable page IDs are independent of publication paths.",
-        ),
-    )
-    requirements = run(ws, "composition", "prepare")
-    if requirements["effective_units"] != 4:
-        raise RuntimeError(f"Composition requirements are incomplete: {requirements}")
-    composition_packet = run(ws, "review", "composition")
-    write(
-        pathlib.Path(composition_packet["artifact"]),
-        json.dumps(
-            {
-                "subject_digest": composition_packet["subject_digest"],
-                "verdict": "changes_requested",
-                "merge_probes": [
-                    {
-                        "page_ids": ["architecture", "overview"],
-                        "decision": "keep-separate",
-                        "rationale": "The overview routes work while the architecture page owns boundary details.",
-                    },
-                    {
-                        "page_ids": ["overview", "procedure"],
-                        "decision": "keep-separate",
-                        "rationale": "The overview routes readers while the procedure explains the routing algorithm.",
-                    },
-                    {
-                        "page_ids": ["procedure", "data-model"],
-                        "decision": "keep-separate",
-                        "rationale": "The procedure explains behavior while the model explains structure.",
-                    },
-                ],
-                "issues": [
-                    {
-                        "id": "routing.page-routes",
-                        "status": "open",
-                        "category": "routing",
-                        "claim": "The Composition does not explain its page routes.",
-                        "resolution": "Record why each maintainer task lands on one page.",
-                        "area": "composition",
-                        "page_ids": [],
-                        "operation": "repair",
-                    }
-                ],
-            }
-        ),
-    )
-    if run(ws, "run", "status")["phase"] != "composition":
-        raise RuntimeError("rejected Composition review did not return to composition")
-    composition_path = work / "composition.md"
-    write(
-        composition_path,
-        composition_path.read_text(encoding="utf-8")
-        + "\nEach maintainer task has one explicit route.\n",
-    )
-    composition_packet = run(ws, "review", "composition")
-    if (
-        composition_packet.get("previous_review", {}).get("issues", [{}])[0].get("id")
-        != "routing.page-routes"
-    ):
-        raise RuntimeError("follow-up Composition review omitted the prior report")
-    write(
-        pathlib.Path(composition_packet["artifact"]),
-        json.dumps(
-            {
-                "subject_digest": composition_packet["subject_digest"],
-                "verdict": "approved",
-                "merge_probes": [
-                    {
-                        "page_ids": ["architecture", "overview"],
-                        "decision": "keep-separate",
-                        "rationale": "The overview routes work while the architecture page owns boundary details.",
-                    },
-                    {
-                        "page_ids": ["overview", "procedure"],
-                        "decision": "keep-separate",
-                        "rationale": "The overview routes readers while the procedure explains the routing algorithm.",
-                    },
-                    {
-                        "page_ids": ["procedure", "data-model"],
-                        "decision": "keep-separate",
-                        "rationale": "The procedure explains behavior while the model explains structure.",
-                    },
-                ],
-                "issues": [
-                    {
-                        "id": "routing.page-routes",
-                        "status": "resolved",
-                        "category": "routing",
-                        "claim": "The Composition does not explain its page routes.",
-                        "resolution": "Record why each maintainer task lands on one page.",
-                        "area": "composition",
-                        "page_ids": [],
-                        "operation": "repair",
-                    }
-                ],
-            }
-        ),
-    )
-    if run(ws, "run", "status")["phase"] != "write":
-        raise RuntimeError("approved Composition review did not unlock page writing")
+    okf(repo, "verify", "--actor", "human:alice", "modules/billing.md", "--json")
+    billing = (wiki / "modules/billing.md").read_text(encoding="utf-8")
+    expect("human:alice" in billing, "human verification missing")
+    commit(repo, "human review")
+    phase(repo, "done")
 
-    prepared_packets = {}
-    for page_id in ("architecture", "overview", "procedure", "data-model"):
-        prepared = run(ws, "page", "prepare", page_id)
-        packet = json.loads(pathlib.Path(prepared["artifact"]).read_text())
-        if (
-            packet["page"]["id"] != page_id
-            or pathlib.Path(prepared["output"]).name != f"{page_id}.md"
-        ):
-            raise RuntimeError(f"invalid page packet for {page_id}: {packet}")
-        prepared_packets[page_id] = packet
-        for entry in packet["evidence"]:
-            cache = json.loads(pathlib.Path(entry["cache_path"]).read_text())
-            if (
-                cache["resource"] != entry["seed"]
-                or "end-of-line" not in cache["content"]["text"]
-            ):
-                raise RuntimeError(
-                    "prepared evidence truncated a seed range or a long line"
-                )
-    if prepared_packets["architecture"]["draft_frontmatter"] != {"coverage": "partial"}:
-        raise RuntimeError("scoped non-model Gap was lost from the writer packet")
-    overview_packet = prepared_packets["overview"]
-    if (
-        {item["id"] for item in overview_packet["concepts"]}
-        != {"routing", "source-boundary"}
-        or {item["id"] for item in overview_packet["related_pages"]}
-        != {"architecture", "procedure", "data-model"}
-        or [item["id"] for item in overview_packet["units"]] != ["workspace-routing"]
-        or {item["id"] for item in overview_packet["projections"]}
-        != {"workspace-algorithm", "source-boundaries", "model.routing"}
-    ):
-        raise RuntimeError("Domain page packet did not project its complete domain")
+    # A cited file renamed out of every scope is followed, not reported deleted.
+    git(repo, "mv", "src/billing/retry.py", "src/core_retry.py")
+    commit(repo, "move retry")
+    report = okf(repo, "impact", "--json")
+    moved = {(p["page"], r["kind"], r.get("suggested")) for p in report["pages"] for r in p["reasons"]
+             if r["kind"].startswith("cited-") and r["path"] == "src/billing/retry.py"}
+    expect(moved == {("architecture.md", "cited-moved", "src/core_retry.py#L1"),
+                     ("modules/billing.md", "cited-moved", "src/core_retry.py#L1-L7")},
+           f"renamed citation: {json.dumps(report, indent=2)}")
 
-    api_ref = "API/src/main/java/example/App.java#L1-L2"
-    web_ref = "WebUI/src/main/java/example/App.java#L1-L2"
-    write(
-        work / "drafts/architecture.md",
-        page(
-            [api_ref, web_ref],
-            "See [overview][overview].",
-            "Flow",
-            prepared_packets["architecture"]["gaps"],
-        ),
-    )
-    write(
-        work / "drafts/overview.md",
-        page(
-            [api_ref, web_ref],
-            "See [architecture][architecture].",
-            "Domain",
-            prepared_packets["overview"]["gaps"],
-        ),
-    )
-    write(
-        work / "drafts/procedure.md",
-        page([api_ref], "[overview][overview].", "Procedure"),
-    )
-    write(
-        work / "drafts/data-model.md",
-        page(
-            [api_ref, web_ref],
-            "See [overview][overview].",
-            "DataModel",
-        ),
-    )
-
-    full_draft = work / "drafts/procedure.md"
-    full_page = full_draft.read_text(encoding="utf-8")
-    write(
-        full_draft, full_page + "\n## Gaps\n\nA scoped behavior remains unverified.\n"
-    )
-    rejected = invoke(ws, "review", "prepare", check=False)
-    rejected_data = json.loads(rejected.stdout)
-    if rejected.returncode != 1 or [
-        item["code"] for item in rejected_data.get("issues", [])
-    ] != ["gaps-unexpected"]:
-        raise RuntimeError("full coverage accepted a Gaps section")
-    write(full_draft, full_page)
-
-    intent = json.loads(intent_path.read_text())
-    intent["analysis"]["global_model"] += "\nEditorial clarification.\n"
-    write(intent_path, json.dumps(intent))
-    run(ws, "plan", "compile")
-    for command in ("plan", "composition"):
-        if command == "composition":
-            run(ws, "composition", "prepare")
-        fresh = run(ws, "review", command)
-        report_path = pathlib.Path(fresh["artifact"])
-        report = json.loads(report_path.read_text())
-        report["subject_digest"] = fresh["subject_digest"]
-        write(report_path, json.dumps(report))
-    for page_id, packet in prepared_packets.items():
-        if json.loads((work / f"page-packets/{page_id}.json").read_text()) != packet:
-            raise RuntimeError("unrelated Plan prose rewrote a page packet")
-
-    overview = work / "drafts/overview.md"
-
-    if run(ws, "run", "status")["next_actions"] != ["review prepare"]:
-        raise RuntimeError("complete drafts did not advance to review")
-    packet = run(ws, "review", "prepare")
-    if "previous_review" in packet:
-        raise RuntimeError("first review packet included prior review state")
-    if "complete_command" in packet:
-        raise RuntimeError("review packet leaked a coordinator-only command")
-    if packet.get("inputs", {}).get("composition_review") != str(
-        work / "composition-review.json"
-    ):
-        raise RuntimeError("bundle review packet omitted Composition approval")
-    candidate = pathlib.Path(packet["inputs"]["candidate"])
-    if (
-        not (candidate / "index.md").is_file()
-        or not (candidate / "system/index.md").is_file()
-        or not (candidate / "routing/index.md").is_file()
-    ):
-        raise RuntimeError("Candidate navigation indexes were not generated")
-    write(
-        pathlib.Path(packet["artifact"]),
-        json.dumps(
-            {
-                "subject_digest": packet["subject_digest"],
-                "verdict": "changes_requested",
-                "issues": [
-                    {
-                        "id": "coverage.overview-routing",
-                        "status": "open",
-                        "category": "coverage",
-                        "claim": "Overview needs an explicit routing statement.",
-                        "resolution": "Add the routing statement with evidence.",
-                        "area": "page",
-                        "page_ids": ["overview"],
-                        "operation": "repair",
-                    }
-                ],
-            }
-        ),
-    )
-    changed = run(ws, "review", "complete")
-    if changed["verdict"] != "changes_requested":
-        raise RuntimeError("review repair loop did not remain active")
-    write(
-        overview,
-        overview.read_text(encoding="utf-8")
-        + f"\nRouting starts here.[^ev-{hashlib.sha256(api_ref.encode()).hexdigest()[:16]}]\n",
-    )
-
-    packet = run(ws, "review", "prepare")
-    previous = packet.get("previous_review", {})
-    if previous.get("issues", [{}])[0].get(
-        "id"
-    ) != "coverage.overview-routing" or not previous.get("artifact"):
-        raise RuntimeError("follow-up review packet omitted the prior report")
-    write(
-        pathlib.Path(packet["artifact"]),
-        json.dumps(
-            {
-                "subject_digest": packet["subject_digest"],
-                "verdict": "approved",
-                "issues": [
-                    {
-                        "id": "coverage.overview-routing",
-                        "status": "resolved",
-                        "category": "coverage",
-                        "claim": "Overview needs an explicit routing statement.",
-                        "resolution": "Add the routing statement with evidence.",
-                        "area": "page",
-                        "page_ids": ["overview"],
-                        "operation": "repair",
-                    }
-                ],
-            }
-        ),
-    )
-    approved = run(ws, "review", "complete")
-    if approved["state"]["status"] != "approved":
-        raise RuntimeError("approved review did not approve the Run")
-
-    published = run(ws, "publication", "publish")
-    run(ws, "publication", "export", "--to", "wiki")
-    validation = run(ws, "validate", "--published")
-    if validation["errors"] or validation.get("complete") is not True:
-        raise RuntimeError(f"published validation failed: {validation}")
-    bound = pathlib.Path(published["path"]) / "routing/overview.md"
-    if "](/system/architecture.md)" not in bound.read_text(encoding="utf-8"):
-        raise RuntimeError("logical page ID was not bound")
-
-    configured = run(
-        ws,
-        "workspace",
-        "configure",
-        "--max-active-children",
-        "2",
-        "--search-max-results",
-        "2",
-    )
-    if (
-        configured["policy"]["agents"]["max_active_children"] != 2
-        or configured["policy"]["evidence"]["search"]["max_results"] != 2
-    ):
-        raise RuntimeError("workspace policy configuration was not persisted")
-    second = run(ws, "run", "start")
-    if second["policy"] != configured["policy"]:
-        raise RuntimeError("new Run did not snapshot the configured policy")
-    return {
-        "workspace": str(ws),
-        "published_generation": published["generation"],
-        "pages": published["pages"],
-        "next_run_phase": second["phase"],
-    }
+    # A missing canon page routes to research with the command that restores it,
+    # never to an update that could not place its reasons.
+    (wiki / "architecture.md").unlink()
+    commit(repo, "lose architecture", {"jobs/cron.py": "def tick():\n    pass\n"})
+    status = phase(repo, "research")
+    expect(status["next_actions"][0].startswith("recreate the canon page: okf new architecture.md"), f"{status}")
+    update = okf(repo, "update", "--json")
+    expect(any(u["reason"].startswith("unmapped-module jobs") for u in update["unplaced"]), f"unplaced: {update}")
+    phase(repo, "research")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--keep", action="store_true")
-    args = parser.parse_args()
-    base = pathlib.Path(tempfile.mkdtemp(prefix="okf-e2e-"))
-    try:
-        result = evaluate(base)
-        print(json.dumps({"passed": True, **result}, indent=2))
-    except Exception:
-        print(f"failed workspace retained at {base}")
-        raise
-    if not args.keep:
-        shutil.rmtree(base)
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            run(Path(tmp))
+        except Failure as exc:
+            print(f"FAIL: {exc}")
+            return 1
+    print("run_cli_e2e: ok")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

@@ -1,5 +1,7 @@
 # Source freeze and publication research
 
+> Historical research: written for the Run / Plan pipeline removed by [ADR 0027](../adr/0027-repository-knowledge-layer.md); the commands, artifacts and source locations it names no longer exist. Current design: [repository-knowledge-layer.md](../design/repository-knowledge-layer.md).
+
 ## Question
 
 How do comparable documentation and build systems avoid mutable-input races,

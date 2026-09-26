@@ -2,7 +2,11 @@
 # /// script
 # requires-python = ">=3.12"
 # ///
-"""Create a Java multi-source live-eval workspace."""
+"""Create a Java multi-repository hub for live evaluation.
+
+The hub is a git repository holding only the wiki; each source is a pinned
+clone in an ignored child directory. Prints the hub path.
+"""
 
 import argparse
 import json
@@ -50,62 +54,35 @@ def main() -> int:
     base = args.base.resolve()
     base.mkdir(parents=True, exist_ok=True)
     sources = SCENARIOS[args.scenario]
+    hub = base / f"hub-{int(time.time())}"
+    hub.mkdir()
+    call(hub, "git", "init", "-q", "-b", "main")
     for name, (url, revision) in sources.items():
-        target = base / name
-        if revision:
-            if not (target / ".git").is_dir():
-                target.mkdir(parents=True)
-                call(target, "git", "init", "-q")
-                call(target, "git", "remote", "add", "origin", url)
+        target = hub / name
+        target.mkdir()
+        call(target, "git", "init", "-q")
+        call(target, "git", "remote", "add", "origin", url)
+        try:
             call(target, "git", "fetch", "-q", "--depth", "1", "origin", revision)
-            call(target, "git", "checkout", "-q", "--detach", revision)
-        elif not (target / ".git").is_dir():
-            call(base, "git", "clone", "-q", "--depth", "1", url, str(target))
-    ws = base / f"ws-{int(time.time())}"
-    ws.mkdir()
-    call(ws, "uv", "run", str(OKF), "workspace", "init", "--lang", "zh")
+        except RuntimeError:  # transient network failure: retry once
+            time.sleep(5)
+            call(target, "git", "fetch", "-q", "--depth", "1", "origin", revision)
+        call(target, "git", "checkout", "-q", "--detach", revision)
+    okf = ["uv", "run", str(OKF)]
+    init = ["init", "--lang", "zh", "--hub"]
     for name in sources:
-        call(
-            ws,
-            "uv",
-            "run",
-            str(OKF),
-            "source",
-            "add",
-            "clone",
-            (base / name).as_uri(),
-            "--name",
-            name,
-            "--ref",
-            "HEAD",
-        )
-    started = call(
-        ws,
-        "uv",
-        "run",
-        str(OKF),
-        "run",
-        "start",
-        "--json",
-    )
-    status = json.loads(started.stdout)
-    if status.get("phase") != "plan":
-        raise RuntimeError(f"live fixture must start with one global Plan: {status}")
-    indexes = sorted(pathlib.Path(status["run_dir"]).joinpath("index").glob("*.md"))
-    if len(indexes) != len(sources):
-        raise RuntimeError(
-            "live fixture did not create one Source outline per Revision"
-        )
-    for index in indexes:
-        text = index.read_text(encoding="utf-8")
-        if (
-            index.stat().st_size > 64 * 1024
-            or "inventory complete" not in text
-            or "[build-module]" not in text
-            or "[source-set:" not in text
-        ):
-            raise RuntimeError(f"unbounded or non-navigable Source outline: {index}")
-    print(ws)
+        init += ["--source", name]
+    call(hub, *okf, *init)
+    call(hub, "git", "add", "-A")
+    call(hub, "git", "-c", "user.name=eval", "-c", "user.email=eval@example.com", "commit", "-q", "-m", "wiki stubs")
+    status = json.loads(call(hub, *okf, "status", "--json").stdout)
+    if status["phase"] != "discover":
+        raise RuntimeError(f"live fixture must start in discover: {status}")
+    scan = json.loads(call(hub, *okf, "scan", "--json").stdout)
+    names = {module["source"] for module in scan["modules"]}
+    if names != set(sources):
+        raise RuntimeError(f"scan did not find modules in every source: {sorted(names)}")
+    print(hub)
     return 0
 
 

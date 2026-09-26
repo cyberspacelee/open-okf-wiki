@@ -1,5 +1,7 @@
 # Ready-set Page DAG replaces the phase pipeline
 
+Status: superseded by ADR 0027
+
 The producer keeps deterministic Source capture, Pin/Catalog Indexing and
 Publication, but agent work is now only one bounded Workspace `plan` Target,
 `page` Targets that combine research and writing, and subject-bound `review`

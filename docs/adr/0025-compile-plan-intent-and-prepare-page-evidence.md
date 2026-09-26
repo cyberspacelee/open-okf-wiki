@@ -1,5 +1,7 @@
 # ADR 0025: Compile Plan Intent and prepare page evidence
 
+Status: superseded by ADR 0027
+
 ## Status
 
 Accepted. Supersedes the authored-ledger and writer-owned citation portions of

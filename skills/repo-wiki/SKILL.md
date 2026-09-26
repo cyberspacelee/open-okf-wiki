@@ -1,360 +1,134 @@
 ---
 name: repo-wiki
-description: Generate or refresh an evidence-anchored Domain Wiki and its human-reviewed post-publication AGENTS.md or CONTEXT.md onboarding proposals. Use for codebase Wikis, repository-wide architecture documentation, and resuming an existing Wiki run; do not use for ordinary onboarding-file edits or a standalone architecture diagram.
+description: Builds and incrementally updates a source-grounded repository knowledge layer (an OKF wiki) that helps coding agents change a codebase safely - architecture, workflows, invariants, project terminology and development conventions, each cited to source lines. Use to create, resume or refresh a repo wiki (single repository or a multi-repository hub, optionally with an OpenGauss schema), or to find which wiki pages a code change affects. Not for API reference dumps, single-file documentation or editing AGENTS.md by hand.
 ---
 
 # Repo Wiki
 
-Produce an OKF v0.2 Wiki from frozen Source revisions. Python owns Capture,
-Index, validation, late binding and Publication. The host agent owns planning,
-subagents and the loop. Requires Git, Python 3.12+ and `uv`.
+Capture what an agent cannot cheaply rediscover: why, boundaries, invariants,
+workflows, terminology, conventions, extension points, gotchas and change impact.
+`okf` owns scanning, status, validation, stamping and impact; you own judgment.
+Run every command from the repository root (the hub root in hub mode);
+`status`, `validate` and `impact` also work from any directory below it:
 
-Run commands from the Workspace root. `<skill>` is this directory; `okf` means:
+    okf = uv run <skill>/scripts/okf.py
 
-    uv run <skill>/scripts/okf.py
+`--wiki DIR` is needed only when the repository holds several wikis; it is
+accepted before or after the subcommand.
 
-The Workspace root is a control directory, not a Git repository. Begin with
-`okf run status --json`. Navigate registered Source content only with `okf
-evidence`; use ordinary filesystem tools only on fixed work Artifact paths
-returned by status. Treat `okf` as the deterministic kernel by default. If a
-kernel result conflicts with frozen evidence, enter diagnostic mode, record the
-conflict in `work/progress.md`, and stop publication until it is resolved.
-`--help` is not a workflow substitute, but may be used during diagnosis; copy
-any discovered contract into the relevant reference documentation.
-Use `status.sources` as the registered Source-name list.
-The public Plan contract is available through `okf plan schema --json`,
-`okf plan template --json` and [references/plan.md](references/plan.md).
+**Loop:** run `okf status --json`, do its `next_actions`, repeat until phase `done`.
+All work state lives in the wiki's draft pages: `status: draft` plus
+`<!-- okf:todo ... -->` blocks that hold briefs and pending changes. Keep the
+todo blocks current; they are your memory across context loss. Keep source code
+untouched for the whole session; the only files you write are wiki pages (and
+AGENTS.md, with user approval).
 
-## Resume
+| phase | do |
+|---|---|
+| `init` | `okf init [--wiki DIR] [--lang en\|zh]`; it creates `repo-wiki.yaml` and the glossary, conventions and architecture stubs, or writes nothing (a repository needs a first commit) |
+| `blocked` | fix the config error (a wrong `--wiki` names the configured wiki), or ask the user to commit or stash the dirty source files it names |
+| `update` | `okf update --json`: source changed since a page's revision; redrafts the affected pages with the changes in todo blocks |
+| `discover` | stage 1; it lasts until a canon page has a brief or every module and workflow stub has one; next actions name the stubs still missing a brief |
+| `structure` | stage 2 |
+| `research` | stage 3; a missing or broken canon page comes first: run the `okf new` command the action names, or fix its frontmatter |
+| `write` | stage 4 |
+| `review`, `stamp` | stage 5 |
+| `done` | rewrite a stale index with `okf stamp`, or show `git diff -- <wiki>` and commit only if asked; "nothing to do" means the wiki is committed and current |
 
-Run `okf run status --json`. When it returns `run: null`, run
-`okf workspace show --json`. If that succeeds, register any missing Sources and
-start. If it reports an uninitialized Workspace, initialize, register every
-Source, then start without supplying an ID:
+After `blocked`, `status` lists up to 20 issues, the phase's own first; `pending`
+issues are todo blocks, which block stamp but not validate.
 
-    okf workspace init --lang en --freshness-days 90
-    okf source add link ../service --name service
-    okf run start
+## Write, skip, cite
 
-Use the matching registration form for another filesystem Source:
+Write only what passes the Grep Test: leave out anything grep plus two or three
+files answers in a minute (signatures, field lists, directory trees, copied
+config, README restatement). Cite every canon table row and every causal "why"
+with a footnote whose definition starts with a locator:
+`[^billing-run]: src/billing/run.py#L10-L40`. Write only recorded rationale;
+where none exists, write "rationale not recorded". Priorities, section menu,
+table formats and examples: [pages](references/pages.md).
 
-    okf source add clone https://example.test/service.git --name service --ref main
-    okf source add files ../contracts --name contracts
+## 1. Discover
+Run `okf scan --json`. Read README, CONTRIBUTING, docs and ADRs, build and CI
+files and entry points. Create a stub per candidate module or workflow:
 
-For OpenGauss, provide an `opengauss://` URL, inspect the live schema, then
-register only the selected tables:
+    okf new modules/billing.md --type Module --description "Read before changing invoice generation or retries." --scope "src/billing/**"
 
-    okf db tables --url-env DATABASE_URL --json
-    okf db describe orders --url-env DATABASE_URL --json
-    okf source add opengauss --name database --url-env DATABASE_URL --schema public --table orders
+Write each finding as a brief into the todo block of the page it belongs to. For a
+large repo, dispatch 2-4 scouts by area: each creates stubs for its area and
+writes their briefs, and returns canon candidates, which you merge into the canon
+briefs as each handoff arrives. Signals and handoff format:
+[discovery](references/discovery.md).
 
-OpenGauss is the only supported database Source. A failed connection, server
-identity check or capture blocks the Run; do not replace it with code evidence.
-Without a configured database Source, the Plan recovers logical models from
-frozen code evidence.
+## 2. Structure
+Keep module pages only for real boundaries, and workflow pages only for flows an
+agent would debug or extend; delete stubs that fail the Grep Test. Finalize each
+page's `description` (when to read it) and `scope` globs. List scanned modules
+not worth a page in architecture's Not covered table with a reason. Done when
+`okf validate` reports no coverage, scope or not-covered errors.
 
-After `run start`, inspect captured database evidence without reconnecting:
+## 3. Research: canon first
+Write glossary, conventions and architecture before any other page; in a large
+repository give each canon page its own writer, but decide canonical names and
+Not covered rows yourself. Verify every candidate in source; drop what you
+cannot ground.
+- Glossary: project-specific terms only; one canonical name; aliases in `Avoid`.
+- Conventions: a rule needs a config file or two code instances. Run build, test
+  and lint when safe and record `verified`, `not-run` or `failed`.
+- Architecture: boundaries, dependency direction, recorded rationale,
+  cross-module invariants and change impact (scan `co_change`).
 
-    okf catalog tables --source database --json
-    okf catalog tables --source database --summary --json
-    okf catalog describe orders --source database --json
-    okf catalog describe orders --source database --full --json
+Keep the required headings `okf new` wrote. Done when the three pages have no
+todo block and `okf validate` shows no error on them.
 
-Use these query commands as the database interface. Do not read Run state or
-captured Catalog JSON files, including paths exposed in packets.
+## 4. Write
+Dispatch one writer per remaining page, in parallel. Give each writer the page
+path, glossary, conventions, architecture and [pages](references/pages.md).
+Writers research only their scope, use canonical terms, delete the todo block,
+and return the page path, proposed new terms and the open-question count. Merge
+accepted terms into the glossary yourself. Done when no page has a todo block
+and `okf validate` shows no error; warnings go to review.
 
-When status reports a published or abandoned Run, `okf run start` begins a
-refresh from the already registered Sources. To discard a supported active or
-blocked Run, use `okf run abandon --json`; legacy state is rejected rather than
-migrated.
+## 5. Review and stamp
+Run `okf review prepare --json`. Dispatch a fresh reviewer that wrote none of
+these pages; it follows [review](references/review.md) and writes the review
+report (`_review.json`) at the path prepare names. On `changes_requested`,
+repair the issues and dispatch a new fresh reviewer; it reads the pages, the
+sources and the previous review report, nothing else from earlier rounds. Stop
+after 3 rounds and show the user the remaining issues. When approved, run
+`okf stamp --by repo-wiki/<model>`, then show the user the warnings stamp lists
+and `git diff -- <wiki>`; commit only if asked. With no independent reviewer
+available, run `okf stamp --unreviewed --by repo-wiki/<model>`; the pages stay
+honestly unverified. Stamp refuses `--unreviewed` while a `changes_requested`
+review report exists.
 
-Disk Artifacts are authoritative after restart or context compression:
+## Update
+With an existing wiki, `okf impact --json` shows which pages are stale and why;
+`okf update --json` turns them into drafts with todo blocks listing each change
+(ending in `(since <sha12>)`, so `git diff <sha12> -- <path>` shows it) and a
+suggested locator for moved lines. Reasons whose page is missing or unparsable
+come back under `unplaced`; restore that page as `okf status` says, then update again.
+Redo stages 3-5 for those pages only; revisit stage 2 only for unmapped or
+deleted modules.
+While coding: `okf impact --files <paths> --json` gives, per path, `read` (pages
+to read before editing), `update` (pages citing it), `change_impact` rows to
+check, the `canon` pages and a `note` (e.g. `no page covers this path`). It also
+works from a subdirectory or from inside a hub source, with relative paths read
+from the current directory.
 
-    work/plan.md
-    work/plan-intent.json
-    work/plan-ledger.json
-    work/progress.md
-    work/evidence/
-    work/plan-review.json
-    work/composition.md
-    work/composition-requirements.json
-    work/composition-review.json
-    work/reference-map.json
-    work/page-packets/<page-id>.json
-    work/evidence-cache/<evidence-id>.json
-    work/drafts/<page-id>.md
-    work/review.json
+## Optional
+- `okf pointer` prints the AGENTS.md pointer block (at most 15 lines: how to use
+  the wiki, glossary and conventions as must-read, `impact --files`, an `rg`
+  pattern for invariant rows, verified commands); `okf pointer --write
+  AGENTS.md` only with user approval. In a hub, a human pastes it into each
+  source's AGENTS.md.
+- `okf verify --actor human:<id> <page>` records a human review of a stable page
+  (once per actor until the page is re-stamped); never edit `verified` by hand (validate reports it as `unreviewed-edit`).
+- Multiple repositories (hub) or an OpenGauss schema: [extensions](references/extensions.md).
 
-These are logical names inside the current Run. Always use the absolute paths
-returned in `status.artifacts`; never construct or pass the internal Run ID.
-
-## Artifact loop
-
-On a first Run, or when phase order is unclear, read the compact
-[end-to-end walkthrough](references/end-to-end.md).
-
-Repeat until `status.status` is `published` or `blocked`:
-
-Treat `status.phase` as a disclosure boundary and `status.next_actions` as the
-commands or repairs to execute:
-
-| Phase | Load and act |
-| --- | --- |
-| `plan` | Author decisions and analysis in `plan-intent.json`; run `plan inspect`, then `plan compile` to generate Narrative and Ledger |
-| `plan-review` | Run `review plan`; its reviewer loads the returned reference |
-| `composition` | Run `composition prepare`, then create or repair `composition.md` |
-| `composition-review` | Run `review composition`; its reviewer loads the returned reference |
-| `write` | Prepare authored pages in sensible batches, then write drafts from those packets |
-| `review` | Run `review prepare` or `review complete`; its reviewer loads the returned reference |
-| `repair` | Repair the Plan, Composition or page Artifacts named by the final review |
-| `publish` | Run `publication publish` |
-| `blocked` | Resolve the external dependency, then run `run resume` |
-| `done` | Stop, or run `run start` when a refresh was requested |
-
-Reviewers load the reference named in their packet in their own context.
-
-1. Run `okf run status --json` after restart and after an action that can change
-   the derived phase; do not poll unchanged work.
-2. Execute its `next_actions` and repair every reported error.
-3. Dispatch independent evidence, page and review work when available; merge
-   path-only handoffs into the fixed Artifacts.
-4. Run status again. Missing work, rejected review and validation errors are
-   loop inputs, never stopping conditions.
-
-Replace a fixed Artifact with one write or update. Do not delete and recreate
-the same path in one patch operation.
-
-Read `status.policy.agents` at the start of the loop. Only the coordinator may
-spawn children. Across evidence, page, repair and review work, keep one global
-rolling window no larger than `max_active_children`; a host adapter may impose a
-smaller native cap. Base dispatch only on these numeric limits: use the smaller
-value when both exist, or the Run value when the host exposes no numeric cap.
-Fill the window, then dispatch the next pending item as soon as any child becomes
-terminal; do not wait for the slowest member of a batch.
-Count unique children across the Run and never exceed `max_children_per_run`.
-Record that count in `work/progress.md` after every successful first dispatch;
-reactivating a handle does not increase it. When the fuse is reached, merge
-residual questions into existing child follow-ups or block with the remaining
-work recorded in `work/progress.md`.
-Before a new phase, close completed child handles that will not receive
-follow-up work; retain only handles still needed for targeted repair or review.
-The same window applies when reactivating handles for repairs or follow-up.
-Record each successful dispatch and its fixed output immediately. If a batch is
-partially rejected, retry only the undispatched outputs; never respawn work
-whose handle was already returned.
-Use the host's child-agent dispatch directly; do not run a separate capability
-pre-check or infer availability from prose. Only when the actual tool inventory
-lacks dispatch, or dispatch explicitly returns unsupported, block with reason
-`host-child-agents-unavailable`; do not substitute the coordinator for an
-independent context. A dispatched worker or reviewer executes its assigned role
-directly and never changes Run status.
-
-Use `okf run block --reason <external-dependency>` only for credentials,
-ambiguous Source selection or another real external dependency. Resume with
-`okf run resume`.
-
-## Plan
-
-Read [references/plan.md](references/plan.md) and
-[references/contract.md](references/contract.md). One long-lived planner owns
-the cross-Source model and continuously overwrites `work/plan.md` and
-`work/plan-intent.json`. The Markdown Artifact is the readable synthesis; the
-JSON Intent contains semantic decisions. The kernel compiles the strict
-`work/plan-ledger.json`; agents never edit it. Organize
-coverage by Domain and leave page splitting to Composition. Model Basis is selected per Concept, so one Plan may combine
-OpenGauss-backed, code-derived and non-persistent Concepts. Replace the
-initial `work/progress.md` note before Plan review and keep it current before
-context compression and after merging worker results.
-Do not copy unit, page or draft counts into Progress; read the derived
-`status.artifact_counts` instead.
-
-Dispatch focused evidence subagents for independent Source investigations,
-call paths, database facts or unresolved hypotheses. They write focused notes
-under `work/evidence/` and return paths plus findings and gaps counts. They do
-not write separate Plans or choose Wiki pages. Each note answers one focused
-question and omits inventories and command transcripts. Split notes only at
-semantic boundaries such as Domain, Concept, call path or failure path. File
-existence while its worker is running is not a handoff: wait for the worker to
-return the path and counts, then pass that path to the planner or assigned page
-writer without relaying the note body through the coordinator. A
-Source count alone is not a reason to create one worker per Source. After one
-top-level outline per Source, dispatch two or more independent questions before
-deeper evidence navigation when those questions exist; the coordinator does
-not perform their searches itself.
-
-Inside one worker, keep evidence commands sequential. Agent fan-out is
-the concurrency boundary; launching many evidence commands concurrently adds
-router pressure without producing an additional independent judgment.
-
-Evidence-note granularity does not determine Plan-unit granularity. One focused
-note may support several independently routable units; apply the maintainer
-probes in `references/plan.md` before writing the Plan instead of turning each
-worker question into one umbrella unit. Composition later applies the Task
-Routing Test in `references/composition.md`.
-Default each note to one Source and one focused question. A cross-Source handoff
-note is the exception and separates findings by Source; its locators still must
-be translated into participant-complete Plan scopes.
-
-After merging the first evidence batch, treat every significant registered
-domain that is merely "not traced" as a residual investigation, not a Gap.
-Dispatch a focused worker for it before Plan review. A Gap is valid only when
-the registered revisions do not contain the needed evidence, the evidence is
-outside the registered Sources, or bounded navigation establishes a concrete
-unanswered boundary.
-
-Navigate frozen evidence with:
-
-    okf evidence outline . --source service --json
-    okf evidence search "literal" --source service --path src --json
-    okf evidence read service/src/App.java#L20-L80 --json
-
-Search and read limits come from `status.policy.evidence`, not per-call
-overrides. When `has_more` is true, continue with the returned `next_after` or
-`next_locator`; never restart the same bounded search from the beginning.
-
-Finish Plan decisions and `analysis` in the sole authored `plan-intent.json`,
-then run `okf plan inspect --json`. Repair all diagnostics at their JSON pointers;
-`checks_ran` and `skip_reasons` explain which checks could run. Run
-`okf plan compile --json` when inspection is clean. The compiler derives owner
-coverage, participants, complete Evidence Seeds, Catalog groups and model units,
-and generates both `plan.md` and `plan-ledger.json`. It renders citations and Gap
-IDs from Intent. Repair the Intent and recompile when either generated file is
-stale; every authored Plan change invalidates the digest-bound approval.
-When the Plan passes deterministic validation, `next_actions` returns `review
-plan`. Run that exact action; do not substitute the later bundle action `review
-prepare`.
-Its JSON stdout is the review packet, while its `artifact` field is the output
-path the reviewer must replace, not a packet file to read. Dispatch the packet
-verbatim to one independent reviewer; do not paraphrase the packet or retype its
-digest separately. The reviewer reads
-[references/plan-review.md](references/plan-review.md). The reviewer owns the
-fixed `work/plan-review.json`; send repaired Plans back to the same reviewer.
-For follow-up, tell the reviewer that the prior report is embedded in the new
-packet as `previous_review` and that the replacement report must copy the new
-packet's top-level `subject_digest`, never the nested prior digest.
-Plan is complete only when that digest-bound report is approved and status
-advances to Composition. Retain that reviewer handle through Composition review.
-
-## Write
-
-Read [references/composition.md](references/composition.md). The planner or one
-composer first runs `okf composition prepare --json`, then reads the generated
-requirements packet and turns the complete effective-unit set into
-`work/composition.md`.
-Composition is the first Artifact that defines page IDs, titles and physical
-paths. It assigns every knowledge unit exactly once and one Reference Root per
-OpenGauss Source; the final paths are the published hierarchy. The kernel
-derives Schema and Table references from those roots.
-
-Run `okf review composition --json` and send its packet to the retained Plan
-reviewer verbatim; do not restate its digest in prose. That reviewer reads
-[references/composition-review.md](references/composition-review.md) and writes
-`work/composition-review.json`. Send repaired Compositions back to the same
-reviewer with the new top-level digest and embedded `previous_review`. Start
-page writers only after status accepts this digest-bound review.
-
-If Composition review finds that the mapped Plan unit itself contains
-independent change surfaces, repair the Plan rather than manufacturing empty or
-duplicate page assignments. That invalidates Plan approval by design: repeat
-Plan review, rebuild Composition, then repeat Composition review with the same
-reviewer.
-
-Then read [references/page.md](references/page.md). For every authored page,
-run `okf page prepare <page-id> --json`. The kernel writes one digest-bound
-`work/page-packets/<page-id>.json`; command output names the packet, page
-reference and draft output, while the packet names the exact template, prepared
-evidence IDs and bounded cache paths. Do not
-construct those paths or give writers the complete Plan, Composition or
-Reference Map.
-
-For two or more independent pages, dispatch one writer per page instead of
-drafting them in the coordinator. Give each writer only its page packet path,
-the exact `reference` returned by the command, relevant evidence-note paths and
-the packet's output path and language. There is no language fallback; a missing
-locale template is a broken skill package. Schema and Table templates belong to
-deterministic generation and are never writer assignments. A Plan unit ID is
-never a draft ID unless it is also that page's declared ID.
-Never infer output language from Source text. Writers consume the prepared
-cache entries and cite only their `ev-*` IDs; they do not repeat searches,
-construct locators, write `sources`, or write footnote definitions. The kernel
-generates citation metadata during binding. Status derives missing and invalid drafts
-directly from Composition. Send page repairs back to the original writer while
-it remains available.
-
-For a writer evidence request, send its page ID, unsupported claim, existing
-evidence IDs and missing neighborhood to an evidence worker. Merge the result
-into Intent participant/model evidence or a scoped Gap, recompile and repeat affected approvals, then prepare and
-resume the requesting page. Page preparation reads complete seed ranges; its
-budget diagnostics require narrower seeds or a composition repair. A page
-packet is bounded to 256 KiB and its total packet plus cached evidence to 1 MiB.
-Related inputs determine packet validity, so unrelated editorial Plan changes
-retain prepared pages after the global reviews are renewed.
-
-Use `[label][page-id]` without a definition for logical page links. The kernel
-binds known IDs to final paths; generated reference IDs come only from the
-Reference Map. Unknown or guessed IDs fail review preparation.
-
-## Review and publish
-
-Run `okf review prepare --json`. It validates all work, binds the exact
-Candidate, generates OpenGauss reference pages and model blocks plus the root
-and directory Navigation Indexes, and returns one fixed review packet. Dispatch
-that complete packet
-verbatim to a fresh, independent reviewer; do not copy its digest into separate
-prose. The producing context must not review its own work. The reviewer reads
-[references/review.md](references/review.md) and writes `work/review.json`.
-
-When the packet includes `previous_review`, send it back to the same reviewer.
-Reactivate a completed reviewer through the host's follow-up operation using
-the exact handle returned at dispatch; do not reconstruct that handle. Only if
-a correctly addressed follow-up reports the reviewer unavailable, use one
-replacement with follow-up-only scope. The reviewer reads the prior report
-before replacing it in one write; reviewers do not patch the fixed JSON
-incrementally or run `review complete`, status, Publication, or export commands.
-
-Run `okf review complete --json`. On `changes_requested`, use its complete
-`issues` array rather than the compact status summary. Group open issues by
-their named `page_ids` and include each issue's ID, claim and resolution
-verbatim in the corresponding writer follow-up. Schema and Table IDs have no
-writer draft: route their classification or placement defects to the Plan or
-Composition owner, then regenerate them. A generic "read the review" request
-is not a repair packet. Repair the named Plan, Composition or page files and
-prepare a new Candidate. Follow-up review verifies every prior issue and checks
-regressions introduced or unmasked by repairs. Report newly discovered,
-evidence-backed defects too, explaining the discovery in the claim; an earlier
-approval never suppresses a known error. Keep discovery focused on the affected
-evidence rather than restarting repository-wide exploration.
-Structural `split`, `merge` and `move` changes
-belong in Composition.
-
-After approval, `next_actions` returns `publication publish`. Run it, then
-verify:
-
-    okf publication publish
-    okf validate --published
-    okf publication export --to wiki --json
-
-Publication installs an immutable content-addressed generation and atomically
-switches the current pointer. Optional source-facing proposals run afterward:
-
-    okf propose start --json
-
-The coordinator owns this optional pass. After `propose start`, read the
-returned [references/propose.md](references/propose.md), write only inside its
-returned proposal directory, then run its `complete_command` (normally `okf
-propose complete --json`).
-
-Publication maintenance commands are explicit and optional:
-
-    okf publication current --json
-    okf publication verify --actor human:reviewer --page architecture.md --json
-    okf publication rollback --json
-    okf publication prune --keep 5 --json
-
-For PowerShell 7, consume native JSON directly instead of embedding Python or
-shell conditionals:
-
-```powershell
-$status = okf run status --json | ConvertFrom-Json
-$status.next_actions
-```
+## Rules
+- Locators are plain `path#Lx-Ly` relative to the repository root (hub root in
+  hub mode, where the first segment is the source name); a path with spaces is
+  written `<my app/x.py>#Lx-Ly`.
+- One writer per file at a time. The reviewer writes only `_review.json`.
+- Cite and copy only tracked source text; `.env` files, keys and credentials stay out.

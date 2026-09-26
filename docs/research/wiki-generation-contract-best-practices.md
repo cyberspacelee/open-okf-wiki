@@ -1,5 +1,7 @@
 # Repo Wiki 信息架构与质量门禁最佳实践
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-09-01  
 访问日期：2026-09-01  
 范围：greenfield contract，不考虑旧 Run、Artifact 或 schema 的兼容与迁移。

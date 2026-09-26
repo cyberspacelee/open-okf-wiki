@@ -1,5 +1,7 @@
 # Thin Wiki gated by the Grep Test
 
+Status: accepted; amended by ADR 0027
+
 The Wiki is a semantic routing layer, not a source mirror: it carries only
 knowledge that is expensive for an agent to rebuild by search — cross-module
 architecture, invariants, failure propagation, task entry points. Admission is

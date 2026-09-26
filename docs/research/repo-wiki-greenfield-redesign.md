@@ -1,5 +1,7 @@
 # Repo Wiki Greenfield Redesign：面向数千文件企业仓库
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-08-28
 范围：不考虑现有 contract、artifact 或 lifecycle 兼容性。资料只采用官方仓库、官方文档和论文。
 

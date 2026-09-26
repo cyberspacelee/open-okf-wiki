@@ -1,5 +1,7 @@
 # Per-Source bounded Index and Triage replace file-count splitting
 
+Status: superseded by ADR 0027
+
 `run start` writes one versioned, 64 KiB structural Index per Git/files Pin,
 then creates one `triage:<source>` Target. Triage must cover every eligible
 file exactly once as `deep`, `standard` or `inventory`; configured exclusions

@@ -1,5 +1,7 @@
 # Source Brief fan-in for multi-code-Source planning
 
+Status: superseded by ADR 0027
+
 When a Run has more than one Git/files Source, it starts one `plan:<source>`
 Target per Source. These Targets run independently and write bounded Source
 Briefs containing roles, lifecycle or invariant candidates, local evidence,

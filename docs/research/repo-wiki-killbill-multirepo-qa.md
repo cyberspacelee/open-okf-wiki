@@ -1,5 +1,7 @@
 # Repo Wiki Kill Bill 多仓黑盒 QA
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-08-28 至 2026-08-29
 结论：按领域概念规划页面的方向成立，但当前运行成本、worker 接口摩擦和 review
 收敛性不足以支撑企业级多仓项目。本次 Run 没有发布，不能把 7 个 Candidate 叶子页

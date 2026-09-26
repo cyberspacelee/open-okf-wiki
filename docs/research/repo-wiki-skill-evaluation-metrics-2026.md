@@ -1,5 +1,7 @@
 # Repo Wiki Skill 评测指标与流程
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-08-29
 
 结论：repo-wiki 的评测应分成结果、轨迹、资源、可靠性、人工质量和评测有效性六层。

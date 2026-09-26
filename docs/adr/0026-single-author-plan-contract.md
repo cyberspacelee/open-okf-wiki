@@ -1,7 +1,7 @@
 # Single-author Plan contract
 
-Status: accepted. Supersedes the Plan authoring and compilation portions of
-ADR 0025. The page evidence registry remains unchanged.
+Status: superseded by ADR 0027. It previously superseded the Plan authoring
+and compilation portions of ADR 0025.
 
 Plan Intent is the sole authored Plan Artifact. It contains semantic decisions
 and Plan Analysis; the kernel compiles the Plan Ledger and renders the Plan
@@ -17,5 +17,6 @@ checks must report their execution state and actionable source locations.
 
 This replaces the existing input contract without compatibility parsing or an
 OKF version change. Old Run state is rejected using the Run contract identity.
-The complete design and acceptance criteria are in
-[the Plan contract design](../design/plan-contract.md).
+The complete design and acceptance criteria were in
+`docs/design/plan-contract.md`, removed with the Plan pipeline (ADR 0027); see
+it in git history at commit `d33b9be`.

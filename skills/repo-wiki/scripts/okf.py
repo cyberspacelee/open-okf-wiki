@@ -2,804 +2,382 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#   "pydantic>=2.12,<3",
 #   "PyYAML>=6,<7",
 #   "psycopg[binary]>=3.2,<4",
 # ]
 # ///
-"""Deterministic kernel for the repo-wiki skill."""
+"""Deterministic kernel for the repo-wiki skill. Run from the repository root
+(the hub root in hub mode); status, validate and impact also run from below it."""
 
 import argparse
 import json
 import pathlib
 import sys
 
-MAX_ISSUES = 50
-POLICY_FIELDS = (
-    "max_active_children",
-    "max_children_per_run",
-    "search_max_results",
-    "search_max_output_bytes",
-    "read_default_lines",
-    "read_max_lines",
-    "read_max_output_bytes",
-)
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+import _config
+import _git
+import _page
+
+MAX_SHOWN = 50
+
+
+def root() -> pathlib.Path:
+    return pathlib.Path.cwd()
 
 
 def workspace_root() -> pathlib.Path:
-    return pathlib.Path.cwd()
+    """The workspace root for the read-only commands (status, validate, impact):
+    the git toplevel of the current directory, or the hub root when that toplevel
+    is a configured source of an enclosing hub. Commands that write still run
+    from the root itself."""
+    cwd = root().resolve()
+    top = _git.toplevel(cwd)
+    if top is None:
+        return cwd  # load reports that this is not a git repository
+    return _config.enclosing_hub(top) or top
+
+
+def workspace(args) -> _config.Workspace:
+    return _config.load(root(), args.wiki)
 
 
 def emit(data, as_json: bool) -> None:
     if as_json:
         print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
-    elif isinstance(data, dict):
+        return
+    if isinstance(data, dict):
         for key, value in data.items():
+            if isinstance(value, (list, dict)):
+                value = json.dumps(value, ensure_ascii=False, default=str)
             print(f"{key}: {value}")
     else:
         print(data)
 
 
-def emit_issues(
-    issues: list[dict],
-    as_json: bool,
-    *,
-    skipped_checks: list[str] | None = None,
-    current_phase: str | None = None,
-) -> int:
-    if current_phase is not None:
-        issues = [
-            {
-                **item,
-                "phase": item.get("phase") or current_phase,
-                "applicability": (
-                    "blocking"
-                    if (item.get("phase") or current_phase) == current_phase
-                    else "pending"
-                ),
-            }
-            for item in issues
-        ]
-    errors = [item for item in issues if item.get("severity") == "error"]
-    blocking_errors = (
-        errors
-        if current_phase is None
-        else [item for item in errors if item.get("applicability") == "blocking"]
-    )
-    skipped_checks = skipped_checks or []
+def emit_issues(issues: list[dict], as_json: bool, extra: dict | None = None) -> int:
+    errors = sum(i["severity"] == "error" for i in issues)
+    pending = sum(i["severity"] == "pending" for i in issues)
+    warnings = sum(i["severity"] == "warning" for i in issues)
     if as_json:
-        print(
-            json.dumps(
-                {
-                    "complete": not skipped_checks,
-                    "errors": len(errors),
-                    "blocking_errors": len(blocking_errors),
-                    "pending_errors": len(errors) - len(blocking_errors),
-                    "current_phase": current_phase,
-                    "warnings": len(issues) - len(errors),
-                    "total": len(issues),
-                    "skipped_checks": skipped_checks,
-                    "issues": issues,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
+        emit({"errors": errors, "pending": pending, "warnings": warnings, "issues": issues} | (extra or {}), True)
     else:
-        for item in issues[:MAX_ISSUES]:
-            line = f":{item['line']}" if item.get("line") else ""
-            applicability = (
-                f" {item['applicability']}" if item.get("applicability") else ""
-            )
-            print(
-                f"{item['severity']}[{item['code']}]{applicability} "
-                f"{item['path']}{line}: {item['message']}"
-            )
-        if len(issues) > MAX_ISSUES:
-            print(f"... and {len(issues) - MAX_ISSUES} more; use --json")
-        print(f"{len(errors)} error(s), {len(issues) - len(errors)} warning(s)")
-    return 1 if errors or skipped_checks else 0
+        for item in issues[:MAX_SHOWN]:
+            where = item["page"] or "-"
+            if item.get("line"):
+                where += f":{item['line']}"
+            print(f"{item['severity']}[{item['code']}] {where}: {item['message']}\n  fix: {item['fix']}")
+        if len(issues) > MAX_SHOWN:
+            print(f"... and {len(issues) - MAX_SHOWN} more; use --json")
+        print(f"{errors} error(s), {pending} pending, {warnings} warning(s)")
+    return 1 if errors else 0
 
 
-def cmd_workspace(args) -> int:
-    import _workspace
+# --- commands ----------------------------------------------------------------------
 
-    if args.action == "init":
-        flat_policy = {field: getattr(args, field) for field in POLICY_FIELDS}
-        workspace = _workspace.init(
-            workspace_root(),
-            args.lang,
-            args.freshness_days,
-            _workspace.policy_from_flat(flat_policy),
-        )
-    elif args.action == "configure":
-        policy_updates = {
-            field: getattr(args, field)
-            for field in POLICY_FIELDS
-            if getattr(args, field) is not None
-        }
-        if args.lang is None and args.freshness_days is None and not policy_updates:
-            raise _workspace.WorkspaceError(
-                "workspace configure requires at least one setting"
-            )
-        workspace = _workspace.configure(
-            workspace_root(),
-            language=args.lang,
-            freshness_days=args.freshness_days,
-            policy_updates=policy_updates,
-        )
-    else:
-        workspace = _workspace.load(workspace_root())
+
+def cmd_init(args) -> int:
+    if bool(args.source) != args.hub:
+        raise _config.ConfigError("--hub needs at least one --source NAME, and --source needs --hub")
+    ws = _config.init(root(), args.wiki or "docs/wiki", args.lang, args.source if args.hub else None)
     emit(
         {
-            "version": _workspace.VERSION,
-            "workspace": str(workspace.root),
-            "language": workspace.language,
-            "freshness_days": workspace.freshness_days,
-            "policy": workspace.policy.model_dump(mode="json"),
-            "sources": {
-                name: source.to_dict() for name, source in workspace.sources.items()
-            },
+            "wiki": ws.wiki_rel,
+            "config": f"{ws.wiki_rel}/{_config.CONFIG}",
+            "pages": [f"{ws.wiki_rel}/{p}" for p in _page.CANON.values()],
+            "next": "okf status --json",
         },
         args.json,
     )
     return 0
 
 
-def add_policy_arguments(parser: argparse.ArgumentParser, *, defaults: bool) -> None:
-    from _models import RunPolicy
+def cmd_status(args) -> int:
+    import _status
 
-    policy = RunPolicy.defaults()
-    values = _workspace_flat_policy(policy) if defaults else {}
-    parser.add_argument(
-        "--max-active-children",
-        dest="max_active_children",
-        type=int,
-        default=values.get("max_active_children"),
-        help="maximum concurrently active repo-wiki subagents",
-    )
-    parser.add_argument(
-        "--max-children-per-run",
-        type=int,
-        default=values.get("max_children_per_run"),
-        help="maximum unique subagents spawned by one run",
-    )
-    parser.add_argument(
-        "--search-max-results",
-        dest="search_max_results",
-        type=int,
-        default=values.get("search_max_results"),
-        help="maximum matches returned by one evidence search",
-    )
-    parser.add_argument(
-        "--search-max-output-bytes",
-        dest="search_max_output_bytes",
-        type=int,
-        default=values.get("search_max_output_bytes"),
-        help="maximum UTF-8 bytes returned by one evidence search",
-    )
-    parser.add_argument(
-        "--read-default-lines",
-        dest="read_default_lines",
-        type=int,
-        default=values.get("read_default_lines"),
-        help="default evidence read window when no end line is supplied",
-    )
-    parser.add_argument(
-        "--read-max-lines",
-        dest="read_max_lines",
-        type=int,
-        default=values.get("read_max_lines"),
-        help="maximum lines returned by one evidence read",
-    )
-    parser.add_argument(
-        "--read-max-output-bytes",
-        dest="read_max_output_bytes",
-        type=int,
-        default=values.get("read_max_output_bytes"),
-        help="maximum UTF-8 bytes returned by one evidence read",
-    )
-
-
-def _workspace_flat_policy(policy) -> dict[str, int]:
-    return {
-        "max_active_children": policy.agents.max_active_children,
-        "max_children_per_run": policy.agents.max_children_per_run,
-        "search_max_results": policy.evidence.search.max_results,
-        "search_max_output_bytes": policy.evidence.search.max_output_bytes,
-        "read_default_lines": policy.evidence.read.default_lines,
-        "read_max_lines": policy.evidence.read.max_lines,
-        "read_max_output_bytes": policy.evidence.read.max_output_bytes,
-    }
-
-
-def cmd_source(args) -> int:
-    import _workspace
-
-    if args.action == "list":
-        workspace = _workspace.load(workspace_root())
-        emit(
-            {name: source.to_dict() for name, source in workspace.sources.items()},
-            args.json,
-        )
-        return 0
-    root = workspace_root()
-    if args.kind == "link":
-        source = _workspace.add_git_link(root, args.target, args.name)
-    elif args.kind == "clone":
-        source = _workspace.add_git_clone(root, args.target, args.name, args.ref)
-    elif args.kind == "files":
-        source = _workspace.add_files_source(root, args.target, args.name)
-    else:
-        source = _workspace.add_opengauss_source(
-            root,
-            args.name,
-            args.url_env,
-            args.schema,
-            args.table or [],
-        )
-    emit(source.to_dict(), args.json)
+    emit(_status.status(workspace_root(), args.wiki), args.json)
     return 0
 
 
-def cmd_run(args) -> int:
-    import _state
+def cmd_scan(args) -> int:
+    import _scan
 
-    root = workspace_root()
-    if args.action == "start":
-        result = _state.start_run(root)
-    elif args.action == "status":
-        result = _state.status(root)
-    elif args.action == "block":
-        result = _state.block(root, args.reason)
-    elif args.action == "resume":
-        result = _state.resume(root)
-    else:
-        result = _state.abandon(root)
-    emit(result, args.json)
+    emit(_scan.scan(workspace(args)), True)
     return 0
 
 
-def cmd_evidence(args) -> int:
-    import _state
-    from _files import compact_json
-
-    root = workspace_root()
-    if args.action == "outline":
-        result = _state.evidence_outline(
-            root,
-            source=args.source,
-            path=args.path,
-            after=args.after,
-        )
-    elif args.action == "search":
-        result = _state.evidence_search(
-            root,
-            source=args.source,
-            query=args.pattern,
-            path=args.path,
-            after=args.after,
-        )
-    else:
-        result = _state.evidence_read(root, args.locator)
-    sys.stdout.write(compact_json(result))
-    return 0
-
-
-def cmd_review(args) -> int:
-    import _state
-
-    if args.action == "plan":
-        result = _state.plan_review_prepare(workspace_root())
-    elif args.action == "composition":
-        result = _state.composition_review_prepare(workspace_root())
-    elif args.action == "prepare":
-        result = _state.review_prepare(workspace_root())
-    else:
-        result = _state.review_complete(workspace_root())
-    if not result.get("ok"):
-        return emit_issues(result["issues"], args.json)
-    emit(result, args.json)
-    return 0
-
-
-def cmd_plan(args) -> int:
-    import _state
-    from _models import KnowledgePlanIntent
-
-    if args.action == "schema":
-        emit(KnowledgePlanIntent.model_json_schema(), args.json)
-        return 0
-    if args.action == "template":
-        template = (
-            pathlib.Path(__file__).resolve().parent.parent / "assets/plan-intent.json"
-        )
-        value = KnowledgePlanIntent.model_validate_json(
-            template.read_text(encoding="utf-8")
-        )
-        emit(value.model_dump(mode="json", exclude_defaults=True), args.json)
-        return 0
-
-    result = (
-        _state.plan_compile(workspace_root())
-        if args.action == "compile"
-        else _state.plan_inspect(workspace_root())
-    )
-    emit(result, args.json)
-    return 0 if result.get("ok") else 1
-
-
-def cmd_composition(args) -> int:
-    import _state
-
-    result = _state.composition_prepare(workspace_root())
-    if not result.get("ok"):
-        return emit_issues(result["issues"], args.json)
-    emit(result, args.json)
-    return 0
-
-
-def cmd_publication(args) -> int:
-    import _publish
-
-    root = workspace_root()
-    if args.action == "publish":
-        result = _publish.publish(root)
-    elif args.action == "current":
-        result = _publish.current(root) or {"publication": None}
-    elif args.action == "rollback":
-        result = _publish.rollback(root)
-    elif args.action == "verify":
-        result = _publish.verify(root, args.actor, args.page)
-    elif args.action == "prune":
-        result = _publish.prune(root, args.keep)
-    else:
-        result = _publish.export(root, root / args.to)
-    emit(result, args.json)
+def cmd_new(args) -> int:
+    ws = workspace(args)
+    path = args.path.removeprefix(ws.wiki_rel + "/")
+    page = _page.new_page(ws, path, args.type, args.description, args.scope or (), args.title)
+    emit({"page": f"{ws.wiki_rel}/{page.path}", "type": page.type, "scope": page.scope}, args.json)
     return 0
 
 
 def cmd_validate(args) -> int:
-    import _publish
-    import _state
     import _validate
 
-    root = workspace_root()
-    if args.published:
-        current = _publish.current(root)
-        if current is None:
-            raise _publish.PublishError("nothing has been published")
-        result = _validate.validate_publication(root, pathlib.Path(current["path"]))
+    ws = _config.load(workspace_root(), args.wiki)
+    only = None
+    if args.paths:
+        only = [p.replace("\\", "/").removeprefix("./").removeprefix(ws.wiki_rel + "/") for p in args.paths]
+        missing = [p for p in only if not _page.is_page_path(p) or not (ws.wiki / p).is_file()]
+        if missing:
+            raise _page.PageError(
+                f"not a wiki page: {', '.join(missing)}; pass page paths such as "
+                "modules/billing.md (relative to the wiki directory)"
+            )
+    issues = _validate.validate(ws, only=only)
+    return emit_issues([i.to_dict() for i in issues], args.json)
+
+
+def cmd_review(args) -> int:
+    import _review
+
+    ws = workspace(args)
+    pages = _page.load_pages(ws)
+    if not _review.drafts(pages):
+        emit({"pages": [], "message": "no draft pages; nothing to review"}, args.json)
+        return 0
+    state, report = _review.state(ws, pages)
+    result = _review.subject(ws, pages) | {"state": state}
+    if report and state in ("changes_requested", "stale"):
+        result["previous_issues"] = len(report.get("issues") or [])
+    emit(result, args.json)
+    return 0
+
+
+def cmd_stamp(args) -> int:
+    import _stamp
+
+    ws = workspace(args)
+    result = _stamp.stamp(ws, args.by, args.unreviewed)
+    if result["blocked"]:
+        return emit_issues(result["blocked"], args.json, {"stamped": []}) or 1
+    if args.json:
+        emit(result, True)
+        return 0
+    emit({k: v for k, v in result.items() if k not in ("warnings", "blocked")}, False)
+    for item in result["warnings"]:
+        where = item["page"] or "-"
+        if item.get("line"):
+            where += f":{item['line']}"
+        print(f"warning[{item['code']}] {where}: {item['message']}")
+    print(f"{len(result['warnings'])} warning(s) remain; they do not block a stamp")
+    return 0
+
+
+def cmd_impact(args) -> int:
+    import _impact
+
+    ws = _config.load(workspace_root(), args.wiki)
+    if not args.files:
+        emit(_impact.impact(ws), args.json)
+        return 0
+    # Relative paths start from the current directory (source-relative inside a hub
+    # source, repository-relative at the root).
+    base = root().resolve()
+    emit(_impact.impact_files(ws, [_relative(ws, p, base) for p in args.files]), args.json)
+    return 0
+
+
+def _relative(ws: _config.Workspace, path: str, base: pathlib.Path) -> str:
+    """A path as given on the command line, made relative to the workspace root.
+
+    A relative path is relative to ``base``, the current directory: inside a hub
+    source it gets the source prefix, in a subdirectory the subdirectory prefix."""
+    candidate = pathlib.Path(path)
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    try:
+        return _posix_relative(candidate, ws.root)
+    except ValueError:
+        raise _config.ConfigError(
+            f"{path} is outside {ws.root}; pass paths inside the workspace"
+        ) from None
+
+
+def _posix_relative(path: pathlib.Path, root: pathlib.Path) -> str:
+    """``path`` relative to ``root``, without resolving the file itself (it may be deleted)."""
+    import os
+
+    rel = pathlib.Path(os.path.normpath(path.parent.resolve() / path.name)).relative_to(root)
+    return rel.as_posix()
+
+
+def cmd_update(args) -> int:
+    import _impact
+
+    emit(_impact.update(workspace(args)), args.json)
+    return 0
+
+
+def cmd_verify(args) -> int:
+    import _stamp
+
+    emit(_stamp.verify(workspace(args), args.actor, args.pages), args.json)
+    return 0
+
+
+def cmd_pointer(args) -> int:
+    import _stamp
+
+    ws = workspace(args)
+    if args.write:
+        emit(_stamp.write_pointer(ws, args.write), args.json)
     else:
-        state = _state.read(root)
-        if state is None:
-            raise _state.StateError("no run")
-        result = _validate.validate_candidate(
-            root, state, published=state["status"] in ("approved", "published")
-        )
-    current_phase = "publish" if args.published else _state.status(root)["phase"]
-    return emit_issues(
-        [item.to_dict() for item in result.issues],
-        args.json,
-        skipped_checks=result.skipped_checks,
-        current_phase=current_phase,
-    )
+        print(_stamp.pointer(ws), end="")
+    return 0
 
 
 def cmd_db(args) -> int:
     import _db
 
-    url = _db.resolve_url(workspace_root(), args.url_env)
+    ws_root = root()
+    url = _db.resolve_url(ws_root, args.url_env)
     if args.action == "tables":
-        emit_tables(_db.tables(url, args.schema), args.json)
+        emit(_db.tables(url, args.schema), args.json)
         return 0
-    emit(_db.describe(url, args.table, args.schema), args.json)
-    return 0
-
-
-def cmd_catalog(args) -> int:
-    import _db
-    import _state
-
-    root = workspace_root()
-    state = _state.read(root)
-    if state is None:
-        raise _state.StateError("no run")
-    catalogs = state.get("catalogs") or []
-    if args.action == "tables":
-        emit_tables(
-            _db.tables_captured(root, catalogs, args.source, summary=args.summary),
-            args.json,
-        )
+    if args.action == "describe":
+        emit(_db.describe(url, args.table, args.schema), args.json)
         return 0
-    result = _db.describe_captured(
-        root, catalogs, args.table, args.source, full=args.full
-    )
-    emit(result, args.json)
+    import _dbpages
+    import _files
+    import _stamp
+
+    ws = workspace(args)
+    capture = _db.capture(url, args.schema, args.table)
+    rendered = _dbpages.render_all(args.name, capture, ws.lang, args.into, _stamp.now())
+    written = []
+    for rel, text in sorted(rendered.items()):
+        file = ws.wiki / rel
+        if not file.is_file() or file.read_text(encoding="utf-8") != text:
+            _files.atomic_text(file, text)
+            written.append(f"{ws.wiki_rel}/{rel}")
+    emit({"pages": [f"{ws.wiki_rel}/{rel}" for rel in sorted(rendered)], "written": written}, args.json)
     return 0
 
 
-def cmd_page(args) -> int:
-    import _state
-
-    result = _state.page_prepare(workspace_root(), args.page_id)
-    if not result.get("ok"):
-        return emit_issues(result["issues"], args.json)
-    emit(result, args.json)
-    return 0
-
-
-def emit_tables(result: dict | list[dict], as_json: bool) -> None:
-    if as_json:
-        emit(result, True)
-        return
-    groups = result if isinstance(result, list) else [result]
-    for group in groups:
-        for table in group["tables"]:
-            print(table)
-
-
-def cmd_propose(args) -> int:
-    import _state
-
-    root = workspace_root()
-    if args.action == "start":
-        result = _state.propose_start(root)
-    else:
-        result = _state.propose_complete(root)
-        if not result.get("ok"):
-            return emit_issues(result["issues"], args.json)
-    emit(result, args.json)
-    return 0
-
-
-def leaf(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    parser.add_argument(
-        "--json", action="store_true", help="emit machine-readable JSON"
-    )
-    return parser
+# --- parser ------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="okf",
-        description=(
-            "Deterministic kernel for the repo-wiki skill: owns workspace "
-            "sources, run state, validation gates and publication. Run from "
-            "the workspace root."
-        ),
-    )
+    parser = argparse.ArgumentParser(prog="okf", description=__doc__)
+    parser.add_argument("--wiki", help="wiki directory (the one holding repo-wiki.yaml)")
     commands = parser.add_subparsers(dest="command", required=True)
 
-    workspace = commands.add_parser("workspace", help="create or inspect the workspace")
-    workspace_actions = workspace.add_subparsers(dest="action", required=True)
-    init = leaf(
-        workspace_actions.add_parser(
-            "init", help="create an empty workspace in the current directory"
-        )
-    )
-    init.add_argument(
-        "--lang", choices=("en", "zh"), default="en", help="wiki output language"
-    )
-    init.add_argument(
-        "--freshness-days",
-        type=int,
-        default=90,
-        help="days before published pages become stale",
-    )
-    add_policy_arguments(init, defaults=True)
-    configure = leaf(
-        workspace_actions.add_parser(
-            "configure", help="update settings used by the next Run"
-        )
-    )
-    configure.add_argument("--lang", choices=("en", "zh"))
-    configure.add_argument("--freshness-days", type=int)
-    add_policy_arguments(configure, defaults=False)
-    leaf(workspace_actions.add_parser("show", help="show workspace configuration"))
+    def add(name, func, help):
+        sub = commands.add_parser(name, help=help)
+        # Also accepted after the subcommand (`okf init --wiki DIR`); SUPPRESS keeps a
+        # value given before the subcommand when this one is absent.
+        sub.add_argument("--wiki", default=argparse.SUPPRESS, help="wiki directory (as the global option)")
+        sub.add_argument("--json", action="store_true", help="emit JSON")
+        sub.set_defaults(func=func)
+        return sub
 
-    source = commands.add_parser("source", help="register or list run inputs")
-    source_actions = source.add_subparsers(dest="action", required=True)
-    add = source_actions.add_parser("add", help="register a source")
-    source_kinds = add.add_subparsers(dest="kind", required=True)
-    link = leaf(
-        source_kinds.add_parser(
-            "link",
-            help="register a local Git worktree (external paths mount at <name>/)",
-        )
-    )
-    link.add_argument("target", help="path to the Git worktree")
-    link.add_argument("--name", required=True, help="unique source name")
-    clone = leaf(
-        source_kinds.add_parser("clone", help="clone a Git URL into <workspace>/<name>")
-    )
-    clone.add_argument("target", help="Git URL to clone")
-    clone.add_argument("--name", required=True, help="unique source name")
-    clone.add_argument("--ref", help="branch, tag or commit to check out")
-    opengauss = leaf(
-        source_kinds.add_parser(
-            "opengauss", help="register selected OpenGauss tables as evidence"
-        )
-    )
-    opengauss.add_argument("--name", required=True, help="unique source name")
-    opengauss.add_argument(
-        "--url-env",
-        default="DATABASE_URL",
-        help="environment variable holding the connection URL",
-    )
-    opengauss.add_argument("--schema", default="public", help="schema to select from")
-    opengauss.add_argument(
-        "--table", action="append", help="table to include (repeatable)"
-    )
-    files = leaf(
-        source_kinds.add_parser(
-            "files", help="register a local directory of contract or document files"
-        )
-    )
-    files.add_argument("target", help="path to the directory")
-    files.add_argument("--name", required=True, help="unique source name")
-    leaf(source_actions.add_parser("list", help="list registered sources"))
-    run = commands.add_parser("run", help="start, inspect or stop a generation run")
-    run_actions = run.add_subparsers(dest="action", required=True)
-    leaf(
-        run_actions.add_parser(
-            "start", help="freeze source revisions and create fixed work artifacts"
-        )
-    )
-    leaf(
-        run_actions.add_parser(
-            "status", help="derive the current phase and exact next actions"
-        )
-    )
-    block = leaf(run_actions.add_parser("block", help="record a real external blocker"))
-    block.add_argument("--reason", required=True, help="short external blocker")
-    leaf(run_actions.add_parser("resume", help="resume a blocked run"))
-    leaf(run_actions.add_parser("abandon", help="abandon the current run"))
+    init = add("init", cmd_init, "create repo-wiki.yaml and the canon page stubs")
+    init.add_argument("--lang", choices=_config.LANGS, default="en")
+    init.add_argument("--hub", action="store_true", help="the wiki documents several child repositories")
+    init.add_argument("--source", action="append", help="hub source directory (repeatable)")
 
-    evidence = commands.add_parser(
-        "evidence", help="navigate frozen Source evidence with bounded output"
-    )
-    evidence_actions = evidence.add_subparsers(dest="action", required=True)
-    outline = leaf(
-        evidence_actions.add_parser(
-            "outline", help="list one bounded directory in a frozen Source"
-        )
-    )
-    outline.add_argument("path", nargs="?", default=".", help="relative directory")
-    outline.add_argument("--source", required=True, help="source name")
-    outline.add_argument("--after", help="continue after an item from the prior page")
-    search = leaf(
-        evidence_actions.add_parser(
-            "search", help="search text in a frozen Source with bounded output"
-        )
-    )
-    search.add_argument("pattern", help="literal text, at most 256 characters")
-    search.add_argument("--source", required=True, help="source name")
-    search.add_argument("--path", default=".", help="relative scope path")
-    search.add_argument("--after", help="continue after a locator from the prior page")
-    read = leaf(
-        evidence_actions.add_parser(
-            "read", help="read one bounded locator from a frozen Source"
-        )
-    )
-    read.add_argument("locator", help="canonical source/path#Lx-Ly locator")
+    add("status", cmd_status, "derived phase and next actions")
+    add("scan", cmd_scan, "repository facts at HEAD (JSON on stdout)")
 
-    plan = commands.add_parser("plan", help="inspect or compile semantic Plan intent")
-    plan_actions = plan.add_subparsers(dest="action", required=True)
-    leaf(
-        plan_actions.add_parser(
-            "schema", help="show the public Plan Intent JSON Schema"
-        )
-    )
-    leaf(
-        plan_actions.add_parser(
-            "template", help="show a schema-valid illustrative Plan Intent"
-        )
-    )
-    leaf(
-        plan_actions.add_parser(
-            "inspect", help="report all actionable Plan diagnostics"
-        )
-    )
-    leaf(
-        plan_actions.add_parser(
-            "compile", help="generate the deterministic Plan ledger"
-        )
-    )
+    new = add("new", cmd_new, "create a draft page stub")
+    new.add_argument("path", help="wiki-relative page path such as modules/billing.md")
+    new.add_argument("--type", required=True, choices=_page.AUTHOR_TYPES)
+    new.add_argument("--description", required=True, help='when to read it: "Read before ..."')
+    new.add_argument("--title")
+    new.add_argument("--scope", action="append", help="source glob (repeatable)")
 
-    composition = commands.add_parser(
-        "composition", help="prepare the complete Composition contract"
-    )
-    composition_actions = composition.add_subparsers(dest="action", required=True)
-    leaf(
-        composition_actions.add_parser(
-            "prepare", help="generate required slots and effective unit mappings"
-        )
-    )
+    validate = add("validate", cmd_validate, "check every page; exit 1 on errors")
+    validate.add_argument("paths", nargs="*", help="report only these pages")
 
-    review = commands.add_parser(
-        "review", help="prepare or complete one independent Wiki bundle review"
-    )
-    review_actions = review.add_subparsers(dest="action", required=True)
-    leaf(
-        review_actions.add_parser(
-            "plan", help="prepare one independent Knowledge Plan review"
-        )
-    )
-    leaf(
-        review_actions.add_parser(
-            "composition", help="prepare one independent Composition review"
-        )
-    )
-    leaf(
-        review_actions.add_parser("prepare", help="bind drafts into the review bundle")
-    )
-    leaf(review_actions.add_parser("complete", help="validate the fixed review report"))
+    review = add("review", cmd_review, "review subject for the independent reviewer")
+    review.add_argument("action", choices=["prepare"])
 
-    publication = commands.add_parser(
-        "publication", help="publish, export, verify or roll back generations"
-    )
-    publication_actions = publication.add_subparsers(dest="action", required=True)
-    leaf(
-        publication_actions.add_parser(
-            "publish", help="install the approved candidate as the current generation"
-        )
-    )
-    leaf(
-        publication_actions.add_parser(
-            "current", help="show the current generation pointer"
-        )
-    )
-    leaf(
-        publication_actions.add_parser(
-            "rollback", help="switch back to the previous generation"
-        )
-    )
-    export = leaf(
-        publication_actions.add_parser(
-            "export", help="copy the current generation to a Git-managed directory"
-        )
-    )
-    export.add_argument("--to", default="wiki", help="export directory (default: wiki)")
-    verify = leaf(
-        publication_actions.add_parser(
-            "verify", help="record human verification of published pages"
-        )
-    )
-    verify.add_argument(
-        "--actor", required=True, help="human identity as human:<identity>"
-    )
-    verify.add_argument(
-        "--page", action="append", required=True, help="page path (repeatable)"
-    )
-    prune = leaf(
-        publication_actions.add_parser(
-            "prune",
-            help="delete old generations; keeps current, previous and --keep newest",
-        )
-    )
-    prune.add_argument("--keep", type=int, default=5, help="generations to retain")
+    stamp = add("stamp", cmd_stamp, "stamp reviewed drafts stable and rewrite index.md")
+    stamp.add_argument("--by", required=True, help="producer actor, e.g. repo-wiki/<model>")
+    stamp.add_argument("--unreviewed", action="store_true", help="stamp without an independent review")
 
-    validate = leaf(
-        commands.add_parser(
-            "validate",
-            help="validate the candidate (or the publication with --published)",
-        )
-    )
-    validate.add_argument(
-        "--published",
-        action="store_true",
-        help="validate the current publication instead of the run candidate",
-    )
+    impact = add("impact", cmd_impact, "stale pages since their revision, or pages covering files")
+    impact.add_argument("--files", nargs="+", help="paths you are about to change")
 
-    db = commands.add_parser(
-        "db", help="explore OpenGauss before selecting catalog tables"
-    )
-    db_actions = db.add_subparsers(dest="action", required=True)
-    tables = leaf(db_actions.add_parser("tables", help="list tables in a schema"))
-    tables.add_argument(
-        "--url-env", default="DATABASE_URL", help="env var with the connection URL"
-    )
-    tables.add_argument("--schema", default="public", help="schema to list")
-    describe = leaf(db_actions.add_parser("describe", help="describe one table"))
-    describe.add_argument("table", help="table name")
-    describe.add_argument(
-        "--url-env", default="DATABASE_URL", help="env var with the connection URL"
-    )
-    describe.add_argument("--schema", default="public", help="schema of the table")
+    add("update", cmd_update, "redraft stale pages with the changes in a todo block")
 
-    catalog = commands.add_parser(
-        "catalog", help="read a captured catalog without connecting to the database"
-    )
-    catalog_actions = catalog.add_subparsers(dest="action", required=True)
-    catalog_tables = leaf(
-        catalog_actions.add_parser(
-            "tables",
-            help="list selected tables from the current run's captured catalog",
-        )
-    )
-    catalog_tables.add_argument("--source", help="restrict to one catalog source")
-    catalog_tables.add_argument(
-        "--summary",
-        action="store_true",
-        help="include comments and column, foreign-key and index counts",
-    )
-    catalog_describe = leaf(
-        catalog_actions.add_parser(
-            "describe", help="describe one captured table, including comments"
-        )
-    )
-    catalog_describe.add_argument("table", help="table name or page slug")
-    catalog_describe.add_argument(
-        "--source", help="catalog source when the name is shared"
-    )
-    catalog_describe.add_argument(
-        "--full", action="store_true", help="include indexes and full constraints"
-    )
+    verify = add("verify", cmd_verify, "record a human review of stamped pages")
+    verify.add_argument("--actor", required=True, help="human:<id>")
+    verify.add_argument("pages", nargs="+")
 
-    page = commands.add_parser(
-        "page", help="prepare the bounded context packet for one authored page"
-    )
-    page_actions = page.add_subparsers(dest="action", required=True)
-    page_prepare = leaf(
-        page_actions.add_parser(
-            "prepare", help="derive one page packet from approved artifacts"
-        )
-    )
-    page_prepare.add_argument("page_id", help="authored Composition page id")
+    pointer = add("pointer", cmd_pointer, "print (or write) the AGENTS.md pointer block")
+    pointer.add_argument("--write", metavar="FILE", help="replace or append the block in FILE")
 
-    propose = commands.add_parser(
-        "propose", help="optional post-publish AGENTS/CONTEXT/ADR proposals"
-    )
-    propose_actions = propose.add_subparsers(dest="action", required=True)
-    leaf(propose_actions.add_parser("start", help="dispatch the propose worker packet"))
-    leaf(
-        propose_actions.add_parser(
-            "complete", help="validate proposal files; zero files is allowed"
-        )
-    )
+    db = add("db", cmd_db, "OpenGauss extension: inspect a schema or capture tables as pages")
+    db.add_argument("action", choices=["tables", "describe", "capture"])
+    db.add_argument("table", nargs="?", help="table name for describe")
+    db.add_argument("--url-env", required=True, help="variable holding an opengauss:// URL")
+    db.add_argument("--schema", default="public")
+    db.add_argument("--table", dest="tables", action="append", help="table to capture (repeatable)")
+    db.add_argument("--name", help="database name used in page paths and titles")
+    db.add_argument("--into", default="reference", help="wiki directory for the pages")
     return parser
 
 
-def main() -> int:
-    args = build_parser().parse_args()
-    handlers = {
-        "workspace": cmd_workspace,
-        "source": cmd_source,
-        "run": cmd_run,
-        "evidence": cmd_evidence,
-        "plan": cmd_plan,
-        "composition": cmd_composition,
-        "review": cmd_review,
-        "publication": cmd_publication,
-        "validate": cmd_validate,
-        "db": cmd_db,
-        "catalog": cmd_catalog,
-        "page": cmd_page,
-        "propose": cmd_propose,
-    }
-    try:
-        return handlers[args.command](args)
-    except Exception as exc:
-        import _db
-        import _publish
-        import _state
-        import _workspace
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.command == "db":
+        if args.action == "describe" and not args.table:
+            print("okf db describe needs a TABLE argument", file=sys.stderr)
+            return 2
+        if args.action == "capture":
+            if not args.tables or not args.name:
+                print("okf db capture needs --table (repeatable) and --name", file=sys.stderr)
+                return 2
+            args.table = args.tables
+    import _db
+    import _impact
+    import _stamp
 
-        if isinstance(
-            exc,
-            (
-                _workspace.WorkspaceError,
-                _state.StateError,
-                _publish.PublishError,
-                _db.DbError,
-            ),
-        ):
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
-        raise
+    expected = (
+        _config.ConfigError, _config.LocatorError, _page.PageError, _git.GitError,
+        _stamp.StampError, _impact.ImpactError, _db.DbError,
+    )
+    try:
+        return args.func(args)
+    except expected as exc:
+        return _fail(args, str(exc))
+    except OSError as exc:
+        # A command that fails midway has already rolled back what it wrote (init's undo
+        # runs on any exception); report the file problem instead of a traceback.
+        return _fail(args, os_error_message(exc))
+
+
+def os_error_message(exc: OSError) -> str:
+    """One user-facing line: what failed, on which path, and how to fix it."""
+    # A failed rename (the atomic write's temp file -> target) names the target.
+    where = next((f for f in (exc.filename2, exc.filename) if f is not None), "a file")
+    reason = exc.strerror or type(exc).__name__
+    if isinstance(exc, IsADirectoryError):
+        fix = "pass a file path, not a directory"
+    elif isinstance(exc, NotADirectoryError):
+        fix = "a parent of that path is a file; pass a path under a directory"
+    elif isinstance(exc, PermissionError):
+        fix = "make the path writable (check its permissions and owner) and rerun"
+    elif isinstance(exc, FileNotFoundError):
+        fix = "create the missing file or directory, or pass an existing path, and rerun"
+    else:
+        fix = "fix the file system problem at that path and rerun"
+    return f"cannot access {where}: {reason} ({type(exc).__name__}); {fix}"
+
+
+def _fail(args, message: str) -> int:
+    if getattr(args, "json", False):
+        print(json.dumps({"error": message}, ensure_ascii=False))
+    else:
+        print(f"okf: {message}", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-    raise SystemExit(main())
+    sys.exit(main())

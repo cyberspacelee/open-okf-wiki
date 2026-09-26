@@ -1,5 +1,7 @@
 # Wiki 生成 Artifact 与工作流最佳实践
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-09-04
 范围：针对 repo-wiki 的 Plan、数据库证据、Domain 页面、验证、agent context、writer dispatch 与跨平台 CLI。
 资料边界：只采用官方规范、官方项目文档和原始研究。
@@ -90,7 +92,7 @@ Concept-to-table 关系继续由 kernel 派生；同一 seed 不再为了不同�
 
 原问题中的契约一边要求“small frontmatter、body holds analysis”，一边让 Plan frontmatter 承担
 完整 coverage ledger，存在结构性张力。当前
-[`references/plan.md`](../../skills/repo-wiki/references/plan.md) 已通过 `plan.md` +
+`references/plan.md` (`skills/repo-wiki/references/plan.md`, removed) 已通过 `plan.md` +
 `plan-ledger.json` 消除这项冲突。
 
 ## 2. 数据库证据使用逻辑身份，不使用连接坐标

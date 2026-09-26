@@ -1,5 +1,7 @@
 # Proposals with human ratification; machines never canonize
 
+Status: accepted; amended by ADR 0027
+
 Everything that would touch a Source repository (AGENTS.md content, CONTEXT.md
 terms, ADR records) is generated only as a Proposal under
 the active Run's `proposals/` directory and applied through explicit human review. AGENTS.md is

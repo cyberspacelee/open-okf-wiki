@@ -1,5 +1,7 @@
 # Agent 仓库浏览：有界工具输出与渐进披露
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-08-28
 范围：评估 Triage / Survey 是否应读取完整 Index、递归枚举目录，或改用
 task-scoped CLI 按需浏览。资料只采用官方文档、规范和一手工程材料。

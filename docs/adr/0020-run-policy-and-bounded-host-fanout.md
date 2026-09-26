@@ -1,6 +1,6 @@
 # Run policy and bounded host fan-out
 
-Status: accepted
+Status: superseded by ADR 0027
 
 Extends ADR 0019. There is no compatibility or migration path for prior
 Workspace, Run or Publication state.

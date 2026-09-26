@@ -14,16 +14,27 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.11.28"
       - name: Unit tests
-        run: uv run --with pytest --with pydantic --with PyYAML --with "psycopg[binary]" pytest -q skills/repo-wiki/scripts/tests
+        working-directory: skills/repo-wiki/scripts
+        run: uv run --with pytest --with PyYAML --with "psycopg[binary]" -m pytest tests -q
       - name: CLI end-to-end
         run: uv run skills/repo-wiki/evals/run_cli_e2e.py
+      - name: Update recall (strict)
+        run: uv run skills/repo-wiki/evals/eval_update.py --strict
+      - name: Routing selftest
+        run: uv run skills/repo-wiki/evals/eval_routing.py selftest
+      - name: Citations selftest
+        run: uv run skills/repo-wiki/evals/eval_citations.py selftest
+      - name: Canon selftest
+        run: uv run skills/repo-wiki/evals/eval_canon.py selftest
+      - name: Lint
+        run: uvx ruff check skills/repo-wiki
       - name: PowerShell JSON pipeline
         if: runner.os == 'Windows'
         shell: pwsh

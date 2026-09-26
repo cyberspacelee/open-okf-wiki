@@ -91,7 +91,7 @@ The four GitHub `size` fields total 922,263 KB, about 901 MiB. That field is a
 repository-level planning signal, not a prediction of the exact shallow-clone
 checkout size. Use `--depth=1 --no-tags`, measure each repository with `du`, and
 check free space before starting repo-wiki. Stop before 1.6 GiB to retain room
-for `.okf-wiki`, generated artifacts, and Codex logs. If the checkout exceeds
+for the wiki, agent logs and scratch space. If the checkout exceeds
 that threshold, omit `killbill-platform` first; the remaining three repositories
 still preserve the public-contract, implementation, and shared-mechanics test.
 

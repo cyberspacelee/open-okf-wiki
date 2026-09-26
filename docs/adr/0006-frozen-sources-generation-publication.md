@@ -1,5 +1,7 @@
 # Generation-pointer publication
 
+Status: superseded by ADR 0027
+
 Publishing installs an immutable content-addressed directory, then atomically
 replaces the small current.json file. A previous pointer provides rollback.
 wiki/ is a separate recoverable export, because replacing a nonempty directory

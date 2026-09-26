@@ -1,5 +1,7 @@
 # State Gate: scripts are the only writers of Run state
 
+Status: superseded by ADR 0027
+
 `.okf-wiki/runs/<id>/state.json` is the durable source of truth for one Run,
 and only the state script may mutate it. Completing a phase target is not an
 agent self-declaration: the `complete` transition runs validation as a

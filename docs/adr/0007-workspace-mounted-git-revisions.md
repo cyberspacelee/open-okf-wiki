@@ -1,5 +1,7 @@
 # Workspace-mounted Git revisions
 
+Status: superseded by ADR 0027
+
 Every Git Source is a worktree inside the Workspace: local repositories are
 linked by path and URL sources are cloned as `<workspace>/<name>/` (ADR 0008).
 A Run records each HEAD commit and materializes a Pin at that commit (ADR 0011).

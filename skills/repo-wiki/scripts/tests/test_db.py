@@ -1,14 +1,7 @@
-import json
-import shutil
-from types import SimpleNamespace
+import pytest
 
 import _db
-import _state
-import _validate
-import _workspace
-import okf
-import pytest
-from _db import DbError, describe, load_env, resolve_url, tables
+from _db import DbError, capture, describe, load_env, resolve_url, tables
 
 
 @pytest.mark.parametrize(
@@ -55,24 +48,6 @@ def test_resolve_url_only_accepts_complete_opengauss_urls(tmp_path, url):
 def test_resolve_url_rejects_missing_variable(tmp_path):
     with pytest.raises(DbError, match="Variable 'MISSING' not found"):
         resolve_url(tmp_path, "MISSING")
-
-
-def test_workspace_rejects_postgres_source_kind(tmp_path):
-    _workspace.init(tmp_path)
-    path = tmp_path / "workspace.json"
-    config = json.loads(path.read_text())
-    config["sources"] = [
-        {
-            "name": "database",
-            "kind": "postgres",
-            "url_env": "DB_URL",
-            "schema": "public",
-            "tables": ["orders"],
-        }
-    ]
-    path.write_text(json.dumps(config))
-    with pytest.raises(_workspace.WorkspaceError, match="invalid source"):
-        _workspace.load(tmp_path)
 
 
 class FakeCursor:
@@ -288,40 +263,30 @@ def test_describe_preserves_composite_constraints_indexes_and_partitions(monkeyp
     assert result["constraints"][0]["definition"] == "CHECK (amount >= 0)"
     assert result["indexes"][0]["keys"] == ["amount DESC"]
     assert result["partitions"][0]["boundaries"] == ["2027-01-01"]
-    compact = _db.compact_table(result)
-    assert set(compact) == {
-        "schema",
-        "name",
-        "comment",
-        "relation_kind",
-        "persistence",
-        "columns",
-        "primary_key",
-        "foreign_keys",
-    }
-    assert "default" not in compact["columns"][2]
-    assert set(compact["foreign_keys"][0]) == {
-        "name",
-        "columns",
-        "ref_schema",
-        "ref_table",
-        "ref_columns",
-    }
     constraint_sql = next(sql for sql, _ in conn.sql if "pg_constraint" in sql)
     assert "constraint_name" not in constraint_sql
     assert "con.conrelid = %s" in constraint_sql
     assert "condisable" not in constraint_sql
 
+_SERVER = {
+    "opengauss_version": "7.0.0",
+    "working_version_num": 70000,
+    "deployment": "OpenSourceCentralized",
+    "server_version": "openGauss 7.0.0 build abc",
+    "database": "app",
+}
 
-def _described_table(comment="line items"):
+
+def _described_table(name="Order Items", comment="line items"):
     return {
         "schema": "Public Data",
-        "name": "Order Items",
+        "name": name,
         "comment": comment,
         "relation_kind": "table",
         "persistence": "permanent",
         "columns": [
             {
+                "position": 1,
                 "name": "id",
                 "type": "bigint",
                 "nullable": False,
@@ -337,33 +302,55 @@ def _described_table(comment="line items"):
     }
 
 
-def _capture(tmp_path, monkeypatch, comment="line items"):
-    monkeypatch.setenv(
-        "DB_URL", "opengauss://secret:token@db.example:5432/app?sslmode=require"
-    )
-    return _db.capture_catalog(
-        tmp_path,
-        SimpleNamespace(
-            name="appdb",
-            url_env="DB_URL",
-            schema="Public Data",
-            tables=("Order Items",),
-        ),
-        inspect=lambda _url, _schema, _selected: (
-            {
-                "opengauss_version": "7.0.0",
-                "working_version_num": 70000,
-                "deployment": "OpenSourceCentralized",
-                "server_version": "openGauss 7.0.0 build abc",
-                "database": "app",
-            },
-            [_described_table(comment)],
-        ),
-    )
+def _inspect(*described):
+    calls = []
+
+    def inspect(url, schema, selected):
+        calls.append((url, schema, list(selected)))
+        by_name = {item["name"]: item for item in described}
+        return _SERVER, [by_name[name] for name in selected if name in by_name]
+
+    inspect.calls = calls
+    return inspect
 
 
-def test_capture_uses_one_connection_and_snapshot(tmp_path, monkeypatch):
-    monkeypatch.setenv("DB_URL", "opengauss://localhost/app")
+def test_capture_returns_tables_hashes_and_server_fingerprint():
+    inspect = _inspect(_described_table("b"), _described_table("a"))
+    result = capture("opengauss://db/app", "Public Data", ["b", "a"], inspect=inspect)
+
+    assert inspect.calls == [("opengauss://db/app", "Public Data", ["a", "b"])]
+    assert set(result) == {"server", "schema", "tables", "sha256", "catalog_sha256"}
+    assert result["server"] == _SERVER
+    assert result["schema"] == "Public Data"
+    assert list(result["tables"]) == ["a", "b"]
+    assert result["tables"]["a"]["columns"][0]["type"] == "bigint"
+    assert result["sha256"]["a"] == _db._hash_json(result["tables"]["a"])
+    assert len(result["catalog_sha256"]) == 64
+
+
+def test_capture_hashes_change_only_for_changed_tables():
+    first = capture("u", "s", ["a", "b"], inspect=_inspect(
+        _described_table("a", "first"), _described_table("b")
+    ))
+    second = capture("u", "s", ["a", "b"], inspect=_inspect(
+        _described_table("a", "second"), _described_table("b")
+    ))
+    same = capture("u", "s", ["b", "a"], inspect=_inspect(
+        _described_table("a", "first"), _described_table("b")
+    ))
+
+    assert first["sha256"]["a"] != second["sha256"]["a"]
+    assert first["sha256"]["b"] == second["sha256"]["b"]
+    assert first["catalog_sha256"] != second["catalog_sha256"]
+    assert same == first
+
+
+def test_capture_names_missing_tables():
+    with pytest.raises(DbError, match="ghost"):
+        capture("u", "s", ["a", "ghost"], inspect=_inspect(_described_table("a")))
+
+
+def test_capture_uses_one_connection_and_snapshot(monkeypatch):
     conn = FakeConn(
         {
             "tables": [
@@ -381,166 +368,22 @@ def test_capture_uses_one_connection_and_snapshot(tmp_path, monkeypatch):
         return conn
 
     monkeypatch.setattr(_db, "_connect", connect)
-    _db.capture_catalog(
-        tmp_path,
-        SimpleNamespace(
-            name="appdb",
-            url_env="DB_URL",
-            schema="public",
-            tables=("orders", "customers"),
-        ),
-    )
+    result = capture("opengauss://localhost/app", "public", ["orders", "customers"])
 
     assert connections == [conn]
+    assert conn.closed
     assert sum(sql.startswith("begin transaction") for sql, _ in conn.sql) == 1
     assert sum("opengauss_version()" in sql for sql, _ in conn.sql) == 1
+    assert list(result["tables"]) == ["customers", "orders"]
+    assert result["server"]["database"] == "app"
 
 
-def test_catalog_is_manifest_plus_hash_checked_table_shards(tmp_path, monkeypatch):
-    catalog = _capture(tmp_path, monkeypatch)
-    directory = _db.catalog_dir(tmp_path, catalog["storage_key"])
-    manifest = json.loads((directory / "catalog.json").read_text())
-    table = manifest["tables"][0]
-
-    assert set(catalog) == {"name", "content_hash", "storage_key"}
-    assert not (directory / "index.json").exists()
-    assert "columns" not in manifest["tables"][0]
-    assert manifest["tables"][0]["path"].startswith("tables/")
-    assert manifest["tables"][0]["content_hash"] == table["content_hash"]
-    assert table["column_count"] == 1
-    assert table["foreign_key_count"] == 0
-    assert table["index_count"] == 0
-    assert "secret" not in json.dumps(manifest)
-    assert "token" not in json.dumps(manifest)
-    assert manifest["resource"] == "appdb/."
-    assert table["resource"] == "appdb/Order%20Items"
-    assert "db.example" not in json.dumps(manifest)
-    assert table["page_slug"].startswith("order-items-")
-
-    payload = _db.load_catalog(tmp_path, catalog["storage_key"])
-    assert payload["tables"][0]["columns"][0]["type"] == "bigint"
-    assert _db.load_index(tmp_path, catalog["storage_key"]) == manifest
-    expected_tables = [
-        {
-            "source": "appdb",
-            "schema": "Public Data",
-            "count": 1,
-            "tables": ["Order Items"],
-        }
-    ]
-    assert _db.tables_captured(tmp_path, [catalog]) == expected_tables
-    summary = _db.tables_captured(tmp_path, [catalog], summary=True)[0]["tables"][0]
-    assert summary == {
-        "name": "Order Items",
-        "comment": "line items",
-        "column_count": 1,
-        "foreign_key_count": 0,
-        "index_count": 0,
-    }
-    assert (
-        _db.describe_captured(tmp_path, [catalog], "Order Items")["comment"]
-        == "line items"
-    )
-    assert "indexes" not in _db.describe_captured(tmp_path, [catalog], "Order Items")
-    assert "indexes" in _db.describe_captured(
-        tmp_path, [catalog], "Order Items", full=True
-    )
-    with pytest.raises(DbError, match="Captured catalog 'missing' not found"):
-        _db.tables_captured(tmp_path, [catalog], "missing")
-
-    shard = directory / manifest["tables"][0]["path"]
-    changed = json.loads(shard.read_text())
-    changed["comment"] = "tampered"
-    shard.write_text(json.dumps(changed))
-    with pytest.raises(DbError, match="integrity check"):
-        _db.load_table(tmp_path, catalog["storage_key"], table["page_slug"])
-
-
-def test_table_commands_emit_names_or_compact_json(tmp_path, monkeypatch, capsys):
-    summary = {
-        "database": "app",
-        "schema": "public",
-        "count": 2,
-        "tables": ["customers", "orders"],
-    }
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(_db, "resolve_url", lambda _root, _env: "opengauss://db/app")
-    monkeypatch.setattr(_db, "tables", lambda _url, _schema: summary)
-
-    assert okf.cmd_db(okf.build_parser().parse_args(["db", "tables"])) == 0
-    assert capsys.readouterr().out == "customers\norders\n"
-
-    assert okf.cmd_db(okf.build_parser().parse_args(["db", "tables", "--json"])) == 0
-    assert json.loads(capsys.readouterr().out) == summary
-
-    monkeypatch.setattr(
-        _db, "describe", lambda _url, table, _schema: {"name": table, "columns": []}
-    )
-    args = okf.build_parser().parse_args(["db", "describe", "orders"])
-    assert okf.cmd_db(args) == 0
-    assert capsys.readouterr().out == "name: orders\ncolumns: []\n"
-
-
-def test_catalog_tables_keeps_list_shape_and_emits_names(tmp_path, monkeypatch, capsys):
-    catalog = _capture(tmp_path, monkeypatch)
-    monkeypatch.setattr(okf, "workspace_root", lambda: tmp_path)
-    monkeypatch.setattr(_state, "read", lambda _root: {"catalogs": [catalog]})
-
-    args = okf.build_parser().parse_args(["catalog", "tables", "--source", "appdb"])
-    assert okf.cmd_catalog(args) == 0
-    assert capsys.readouterr().out == "Order Items\n"
-
-    args = okf.build_parser().parse_args(
-        ["catalog", "tables", "--source", "appdb", "--json"]
-    )
-    assert okf.cmd_catalog(args) == 0
-    assert json.loads(capsys.readouterr().out) == [
-        {
-            "source": "appdb",
-            "schema": "Public Data",
-            "count": 1,
-            "tables": ["Order Items"],
-        }
-    ]
-
-
-def test_catalog_hash_aggregates_table_hashes(tmp_path, monkeypatch):
-    first = _capture(tmp_path, monkeypatch, "first")
-    second = _capture(tmp_path, monkeypatch, "second")
-    first_table = _db.load_index(tmp_path, first["storage_key"])["tables"][0]
-    second_table = _db.load_index(tmp_path, second["storage_key"])["tables"][0]
-    assert first_table["content_hash"] != second_table["content_hash"]
-    assert first["content_hash"] != second["content_hash"]
-    assert first["storage_key"] != second["storage_key"]
-
-
-def test_catalog_state_record_size_does_not_grow_with_table_count():
-    payload = {
-        "name": "database",
-        "tables": [{"name": f"table_{index:03d}"} for index in range(195)],
-    }
-    content_hash = "a" * 64
-    record = _db.catalog_record(
-        payload,
-        content_hash,
-        _db.catalog_storage_key(payload["name"], content_hash),
-    )
-
-    assert set(record) == {"name", "content_hash", "storage_key"}
-    assert len(json.dumps(record).encode()) < 256
-
-
-def test_catalog_record_hash_must_match_the_stored_manifest(tmp_path, monkeypatch):
-    catalog = _capture(tmp_path, monkeypatch)
-    changed_hash = "f" * 64
-    changed_key = _db.catalog_storage_key(catalog["name"], changed_hash)
-    shutil.copytree(
-        _db.catalog_dir(tmp_path, catalog["storage_key"]),
-        _db.catalog_dir(tmp_path, changed_key),
-    )
-    record = {**catalog, "content_hash": changed_hash, "storage_key": changed_key}
-
-    assert not _validate._catalog_record_valid(tmp_path, record)
+def test_capture_live_missing_table_is_named(monkeypatch):
+    conn = FakeConn({"tables": [(10, "orders", "orders", "r", "p")]})
+    monkeypatch.setattr(_db, "_connect", lambda _url: conn)
+    with pytest.raises(DbError, match="ghost"):
+        capture("opengauss://localhost/app", "public", ["orders", "ghost"])
+    assert conn.closed
 
 
 def test_psycopg_url_only_translates_opengauss():

@@ -1,11 +1,8 @@
 import hashlib
 import json
 import pathlib
-import re
 from contextlib import contextmanager
-from urllib.parse import quote, urlsplit
-
-from _files import atomic_json
+from urllib.parse import urlsplit
 
 
 class DbError(Exception):
@@ -474,7 +471,7 @@ def _inspect_catalog(
         missing = sorted(set(selected) - set(by_name))
         if missing:
             raise DbError(
-                f"Configured tables not found in schema '{schema}': {missing}"
+                f"Tables not found in schema '{schema}': {', '.join(missing)}"
             )
         return fingerprint, [
             _describe_row(conn, schema, by_name[name]) for name in selected
@@ -492,243 +489,19 @@ def _hash_json(value: dict) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def catalog_storage_key(source_name: str, content_hash: str) -> str:
-    slug = re.sub(r"[^a-z0-9-]+", "-", source_name.lower()).strip("-")
-    return f"{slug[:24].rstrip('-') or 'catalog'}-{content_hash[:16]}"
-
-
-def catalog_dir(root: pathlib.Path, storage_key: str) -> pathlib.Path:
-    return root / ".okf-wiki" / "catalogs" / storage_key
-
-
-def catalog_record(payload: dict, content_hash: str, storage_key: str) -> dict:
-    """Catalog identity stored in state; table metadata stays in catalog.json."""
+def capture(url: str, schema: str, table_names, *, inspect=_inspect_catalog) -> dict:
+    """Describe the named tables in one read-only snapshot, with content hashes."""
+    names = sorted(set(table_names))
+    fingerprint, described = inspect(url, schema, names)
+    tables = {item["name"]: item for item in described}
+    missing = [name for name in names if name not in tables]
+    if missing:
+        raise DbError(f"Tables not found in schema '{schema}': {', '.join(missing)}")
+    hashes = {name: _hash_json(tables[name]) for name in names}
     return {
-        "name": payload["name"],
-        "content_hash": content_hash,
-        "storage_key": storage_key,
-    }
-
-
-def _read_json(path: pathlib.Path, description: str) -> dict:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise DbError(f"{description} is missing or invalid") from exc
-    if not isinstance(value, dict):
-        raise DbError(f"{description} is missing or invalid")
-    return value
-
-
-def load_index(root: pathlib.Path, storage_key: str) -> dict:
-    manifest = _read_json(
-        catalog_dir(root, storage_key) / "catalog.json",
-        f"captured catalog {storage_key}",
-    )
-    content_hash = manifest.get("content_hash")
-    body = {key: value for key, value in manifest.items() if key != "content_hash"}
-    if not isinstance(content_hash, str) or _hash_json(body) != content_hash:
-        raise DbError(f"captured catalog {storage_key} failed integrity check")
-    return manifest
-
-
-def load_catalog(root: pathlib.Path, storage_key: str) -> dict:
-    manifest = load_index(root, storage_key)
-    payload = {key: value for key, value in manifest.items() if key != "tables"}
-    payload["tables"] = []
-    for item in manifest["tables"]:
-        value = _read_json(
-            catalog_dir(root, storage_key) / item["path"],
-            f"captured table {item['name']}",
-        )
-        if _hash_json(value) != item.get("content_hash"):
-            raise DbError(f"captured table {item['name']} failed integrity check")
-        payload["tables"].append(value)
-    return payload
-
-
-def load_indexes(root: pathlib.Path, records: list[dict]) -> list[dict]:
-    return [load_index(root, record["storage_key"]) for record in records]
-
-
-def load_table(root: pathlib.Path, storage_key: str, page_slug: str) -> dict:
-    manifest = load_index(root, storage_key)
-    item = next(
-        (
-            table
-            for table in manifest.get("tables", [])
-            if table.get("page_slug") == page_slug or table.get("name") == page_slug
-        ),
-        None,
-    )
-    if item is None:
-        raise DbError(f"Table '{page_slug}' not found in captured catalog")
-    value = _read_json(
-        catalog_dir(root, storage_key) / item["path"],
-        f"captured table {item['name']}",
-    )
-    if _hash_json(value) != item.get("content_hash"):
-        raise DbError(f"captured table {item['name']} failed integrity check")
-    return value
-
-
-def tables_captured(
-    root: pathlib.Path,
-    catalogs: list[dict],
-    source: str | None = None,
-    *,
-    summary: bool = False,
-) -> list[dict]:
-    records = [
-        record for record in catalogs if not source or record.get("name") == source
-    ]
-    if source and not records:
-        raise DbError(f"Captured catalog '{source}' not found")
-    result = []
-    for record in records:
-        manifest = load_index(root, record["storage_key"])
-        entries = sorted(manifest["tables"], key=lambda table: table["name"])
-        names = [table["name"] for table in entries]
-        result.append(
-            {
-                "source": manifest["name"],
-                "schema": manifest["schema"],
-                "count": len(names),
-                "tables": (
-                    [
-                        {
-                            key: table.get(key)
-                            for key in (
-                                "name",
-                                "comment",
-                                "column_count",
-                                "foreign_key_count",
-                                "index_count",
-                            )
-                        }
-                        for table in entries
-                    ]
-                    if summary
-                    else names
-                ),
-            }
-        )
-    return result
-
-
-def describe_captured(
-    root: pathlib.Path,
-    catalogs: list[dict],
-    table: str,
-    source: str | None = None,
-    *,
-    full: bool = False,
-) -> dict:
-    matches = []
-    records = [
-        record for record in catalogs if not source or record.get("name") == source
-    ]
-    if source and not records:
-        raise DbError(f"Captured catalog '{source}' not found")
-    for record in records:
-        manifest = load_index(root, record["storage_key"])
-        for item in manifest.get("tables", []):
-            if item.get("name") == table or item.get("page_slug") == table:
-                matches.append(
-                    load_table(root, record["storage_key"], item["page_slug"])
-                )
-    if not matches:
-        raise DbError(f"Table '{table}' not found in captured catalog")
-    if len(matches) > 1:
-        raise DbError(f"Table '{table}' is ambiguous; pass --source")
-    return matches[0] if full else compact_table(matches[0])
-
-
-def compact_table(table: dict) -> dict:
-    compact = {
-        key: table.get(key)
-        for key in (
-            "resource",
-            "schema",
-            "name",
-            "comment",
-            "relation_kind",
-            "persistence",
-            "primary_key",
-        )
-        if key in table
-    }
-    compact["columns"] = [
-        {
-            key: column.get(key)
-            for key in ("position", "name", "type", "nullable", "comment")
-            if key in column
-        }
-        for column in table.get("columns", [])
-    ]
-    compact["foreign_keys"] = [
-        {
-            key: foreign_key.get(key)
-            for key in ("name", "columns", "ref_schema", "ref_table", "ref_columns")
-            if key in foreign_key
-        }
-        for foreign_key in table.get("foreign_keys", [])
-    ]
-    return compact
-
-
-def _page_slug(table: str) -> str:
-    safe = re.sub(r"[^a-z0-9_-]+", "-", table.lower()).strip("-") or "table"
-    if safe != table:
-        safe += "-" + hashlib.sha256(table.encode()).hexdigest()[:8]
-    return safe
-
-
-def capture_catalog(root: pathlib.Path, source, *, inspect=_inspect_catalog) -> dict:
-    url = resolve_url(root, source.url_env or "DATABASE_URL")
-    schema = source.schema or "public"
-    selected = list(source.tables)
-    fingerprint, described = inspect(url, schema, selected)
-    schema_resource = f"{source.name}/."
-    for item in described:
-        item["page_slug"] = _page_slug(item["name"])
-        item["resource"] = f"{source.name}/{quote(item['name'], safe='')}"
-
-    table_entries = []
-    for item in described:
-        table_entries.append(
-            {
-                "name": item["name"],
-                "page_slug": item["page_slug"],
-                "resource": item["resource"],
-                "path": f"tables/{item['page_slug']}.json",
-                "comment": item.get("comment") or "",
-                "relation_kind": item.get("relation_kind"),
-                "persistence": item.get("persistence"),
-                "column_count": len(item.get("columns", [])),
-                "foreign_key_count": len(item.get("foreign_keys", [])),
-                "index_count": len(item.get("indexes", [])),
-                "content_hash": _hash_json(item),
-            }
-        )
-    manifest_body = {
-        "name": source.name,
-        "schema": schema,
-        "resource": schema_resource,
         "server": fingerprint,
-        "tables": table_entries,
+        "schema": schema,
+        "tables": {name: tables[name] for name in names},
+        "sha256": hashes,
+        "catalog_sha256": _hash_json({"schema": schema, "tables": hashes}),
     }
-    content_hash = _hash_json(manifest_body)
-    manifest = {**manifest_body, "content_hash": content_hash}
-    storage_key = catalog_storage_key(source.name, content_hash)
-    directory = catalog_dir(root, storage_key)
-    capture = directory / "catalog.json"
-    if capture.is_file():
-        existing = load_index(root, storage_key)
-        if existing.get("content_hash") != content_hash:
-            raise DbError(f"catalog storage key collision: {storage_key}")
-    directory.mkdir(parents=True, exist_ok=True)
-    for entry, item in zip(table_entries, described, strict=True):
-        atomic_json(directory / entry["path"], item)
-    atomic_json(capture, manifest)
-    return catalog_record(manifest, content_hash, storage_key)

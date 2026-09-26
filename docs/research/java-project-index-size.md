@@ -1,5 +1,7 @@
 # 企业级 Java 仓库的 Source Index 体积实测
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-08-28  
 样本：Keycloak `96fef56e18cabf1b3e89812315a97dbf20243d51`  
 范围：只执行 workspace 初始化、Git clone 和 `run start`；未启动或执行 Triage / Survey。
@@ -91,11 +93,11 @@ Keycloak 跟踪文件形成 3,573 个物理目录节点（含根）。Index 先�
 
 - `truncated=true` 表示预算未保留全部候选目录记录，不表示文件被丢弃；文件计数仍
   精确守恒。实现的二分选择和向最近祖先合并见
-  [`_index.py` L125-L158](../../skills/repo-wiki/scripts/_index.py#L125) 与
-  [`_index.py` L161-L198](../../skills/repo-wiki/scripts/_index.py#L161)。
+  `_index.py` L125-L158 (`skills/repo-wiki/scripts/_index.py#L125`, removed) 与
+  `_index.py` L161-L198 (`skills/repo-wiki/scripts/_index.py#L161`, removed)。
 - `collapsed_dirs` 只统计**预算阶段被合并的候选记录**，不包含之前因单子目录链规则
   而不曾成为候选记录的 1,104 个物理节点；合并累加逻辑见
-  [`_index.py` L332-L337](../../skills/repo-wiki/scripts/_index.py#L332)。
+  `_index.py` L332-L337 (`skills/repo-wiki/scripts/_index.py#L332`, removed)。
 - 34 个实际顶层目录中，31 个出现在目录 `path`，32 个出现在任一路径字段；未显示的
   `.idea`、`.mvn` 并非主要业务模块，`tests` 虽未成为目录记录，仍通过入口/代表路径
   可见。根 POM 的 26 个直接模块则是目录路径可见 25 个、任一路径字段可见 26 个。
@@ -144,9 +146,9 @@ Keycloak 跟踪文件形成 3,573 个物理目录节点（含根）。Index 先�
 15,754 tokens；compact 后是 36,108 bytes / 10,526 tokens，但这会把稳定的全字段
 schema 变成稀疏 schema。优先 compact、暂不稀疏化更简单，也不增加 worker 判断。
 
-字段定义在 [`_index.py` L409-L425](../../skills/repo-wiki/scripts/_index.py#L409)；当前
+字段定义在 `_index.py` L409-L425 (`skills/repo-wiki/scripts/_index.py#L409`, removed)；当前
 预算估算和落盘都明确使用两空格 pretty JSON，分别见
-[`_index.py` L233-L234](../../skills/repo-wiki/scripts/_index.py#L233) 和
+`_index.py` L233-L234 (`skills/repo-wiki/scripts/_index.py#L233`, removed) 和
 [`_files.py` L10-L16](../../skills/repo-wiki/scripts/_files.py#L10)。`extensions`、入口和
 代表文件正是 Triage 路由的重要信号，所以体积 ablation 不能单独证明应删除它们。
 
@@ -280,11 +282,11 @@ CodeWiki 的依赖图或 DeepWiki 的自动索引，反推 Source Index 必须�
 当前 Source Index 同时有两个角色，但没有必要让它们共享同一种落盘语法：
 
 - 确定性 kernel 在 `_assemble` 中先用 dict 建立分区、合并记录并断言文件数守恒，见
-  [`_index.py` L161-L198](../../skills/repo-wiki/scripts/_index.py#L161)。这些保证应继续
+  `_index.py` L161-L198 (`skills/repo-wiki/scripts/_index.py#L161`, removed)。这些保证应继续
   留在结构化代码和测试里。
 - 当前落盘的 Source Index 之后没有被 runtime 反序列化来执行 gate；dispatch 只是把
   路径交给 Triage，见
-  [`_state.py` L533-L571](../../skills/repo-wiki/scripts/_state.py#L533)。真正被 gate 校验的
+  `_state.py` L533-L571 (`skills/repo-wiki/scripts/_state.py#L533`, removed)。真正被 gate 校验的
   是 Triage 输出的 scopes，而不是 Source Index 的 JSON 语法。
 
 所以技术上可以只把**模型可见的 Source Index**渲染成 Markdown，同时保留内部 dict、
@@ -312,21 +314,21 @@ dict、选择算法或 gate。
 ## 谁会读取 Index
 
 `run start` 为每个 revision 调用 `write_source_index`，随后创建一个 Triage target，见
-[`_state.py` L226-L250](../../skills/repo-wiki/scripts/_state.py#L226)；Index 从 Pin 的全部
+`_state.py` L226-L250 (`skills/repo-wiki/scripts/_state.py#L226`, removed)；Index 从 Pin 的全部
 非 exclude 文件确定性构建，见
-[`_index.py` L107-L122](../../skills/repo-wiki/scripts/_index.py#L107)。
+`_index.py` L107-L122 (`skills/repo-wiki/scripts/_index.py#L107`, removed)。
 
 dispatch 的实际分支在
-[`_state.py` L533-L571](../../skills/repo-wiki/scripts/_state.py#L533)：只有
+`_state.py` L533-L571 (`skills/repo-wiki/scripts/_state.py#L533`, removed)：只有
 `phase == "triage"` 才把 `drafts/index/<source>.md` 加入 `inputs`；Survey 不进入该
 分支，只有 Triage 和 Survey 都会收到 `ls_command`。运行规约也一致：
 
-- [`references/triage.md` L3-L17](../../skills/repo-wiki/references/triage.md#L3)
+- `references/triage.md` L3-L17 (`skills/repo-wiki/references/triage.md#L3`, removed)
   要求一次读取 packet 列出的完整 compact Index，仅在 `collapsed_dirs` 非零或结构
   不清楚时对单个目录分页 `task ls`。
-- [`references/survey.md` L3-L9](../../skills/repo-wiki/references/survey.md#L3)
+- `references/survey.md` L3-L9 (`skills/repo-wiki/references/survey.md#L3`, removed)
   明确写着 `do not read the Source Index`，而是从既定 scope 浏览和定向读取源码。
-- [`test_scopes_and_connect.py` L175-L189](../../skills/repo-wiki/scripts/tests/test_scopes_and_connect.py#L175)
+- `test_scopes_and_connect.py` L175-L189 (`skills/repo-wiki/scripts/tests/test_scopes_and_connect.py#L175`, removed)
   锁定了 Survey packet 不含 Index 且目录浏览不能越出 scope。
 
 所以当前上下文成本是“每个 Source 的 Triage 一次性读取一份 Index”，不是“每个

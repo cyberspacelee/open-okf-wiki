@@ -1,5 +1,7 @@
 # Pin the recorded Revision; live HEAD may move
 
+Status: superseded by ADR 0027
+
 A Run records each Git Source's HEAD commit and materializes a detached
 worktree Pin under `.okf-wiki/pins/<run>/<name>`. Workers and citation
 resolution read the Pin / object database at that commit. The live Source

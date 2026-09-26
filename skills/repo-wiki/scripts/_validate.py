@@ -1,2803 +1,878 @@
-import dataclasses
-import json
-import pathlib
+"""Every validation rule of the knowledge layer; each issue carries a one-sentence fix."""
+
 import re
-import tempfile
-from datetime import datetime
-from typing import Annotated, Literal
-from urllib.parse import unquote, urlparse
+import shlex
+from dataclasses import asdict, dataclass
+from functools import cached_property
+from pathlib import PurePosixPath
 
-from _db import (
-    DbError,
-    catalog_record,
-    catalog_storage_key,
-    load_catalog,
-    load_index,
-    load_indexes,
+import _config
+import _diagram
+import _files
+import _git
+import _page
+import _review
+import _scan
+from _markdown import strip_code_spans
+
+HEX40 = re.compile(r"[0-9a-f]{40}")
+MAX_PAGE_BYTES = 40 * 1024
+SEVERITY_ORDER = {"error": 0, "pending": 1, "warning": 2}
+
+# Causal markers that make a sentence a "why" claim.
+_CAUSAL = re.compile(
+    r"\b(because|so that|in order to|to avoid|to prevent|the reason)\b|因为|为了|以便|以免|由于|原因是",
+    re.IGNORECASE,
 )
-from _diagram import validate as validate_diagrams
-from _files import directory_digest, json_text
-from _frontmatter import parse_file, render
-from _markdown import extract
-from _models import (
-    CompositionMap,
-    CompositionReviewReport,
-    ConceptFrontmatter,
-    DraftFrontmatter,
-    KnowledgePlan,
-    KnowledgeGap,
-    KnowledgePlanIntent,
-    KnowledgeUnit,
-    PlanAnalysis,
-    PlanSemantics,
-    PlanReviewReport,
-    ReviewReport,
-    RunPolicy,
-    model_errors,
+_NO_RATIONALE = re.compile(r"rationale not recorded|理由未记录|未记录理由", re.IGNORECASE)
+_SECRETS = (
+    re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----"),
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{40,}\b"),
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{32,}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
+    re.compile(
+        r"(?i)\b(?:api[_-]?key|secret|token|passw(?:or)?d)\b[\"']?\s*[:=]\s*[\"'][^\"'\s]{16,}[\"']"
+    ),
+    re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]{6,}@"),
 )
-from pydantic import TypeAdapter, ValidationError
-
-_PLAN_SECTION_ADAPTERS = {
-    name: TypeAdapter(
-        Annotated[field.annotation, *field.metadata]
-        if field.metadata
-        else field.annotation
-    )
-    for name, field in PlanSemantics.model_fields.items()
-    if name != "kind"
-}
-
-_LINE_ANCHOR = re.compile(r"#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?$")
-CAUSAL = re.compile(
-    r"\b(because|in order to|so that)\b|为了|以便|因为|由于|以致|从而", re.IGNORECASE
-)
-_INLINE_REF = re.compile(r"\[\^[^\]]+\]")
-_LFS_PREFIX = b"version https://git-lfs.github.com/spec/v1"
-MAX_STRUCTURED_ARTIFACT_BYTES = 256 * 1024
-MAX_PAGE_INPUT_BYTES = 1024 * 1024
-_INITIAL_PROGRESS = "<!-- repo-wiki-progress:initial -->"
-_HAN = re.compile(r"[\u3400-\u9fff]")
-_LATIN = re.compile(r"[A-Za-z]")
-_TEMPLATE_NAMES = {
-    "Overview": "overview.md",
-    "Architecture": "architecture.md",
-    "Domain": "domain.md",
-    "Concept": "concept.md",
-    "Procedure": "procedure.md",
-    "Flow": "flow.md",
-    "Lifecycle": "lifecycle.md",
-    "DataModel": "data-model.md",
-    "Schema": "schema.md",
-    "Table": "table.md",
-}
-_GENERIC_PAGE_DIRECTORIES = {
-    pathlib.Path(name).stem for name in _TEMPLATE_NAMES.values()
-}
-_UNIT_PAGE_TYPES = {
-    "capability": ["Domain", "Concept", "Overview", "Architecture"],
-    "lifecycle": ["Lifecycle", "Domain", "Concept"],
-    "flow": ["Flow", "Procedure", "Domain"],
-    "integration": ["Flow", "Architecture", "Domain"],
-    "operations": ["Procedure", "Architecture", "Domain"],
-    "data-model": ["DataModel"],
-}
-_TABLE_SECTIONS = {
-    ("en", "Overview"): "Task entry points",
-    ("en", "Architecture"): "Failure and change propagation",
-    ("en", "Domain"): "Invariants and rules",
-    ("en", "Concept"): "Invariants and rules",
-    ("en", "Procedure"): "Rules and failure modes",
-    ("en", "Flow"): "Alternatives and recovery",
-    ("en", "Lifecycle"): "Transitions and guards",
-    ("en", "DataModel"): "Code-to-data mapping",
-    ("zh", "Overview"): "任务入口",
-    ("zh", "Architecture"): "故障与变更传播",
-    ("zh", "Domain"): "不变量与规则",
-    ("zh", "Concept"): "不变量与规则",
-    ("zh", "Procedure"): "规则与失败模式",
-    ("zh", "Flow"): "替代路径与恢复",
-    ("zh", "Lifecycle"): "转换与守卫条件",
-    ("zh", "DataModel"): "代码与数据映射",
-}
-_TABLE_SEPARATOR = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*$", re.MULTILINE)
+_IDENT_CELL = re.compile(r"^`[^`]+`$|^[A-Za-z_][\w.:/()-]*$")
+_FOOTNOTE_REF = re.compile(r"\[\^[^\]]+\]")
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclass(frozen=True)
 class Issue:
-    severity: Literal["error", "warning"]
     code: str
-    path: str
+    severity: str  # "error" | "warning" | "pending"
+    page: str | None
+    line: int | None
     message: str
-    line: int | None = None
-    phase: str | None = None
-    category: str | None = None
-    pointer: str | None = None
-    actual: object = None
-    suggestion: str | None = None
-    expected: str | None = None
-    example: object = None
-    derived_from: object = None
+    fix: str
 
     def to_dict(self) -> dict:
-        result = {
-            "severity": self.severity,
-            "code": self.code,
-            "path": self.path,
-            "message": self.message,
-        }
-        for name in (
-            "line",
-            "phase",
-            "category",
-            "pointer",
-            "actual",
-            "suggestion",
-            "expected",
-            "example",
-            "derived_from",
-        ):
-            value = getattr(self, name)
-            if value is not None:
-                result[name] = value
-        return result
+        return asdict(self)
 
 
-@dataclasses.dataclass(frozen=True)
-class ValidationResult:
-    issues: list[Issue]
-    skipped_checks: list[str]
-
-    @property
-    def complete(self) -> bool:
-        return not self.skipped_checks
+# --- shared repository facts ----------------------------------------------------
 
 
-def issue(
-    severity: Literal["error", "warning"],
-    code: str,
-    path: str,
-    message: str,
-    line: int | None = None,
-    phase: str | None = None,
+class Facts:
+    """HEAD facts computed once per command and shared by validate, status, stamp and
+    impact: the listing, modules, glob matches, revision checks and diffs are each
+    computed at most once, so the cost grows with files + globs, not their product."""
+
+    def __init__(self, ws: _config.Workspace):
+        self.ws = ws
+        self._matches: dict[str, list[str]] = {}
+        self._current: dict[tuple[str, str], bool] = {}
+        self._exists: dict[tuple[str, str], bool] = {}
+        self._changes: dict[tuple[str, str], list[tuple[str, str, str | None]]] = {}
+
+    @cached_property
+    def head(self) -> dict[str, str]:
+        return _page.current_revision(self.ws)
+
+    @cached_property
+    def listings(self) -> dict[str, list[str]]:
+        """Source name -> tracked source-relative paths at HEAD."""
+        return {s.name: _git.ls_files(s.path, self.head[s.name]) for s in self.ws.sources}
+
+    @cached_property
+    def files(self) -> list[str]:
+        """Workspace-relative tracked files at HEAD, wiki excluded, sorted."""
+        found: list[str] = []
+        for source in self.ws.sources:
+            for path in self.listings[source.name]:
+                ws_path = source.prefix + path
+                if ws_path == self.ws.wiki_rel or ws_path.startswith(self.ws.wiki_rel + "/"):
+                    continue
+                found.append(ws_path)
+        return sorted(found)
+
+    @cached_property
+    def modules(self) -> list[_scan.Module]:
+        return _scan.modules(self.ws, self.head, self.listings)
+
+    @cached_property
+    def owners(self) -> dict[str, str]:
+        """File -> the deepest module containing it (files outside every module are absent)."""
+        paths = {module.path for module in self.modules}
+        found = {}
+        for path in self.files:
+            owner = _scan.owner(path, paths)
+            if owner is not None:
+                found[path] = owner
+        return found
+
+    def current(self, source: _config.Source, rev) -> bool:
+        """True when ``rev`` has the same source content as HEAD, ignoring wiki-only commits."""
+        head = self.head[source.name]
+        if rev == head:
+            return True
+        if not isinstance(rev, str) or not HEX40.fullmatch(rev):
+            return False
+        key = (source.name, rev)
+        if key not in self._current:
+            if self.ws.hub or not self.rev_exists(source, rev):
+                self._current[key] = False
+            else:
+                spec = [f":(exclude){self.ws.wiki_rel}"]
+                self._current[key] = not _git.diff_name_status(source.path, rev, head, spec)
+        return self._current[key]
+
+    def rev_exists(self, source: _config.Source, rev) -> bool:
+        if not isinstance(rev, str) or not HEX40.fullmatch(rev):
+            return False
+        key = (source.name, rev)
+        if key not in self._exists:
+            self._exists[key] = rev == self.head[source.name] or _git.rev_exists(source.path, rev)
+        return self._exists[key]
+
+    def changes(self, source: _config.Source, rev: str) -> list[tuple[str, str, str | None]]:
+        """Whole-tree name-status diff (with renames) from ``rev`` to HEAD of ``source``.
+
+        One diff per distinct revision serves every page bound to it, and running
+        it unrestricted lets a cited file renamed out of a page's scope still be
+        followed to its new path.
+        """
+        key = (source.name, rev)
+        if key not in self._changes:
+            changes = _git.diff_name_status(source.path, rev, self.head[source.name], [])
+            if not self.ws.hub:  # the wiki is not source content
+                changes = [c for c in changes if not all(_in_wiki(self.ws, p) for p in c[1:] if p)]
+            self._changes[key] = changes
+        return self._changes[key]
+
+    def page_current(self, page: _page.Page) -> bool:
+        return all(self.current(s, page.revision.get(s.name)) for s in self.ws.sources)
+
+    def matches(self, glob: str) -> list[str]:
+        if glob not in self._matches:
+            self._matches[glob] = _config.glob_filter(glob, self.files)
+        return self._matches[glob]
+
+
+def _in_wiki(ws: _config.Workspace, path: str) -> bool:
+    return path == ws.wiki_rel or path.startswith(ws.wiki_rel + "/")
+
+
+def not_covered_rows(pages: list[_page.Page]) -> list[tuple[_page.Page, _page.Row, str, str]]:
+    """(page, row, path, reason) for every Not covered row of the Architecture page."""
+    rows = []
+    for page in pages:
+        if page.type != "Architecture":
+            continue
+        for table in _page.tables(page).get("not_covered", []):
+            for row in table.rows:
+                cells = row.cells + ["", ""]
+                path = _plain(cells[0]).rstrip("/")
+                rows.append((page, row, path, _plain(cells[1])))
+    return rows
+
+
+def module_pages(facts: Facts, pages: list[_page.Page]) -> dict[str, list[_page.Page]]:
+    """Module path -> author pages whose scope matches at least one file the module owns."""
+    result: dict[str, list[_page.Page]] = {module.path: [] for module in facts.modules}
+    owners = facts.owners
+    for page in pages:
+        if page.is_generated:
+            continue
+        hit = {owners[path] for glob in scope_globs(page) for path in facts.matches(glob) if path in owners}
+        for module in hit:
+            result[module].append(page)
+    return result
+
+
+def module_exclusions(facts: Facts, pages: list[_page.Page]) -> dict[str, str]:
+    """Module path -> Not covered reason, when a row path equals or contains the module."""
+    rows = not_covered_rows(pages)
+    found: dict[str, str] = {}
+    for module in facts.modules:
+        for _, _, path, reason in rows:
+            if path and reason and _config.glob_match(path, module.path):
+                found[module.path] = reason
+                break
+    return found
+
+
+def cited_locators(page: _page.Page) -> list[tuple[str, _config.Locator, int]]:
+    """(label, locator, body line) for every footnote definition with a valid locator."""
+    found = []
+    for label, (text, line) in page.structure.footnote_defs.items():
+        locator, _ = _config.definition_locator(text)
+        if not locator:
+            continue
+        try:
+            found.append((label, _config.parse_locator(locator), line))
+        except _config.LocatorError:
+            continue
+    return found
+
+
+def scope_globs(page: _page.Page) -> list[str]:
+    return [g for g in page.scope if isinstance(g, str) and g.strip()]
+
+
+def _plain(cell: str) -> str:
+    return _FOOTNOTE_REF.sub("", cell).replace("`", "").strip()
+
+
+# --- entry point ---------------------------------------------------------------------
+
+
+def validate(
+    ws: _config.Workspace,
+    pages: list[_page.Page] | None = None,
     *,
-    category: str | None = None,
-    pointer: str | None = None,
-    actual: object = None,
-    suggestion: str | None = None,
-    expected: str | None = None,
-    example: object = None,
-    derived_from: object = None,
-) -> Issue:
-    return Issue(
-        severity,
-        code,
-        path,
-        message,
-        line,
-        phase,
-        category,
-        pointer,
-        actual,
-        suggestion,
-        expected,
-        example,
-        derived_from,
+    only: list[str] | None = None,
+    facts: Facts | None = None,
+) -> list[Issue]:
+    pages = _page.load_pages(ws) if pages is None else pages
+    facts = facts or Facts(ws)
+    issues: list[Issue] = []
+    readers: dict[str, _git.BlobReader] = {}
+    try:
+        for source in ws.sources:
+            readers[source.name] = _git.BlobReader(source.path)
+        glossary = _aliases(pages)
+        for page in pages:
+            issues += _page_issues(ws, facts, page, readers, glossary)
+    finally:
+        for reader in readers.values():
+            reader.close()
+    issues += _canon_issues(ws, pages)
+    issues += _coverage_issues(facts, pages)
+    issues += _index_issues(ws, facts, pages)
+    if only is not None:
+        wanted = {PurePosixPath(p).as_posix().removeprefix(ws.wiki_rel + "/") for p in only}
+        issues = [issue for issue in issues if issue.page in wanted]
+    return sorted(
+        issues,
+        key=lambda i: (i.page or "", i.line or 0, SEVERITY_ORDER[i.severity], i.code, i.message),
     )
 
 
-def _at_phase(items: list[Issue], phase: str) -> list[Issue]:
-    return [dataclasses.replace(item, phase=item.phase or phase) for item in items]
+def _issue(page, line, code, message, fix, severity="error") -> Issue:
+    path = page.path if isinstance(page, _page.Page) else page
+    file_line = None
+    if isinstance(page, _page.Page) and line is not None:
+        file_line = line + page.body_offset
+    elif line is not None:
+        file_line = line
+    return Issue(code, severity, path, file_line, message, fix)
 
 
-def validation_result(
-    issues: list[Issue], skipped_checks: list[str] | None = None
-) -> ValidationResult:
-    unique = {
-        (item.severity, item.code, item.path, item.line, item.phase, item.message): item
-        for item in issues
-    }
-    ordered = sorted(
-        unique.values(),
-        key=lambda item: (
-            item.path,
-            item.line or 0,
-            item.phase or "",
-            item.code,
-            item.message,
-        ),
-    )
-    return ValidationResult(ordered, sorted(set(skipped_checks or [])))
+# --- per page ----------------------------------------------------------------------------
 
 
-def _template_headings(
-    language: str, page_type: str
-) -> tuple[set[str], set[str]] | None:
-    name = _TEMPLATE_NAMES[page_type]
-    templates = pathlib.Path(__file__).resolve().parent.parent / "assets/templates"
-    current = templates / language / name
-    other = templates / ("zh" if language == "en" else "en") / name
-    if not current.is_file() or not other.is_file():
-        return None
-    current_headings = {
-        item.title for item in extract(parse_file(current).body).sections
-    }
-    other_headings = {item.title for item in extract(parse_file(other).body).sections}
-    return current_headings, other_headings - current_headings
+def _page_issues(ws, facts, page, readers, glossary) -> list[Issue]:
+    if page.error is not None:
+        return [
+            _issue(
+                page.path, 1, "frontmatter", f"frontmatter cannot be parsed: {page.error}",
+                "Fix the YAML frontmatter between the --- lines by hand.",
+            )
+        ]
+    issues = _frontmatter_issues(ws, page)
+    if page.is_generated:
+        issues += _link_issues(ws, page)
+        return issues
+    issues += _revision_issues(ws, facts, page)
+    issues += _footnote_issues(page)
+    issues += _locator_issues(ws, facts, page, readers)
+    issues += _table_issues(page)
+    issues += _section_issues(page)
+    issues += _scope_issues(facts, page)
+    issues += _stamp_issues(page)
+    issues += _link_issues(ws, page)
+    issues += _secret_issues(page)
+    issues += _mermaid_issues(page)
+    issues += _todo_issues(page)
+    issues += _alias_issues(page, glossary)
+    issues += _why_issues(page)
+    issues += _parrot_issues(page)
+    return issues
 
 
-def _revision(state: dict, name: str) -> dict | None:
-    return next((item for item in state["revisions"] if item["name"] == name), None)
+def _frontmatter_issues(ws, page) -> list[Issue]:
+    meta = page.meta
+    issues = []
 
+    def bad(message, fix):
+        issues.append(_issue(page.path, 1, "frontmatter", message, fix))
 
-def parse_resource(resource: str) -> tuple[str, str, int | None, int | None] | None:
-    """Parse a locator: '<source>/<path>' with an optional '#Lx-Ly' anchor."""
-    if "://" in resource or "\\" in resource:
-        return None
-    match = _LINE_ANCHOR.search(resource)
-    raw = resource[: match.start()] if match else resource
-    if "#" in raw:
-        return None
-    source, sep, rel = raw.partition("/")
-    if not sep or not source or not rel or ":" in source:
-        return None
-    pure = pathlib.PurePosixPath(rel)
-    if pure.is_absolute() or ".." in pure.parts or pure.as_posix() != rel:
-        return None
-    lo = int(match.group(1)) if match else None
-    hi = int(match.group(2) or match.group(1)) if match else None
-    if lo is not None and hi < lo:
-        return None
-    return source, rel, lo, hi
-
-
-def _resolve_resource(
-    root: pathlib.Path, state: dict, resource: str
-) -> tuple[bytes, int | None, int | None] | None:
-    import _workspace
-
-    parsed = parse_resource(resource)
-    if parsed is None:
-        return None
-    source, rel, lo, hi = parsed
-    revision = _revision(state, source)
-    if revision is None:
-        return None
-    registered = _workspace.load(root).sources.get(source)
-    if registered is None:
-        return None
-    if registered.kind == "files" or revision.get("kind") == "files":
-        pin = _workspace.pin_dir(root, state["run_id"], source)
-        pinned = (
-            dataclasses.replace(registered, path=pin) if pin.is_dir() else registered
+    if page.type not in _page.AUTHOR_TYPES + _page.GENERATED_TYPES:
+        bad(
+            f"type is {page.type!r}",
+            f"Set type to one of {', '.join(_page.AUTHOR_TYPES)}.",
         )
-        content = _workspace.files_blob(pinned, rel)
-    else:
-        content = _workspace.git_blob(registered, revision["commit"], rel)
-    return (content, lo, hi) if content is not None else None
+        return issues
+    for key in ("title", "description"):
+        if not isinstance(meta.get(key), str) or not meta[key].strip():
+            bad(f"{key} is missing or empty", f"Add a non-empty {key} string.")
+    tags = meta.get("tags")
+    if tags is not None and not (
+        isinstance(tags, list) and all(isinstance(t, str) and t for t in tags)
+    ):
+        bad("tags must be a list of strings", "Write tags as a YAML list of strings or remove it.")
+    if meta.get("status") not in ("draft", "stable"):
+        bad(f"status is {meta.get('status')!r}", "Set status: draft; okf stamp sets stable.")
+    if page.is_generated:
+        if not isinstance(meta.get("catalog_sha256"), str):
+            bad(
+                "generated page lacks catalog_sha256",
+                "Regenerate the page with okf db capture; never write Schema or Table pages by hand.",
+            )
+        return issues
+    scope = meta.get("scope", [])
+    if not isinstance(scope, list) or not all(isinstance(g, str) and g.strip() for g in scope):
+        bad("scope must be a list of glob strings", "Write scope as a YAML list such as [src/billing/**].")
+    elif not scope and page.type in ("Module", "Workflow"):
+        bad(
+            f"a {page.type} page needs a scope",
+            "List the source globs this page answers for, such as src/billing/**.",
+        )
+    revision = meta.get("revision")
+    names = sorted(s.name for s in ws.sources)
+    if not isinstance(revision, dict) or sorted(map(str, revision)) != names or not all(
+        isinstance(v, str) and HEX40.fullmatch(v) for v in revision.values()
+    ):
+        bad(
+            f"revision must map {', '.join(names)} to a full commit hash",
+            "Do not edit revision; restore it from git or recreate the page with okf new.",
+        )
+    return issues
 
 
-def _catalog_resource(catalogs: list[dict], resource: str) -> bool:
-    return _catalog_locator(catalogs, resource) is not None
+def _revision_issues(ws, facts, page) -> list[Issue]:
+    revision = page.revision
+    if not revision or any(not isinstance(v, str) or not HEX40.fullmatch(v) for v in revision.values()):
+        return []  # frontmatter reports it
+    issues = []
+    for source in ws.sources:
+        rev = revision.get(source.name)
+        if rev is None:
+            continue
+        if page.status == "draft" and not facts.current(source, rev):
+            issues.append(
+                _issue(
+                    page.path, 1, "revision",
+                    f"draft was written against {rev[:12]} but {source.name} HEAD is "
+                    f"{facts.head[source.name][:12]}",
+                    "Run okf update --json to record the source changes in the page's todo block.",
+                )
+            )
+        elif page.status == "stable" and not facts.rev_exists(source, rev):
+            issues.append(
+                _issue(
+                    page.path, 1, "revision",
+                    f"revision {rev[:12]} does not exist in {source.name}",
+                    "Run okf update --json to redraft the page against HEAD.",
+                )
+            )
+    return issues
 
 
-def _catalog_source(catalogs: list[dict], resource: str) -> str | None:
-    located = _catalog_locator(catalogs, resource)
-    return located[0] if located else None
+def _footnote_issues(page) -> list[Issue]:
+    s = page.structure
+    issues = []
+    referenced = {label for label, _ in s.footnote_refs}
+    reported: set[str] = set()
+    for label, line in s.footnote_refs:
+        if label not in s.footnote_defs and label not in reported:
+            reported.add(label)
+            issues.append(
+                _issue(
+                    page, line, "footnote-join", f"[^{label}] has no definition",
+                    f"Add a line '[^{label}]: path#Lx-Ly' at the end of the page.",
+                )
+            )
+    for label, (_, line) in s.footnote_defs.items():
+        if not _page.FOOTNOTE_LABEL.fullmatch(label):
+            issues.append(
+                _issue(
+                    page, line, "footnote-join", f"footnote label {label!r} is not a slug",
+                    "Use a semantic slug of letters, digits, '.', '_' or '-', such as retry-cap.",
+                )
+            )
+        if label not in referenced:
+            issues.append(
+                _issue(
+                    page, line, "footnote-join", f"[^{label}] is defined but never referenced",
+                    f"Reference [^{label}] after the claim it supports, or delete the definition.",
+                )
+            )
+    for label, line in s.duplicate_defs:
+        issues.append(
+            _issue(
+                page, line, "footnote-join", f"[^{label}] is defined twice",
+                "Keep one definition per label.",
+            )
+        )
+    if (page.status == "stable" and "sources" in page.meta
+            and page.meta.get("sources") != _page.sources_from_footnotes(page)):
+        issues.append(
+            _issue(
+                page.path, 1, "footnote-join",
+                "frontmatter sources no longer match the footnotes",
+                "Do not edit a stable page directly; run okf update --json or restore it from git.",
+            )
+        )
+    return issues
 
 
-def _catalog_locator(
-    catalogs: list[dict], resource: str
-) -> tuple[str, set[str]] | None:
-    for catalog in catalogs:
-        if resource == catalog["resource"]:
-            return catalog["name"], {"."}
-        for table in catalog["tables"]:
-            if resource == table["resource"]:
-                return catalog["name"], {table["name"], table["page_slug"]}
+def _locator_issues(ws, facts, page, readers) -> list[Issue]:
+    issues = []
+    revision = page.revision
+    for label, (text, line) in page.structure.footnote_defs.items():
+        token, _ = _config.definition_locator(text)
+        if not token:
+            issues.append(
+                _issue(
+                    page, line, "locator", f"[^{label}] has no locator",
+                    "Start the definition with a locator such as src/app.py#L10-L20.",
+                )
+            )
+            continue
+        try:
+            locator = _config.parse_locator(token)
+            source, rel = _config.resolve(ws, locator.path)
+        except _config.LocatorError as exc:
+            issues.append(
+                _issue(
+                    page, line, "locator", f"[^{label}]: {exc}",
+                    "Write a repository-relative path, optionally with #L<start>-L<end>.",
+                )
+            )
+            continue
+        if _config.is_forbidden(locator.path):
+            issues.append(
+                _issue(
+                    page, line, "locator", f"[^{label}] cites a secret file {locator.path}",
+                    "Never cite .env, key or certificate files; cite the code that reads the setting.",
+                )
+            )
+            continue
+        rev = revision.get(source.name)
+        if not facts.rev_exists(source, rev):
+            rev = facts.head[source.name]
+        data = readers[source.name].read(rev, rel)
+        if data is None:
+            issues.append(
+                _issue(
+                    page, line, "locator",
+                    f"[^{label}]: {locator.path} is not a tracked file at {rev[:12]}",
+                    "Cite a file tracked by git at the page revision; check the path spelling "
+                    "(write a path with spaces as <my app/x.py>#L1-L5).",
+                )
+            )
+            continue
+        if b"\0" in data[:8192]:
+            issues.append(
+                _issue(
+                    page, line, "locator", f"[^{label}]: {locator.path} is a binary file",
+                    "Cite a text file.",
+                )
+            )
+            continue
+        if locator.end is not None:
+            count = len(_files.text_lines(data))
+            if locator.end > count:
+                issues.append(
+                    _issue(
+                        page, line, "locator",
+                        f"[^{label}]: {locator.text()} is past the end of the file ({count} lines)",
+                        f"Use a line range within 1-{count}.",
+                    )
+                )
+    return issues
+
+
+def _table_issues(page) -> list[Issue]:
+    issues = []
+    for kind, tables in _page.tables(page).items():
+        for table in tables:
+            for row in table.rows:
+                cells = row.cells
+                if kind in _page.CITED_KINDS and not row.footnotes:
+                    issues.append(
+                        _issue(
+                            page, row.line, "required-citation",
+                            f"{kind.replace('_', ' ')} row has no citation: {' | '.join(cells)[:80]}",
+                            "Add a footnote [^slug] in the row whose definition cites the source lines.",
+                        )
+                    )
+                issues += _value_issues(page, kind, table, row)
+    return issues
+
+
+def _value_issues(page, kind, table, row) -> list[Issue]:
+    cells = [_plain(c) for c in row.cells] + [""] * len(table.header)
+    checks = {
+        "commands": (2, _page.COMMAND_STATUS, "Status"),
+        "rules": (0, _page.RULE_AREAS, "Area"),
+    }
+    issues = []
+    wanted = []
+    if kind in checks:
+        wanted.append(checks[kind])
+    if kind == "rules":
+        wanted.append((2, _page.ENFORCED_BY, "Enforced by"))
+    for index, allowed, name in wanted:
+        if cells[index] not in allowed:
+            issues.append(
+                _issue(
+                    page, row.line, "table-values",
+                    f"{name} {cells[index]!r} is not allowed",
+                    f"Use one of: {', '.join(allowed)}.",
+                )
+            )
+    if kind == "not_covered" and not cells[1]:
+        issues.append(
+            _issue(
+                page, row.line, "not-covered", f"Not covered row {cells[0]!r} has no reason",
+                "Say why an agent can skip this path, e.g. vendored or generated code.",
+            )
+        )
+    return issues
+
+
+def _section_issues(page) -> list[Issue]:
+    titles = {" ".join(s.title.split()).casefold() for s in page.structure.sections}
+    issues = []
+    for variants in _page.REQUIRED_SECTIONS.get(page.type, ()):
+        if not any(v.casefold() in titles for v in variants):
+            en, zh = variants
+            issues.append(
+                _issue(
+                    page.path, None, "section", f"{page.type} page lacks the section {en!r} ({zh})",
+                    f"Keep the template heading '## {en}' (zh '## {zh}') and write its content under it.",
+                )
+            )
+    return issues
+
+
+def _scope_issues(facts, page) -> list[Issue]:
+    return [
+        _issue(
+            page.path, 1, "scope", f"scope glob {glob!r} matches no tracked file",
+            "Fix the glob (hub paths start with the source name) or remove it.",
+        )
+        for glob in scope_globs(page)
+        if not facts.matches(glob)
+    ]
+
+
+def stamped(page) -> bool:
+    """A stable page whose body and stamped frontmatter still hash to its stamp and
+    whose ``verified`` list is the one stamp and ``okf verify`` wrote."""
+    return page.status == "stable" and _stamp_problem(page) is None
+
+
+def _stamp_problem(page) -> str | None:
+    stamp = page.meta.get("stamp")
+    recorded = stamp.get("content_sha256") if isinstance(stamp, dict) else None
+    if recorded != page.content_sha256():
+        return (
+            "the body or frontmatter (such as revision, scope or description) of this "
+            "stable page changed after it was stamped"
+        )
+    return verified_problem(page)
+
+
+def verified_problem(page) -> str | None:
+    """Why ``verified`` is not what stamp and okf verify wrote, or None.
+
+    Stamp writes one entry for the approving reviewer (``stamp.reviewed_by``, inside
+    the stamp hash) or none for --unreviewed; okf verify appends only ``human:``
+    entries, dated at or after the stamp."""
+    reviewer = page.meta["stamp"].get("reviewed_by")
+    verified = page.meta.get("verified", [])
+    if verified is None:
+        verified = []
+    if not isinstance(verified, list) or not all(
+        isinstance(e, dict) and set(e) == {"by", "at"} and isinstance(e["by"], str) and isinstance(e["at"], str)
+        for e in verified
+    ):
+        return "verified must be a list of {by, at} entries written by okf stamp and okf verify"
+    rest = verified
+    if reviewer is not None:
+        if not verified or verified[0]["by"] != reviewer:
+            return f"verified does not start with the approving reviewer {reviewer} recorded in the stamp"
+        rest = verified[1:]
+    generated = page.meta.get("generated")
+    stamped_at = generated.get("at") if isinstance(generated, dict) else None
+    for entry in rest:
+        by = entry["by"]
+        if not by.startswith("human:") or not _review.ACTOR.fullmatch(by):
+            return (
+                f"verified entry {by!r} was not recorded by okf stamp (reviewer "
+                f"{reviewer or 'none: stamped --unreviewed'}) or okf verify (human:<id> only)"
+            )
+        if isinstance(stamped_at, str) and entry["at"] < stamped_at:
+            return f"verified entry {by} at {entry['at']} predates the stamp ({stamped_at})"
     return None
 
 
-def _catalog_in_scope(
-    catalogs: list[dict], resource: str, roots: dict[str, list[str]]
-) -> bool:
-    located = _catalog_locator(catalogs, resource)
-    if located is None:
-        return False
-    source, selectors = located
-    scoped = set(roots.get(source, []))
-    return "." in scoped or bool(scoped & selectors)
-
-
-def _catalog_record_valid(root: pathlib.Path, entry) -> bool:
-    if not isinstance(entry, dict):
-        return False
-    content_hash = entry.get("content_hash")
-    storage_key = entry.get("storage_key")
-    if (
-        not isinstance(content_hash, str)
-        or re.fullmatch(r"[0-9a-f]{64}", content_hash) is None
-        or storage_key != catalog_storage_key(str(entry.get("name", "")), content_hash)
-    ):
-        return False
-    try:
-        manifest = load_index(root, storage_key)
-        load_catalog(root, storage_key)
-    except DbError:
-        return False
-    if manifest.get("content_hash") != content_hash:
-        return False
-    return entry == catalog_record(manifest, content_hash, storage_key)
-
-
-def _check_range(
-    path: pathlib.Path | bytes, lo: int | None, hi: int | None, label: str
-) -> list[Issue]:
-    if lo is not None and hi is not None and lo > hi:
-        return [
-            issue(
-                "error", "line-range-invalid", label, f"start L{lo} exceeds end L{hi}"
-            )
-        ]
-    content = path if isinstance(path, bytes) else path.read_bytes()
-    if content.startswith(_LFS_PREFIX):
-        return [
-            issue(
-                "error",
-                "lfs-pointer",
-                label,
-                "unmaterialized Git LFS pointers cannot be evidence",
-            )
-        ]
-    try:
-        total = len(content.decode("utf-8").splitlines())
-    except UnicodeDecodeError:
-        return [
-            issue(
-                "error",
-                "evidence-binary",
-                label,
-                "binary files cannot be line evidence",
-            )
-        ]
-    if hi is not None and hi > total:
-        return [
-            issue(
-                "error",
-                "line-range-invalid",
-                label,
-                f"L{lo}-L{hi} exceeds {total} lines",
-            )
-        ]
-    return []
-
-
-def _model_issues(
-    path: pathlib.Path, model, *, markdown: bool = False
-) -> tuple[object | None, list[Issue]]:
-    size = path.stat().st_size
-    if size > MAX_STRUCTURED_ARTIFACT_BYTES:
-        return None, [
-            issue(
-                "error",
-                "artifact-too-large",
-                str(path),
-                f"structured artifact is {size} bytes; limit is "
-                f"{MAX_STRUCTURED_ARTIFACT_BYTES}; remove repeated items or "
-                "embedded source text",
-            )
-        ]
-    try:
-        if markdown:
-            parsed = parse_file(path)
-            if parsed.errors:
-                return None, [
-                    issue("error", "frontmatter-invalid", str(path), message)
-                    for message in parsed.errors
-                ]
-            if not parsed.body.strip():
-                return None, [
-                    issue(
-                        "error",
-                        "artifact-body-empty",
-                        str(path),
-                        "Markdown artifact requires an analysis body",
-                    )
-                ]
-            return model.model_validate(parsed.meta, strict=True), []
-        raw = path.read_text(encoding="utf-8")
-        return model.model_validate_json(raw, strict=True), []
-    except (OSError, UnicodeDecodeError) as exc:
-        return None, [issue("error", "artifact-invalid", str(path), str(exc))]
-    except ValidationError as exc:
-        return None, [
-            issue(
-                "error",
-                "schema-invalid",
-                str(path),
-                error["msg"],
-                category="schema",
-                pointer="/" + "/".join(str(part) for part in error["loc"]),
-                actual=error.get("input"),
-                suggestion="match the documented artifact schema at this pointer",
-                expected=error["msg"],
-                example=(
-                    "app/src/request.py#L1"
-                    if isinstance(error["loc"][-1], int)
-                    else ["app/src/request.py#L1"]
-                )
-                if any(
-                    part in ("evidence", "structure_evidence") for part in error["loc"]
-                )
-                else (
-                    "okf plan schema --json" if model is KnowledgePlanIntent else None
-                ),
-            )
-            for error in exc.errors(include_url=False)
-        ]
-
-
-def _plan_analysis_issues(analysis: PlanAnalysis, path: pathlib.Path) -> list[Issue]:
-    texts = [
-        ("/analysis/global_model", analysis.global_model),
-        ("/analysis/lifecycles", analysis.lifecycles),
-    ]
-    texts.extend(
-        (f"/analysis/conclusions/{i}/claim", item.claim)
-        for i, item in enumerate(analysis.conclusions)
-    )
-    texts.extend(
-        (f"/analysis/rejected_hypotheses/{i}/{field}", getattr(item, field))
-        for i, item in enumerate(analysis.rejected_hypotheses)
-        for field in ("claim", "reason")
-    )
-    return [
-        issue(
-            "error",
-            "plan-analysis-citation-authored",
-            str(path),
-            "Plan citations are generated from evidence arrays",
-            category="content",
-            pointer=pointer,
-            actual=text,
-            expected="analysis without authored footnote syntax",
-            example={
-                "claim": "The entry accepts requests.",
-                "evidence": ["app/src/request.py#L1"],
-            },
-            suggestion="move locators into evidence arrays and remove footnote syntax",
-        )
-        for pointer, text in texts
-        if "[^" in text
-    ]
-
-
-def _plan_evidence_issues(root, state, catalogs, resources, path) -> list[Issue]:
-    issues = []
-    for pointer, resource in resources:
-        if _catalog_locator(catalogs, resource) is not None:
-            continue
-        parsed = parse_resource(resource)
-        resolved = _resolve_resource(root, state, resource) if parsed else None
-        expected = "one existing source/path locator, optionally #Lstart-Lend for text"
-        if resolved is None:
-            issues.append(
-                issue(
-                    "error",
-                    "evidence-unresolved" if parsed else "evidence-locator-invalid",
-                    str(path),
-                    "evidence resource does not resolve"
-                    if parsed
-                    else "invalid locator syntax",
-                    category="evidence",
-                    pointer=pointer,
-                    actual=resource,
-                    expected=expected,
-                    example="app/src/request.py#L1-L20",
-                    suggestion="copy one exact locator from evidence or catalog output; keep explanations in claim text",
-                )
-            )
-        else:
-            issues.extend(
-                dataclasses.replace(
-                    item,
-                    path=str(path),
-                    pointer=pointer,
-                    actual=resource,
-                    expected="a range within the frozen text",
-                    example="app/src/request.py#L1",
-                )
-                for item in _check_range(*resolved, resource)
-            )
-    return issues
-
-
-def _path_in_scope(path: str, roots: list[str]) -> bool:
-    return any(
-        root in ("", ".")
-        or path == root.rstrip("/")
-        or path.startswith(root.rstrip("/") + "/")
-        for root in roots
-    )
-
-
-def _validate_scopes(
-    root: pathlib.Path,
-    state: dict,
-    catalogs: list[dict],
-    item_id: str,
-    scopes,
-    evidence_seeds,
-    path: pathlib.Path,
-) -> list[Issue]:
-    import _workspace
-
-    issues = []
-    workspace = _workspace.load(root)
-    roots: dict[str, list[str]] = {}
-    for scope in scopes:
-        roots.setdefault(scope.source, []).extend(scope.paths)
-        source = workspace.sources.get(scope.source)
-        if source is None:
-            issues.append(
-                issue(
-                    "error",
-                    "scope-source-invalid",
-                    str(path),
-                    scope.source,
-                    category="cross-artifact",
-                    suggestion="use a registered Source name",
-                )
-            )
-            continue
-        if source.kind == "opengauss":
-            if set(scope.roles) != {"model"}:
-                issues.append(
-                    issue(
-                        "error",
-                        "scope-role-invalid",
-                        str(path),
-                        f"{scope.source}: OpenGauss scopes require role model",
-                        category="structural",
-                        suggestion="use the model role for Catalog-backed participants",
-                    )
-                )
-            catalog = next(
-                (entry for entry in catalogs if entry["name"] == scope.source),
-                None,
-            )
-            allowed = {"."}
-            if catalog:
-                allowed.update(table["page_slug"] for table in catalog["tables"])
-                allowed.update(table["name"] for table in catalog["tables"])
-            invalid = set(scope.paths) - allowed
-            for scope_path in sorted(invalid):
-                issues.append(
-                    issue(
-                        "error",
-                        "scope-path-invalid",
-                        str(path),
-                        f"{scope.source}/{scope_path}",
-                        category="coverage",
-                        suggestion="use a captured table name, page slug, or .",
-                    )
-                )
-            continue
-        pin = _workspace.pin_dir(root, state["run_id"], scope.source)
-        for scope_path in scope.paths:
-            candidate = pin if scope_path == "." else pin / scope_path
-            if not candidate.exists():
-                issues.append(
-                    issue(
-                        "error",
-                        "scope-path-invalid",
-                        str(path),
-                        f"{scope.source}/{scope_path}",
-                        category="coverage",
-                        suggestion="use a path present in the frozen Source",
-                    )
-                )
-    seeded_sources = set()
-    for resource in evidence_seeds:
-        catalog_locator = _catalog_locator(catalogs, resource)
-        if catalog_locator is not None:
-            seeded_sources.add(catalog_locator[0])
-            if not _catalog_in_scope(catalogs, resource, roots):
-                issues.append(
-                    issue(
-                        "error",
-                        "evidence-outside-scope",
-                        str(path),
-                        resource,
-                        category="evidence",
-                        suggestion="move the locator into a participant scope",
-                    )
-                )
-            continue
-        resolved = _resolve_resource(root, state, resource)
-        parsed = parse_resource(resource)
-        if resolved is None or parsed is None:
-            issues.append(
-                issue(
-                    "error",
-                    "evidence-unresolved" if parsed else "evidence-locator-invalid",
-                    str(path),
-                    resource,
-                    category="evidence",
-                    suggestion="use a canonical locator returned by evidence commands",
-                )
-            )
-            continue
-        source_name, rel, _, _ = parsed
-        seeded_sources.add(source_name)
-        if source_name not in roots or not _path_in_scope(rel, roots[source_name]):
-            issues.append(
-                issue(
-                    "error",
-                    "evidence-outside-scope",
-                    str(path),
-                    resource,
-                    category="evidence",
-                    suggestion="move the locator into a participant scope",
-                )
-            )
-            continue
-        issues.extend(_check_range(*resolved, resource))
-    for source_name in sorted(set(roots) - seeded_sources):
-        issues.append(
-            issue(
-                "error",
-                "scope-source-unseeded",
-                str(path),
-                f"{item_id}: scoped source {source_name} requires an evidence seed",
-                category="evidence",
-                suggestion="add one canonical evidence locator for this participant Source",
-            )
-        )
-    return issues
-
-
-def _validate_source_areas(
-    root: pathlib.Path, state: dict, catalogs: list[dict], areas, path: pathlib.Path
-) -> list[Issue]:
-    import _workspace
-
-    issues = []
-    workspace = _workspace.load(root)
-    actual_sources = set(workspace.sources)
-    covered_sources = {area.source for area in areas}
-    if covered_sources != actual_sources:
-        issues.append(
-            issue(
-                "error",
-                "source-area-coverage-invalid",
-                str(path),
-                f"source areas must cover every run source: missing={sorted(actual_sources - covered_sources)}, unknown={sorted(covered_sources - actual_sources)}",
-                category="coverage",
-                pointer="/source_areas",
-                actual=f"missing={sorted(actual_sources - covered_sources)}, unknown={sorted(covered_sources - actual_sources)}",
-                suggestion="add exactly one non-overlapping Source Area partition for every registered Source",
-            )
-        )
-    for area in areas:
-        source = workspace.sources.get(area.source)
-        if source is None:
-            continue
-        if source.kind == "opengauss":
-            catalog = next(
-                (entry for entry in catalogs if entry["name"] == area.source), None
-            )
-            allowed = {"."}
-            if catalog:
-                allowed.update(table["page_slug"] for table in catalog["tables"])
-                allowed.update(table["name"] for table in catalog["tables"])
-            invalid = sorted(set(area.paths) - allowed)
-        else:
-            pin = _workspace.pin_dir(root, state["run_id"], area.source)
-            invalid = [
-                scope_path
-                for scope_path in area.paths
-                if not (pin if scope_path == "." else pin / scope_path).exists()
-            ]
-        for scope_path in invalid:
-            issues.append(
-                issue(
-                    "error",
-                    "source-area-path-invalid",
-                    str(path),
-                    f"{area.source}/{scope_path}",
-                    category="coverage",
-                    pointer="/source_areas",
-                    actual=f"{area.source}/{scope_path}",
-                    suggestion="use a path present in the frozen source or captured catalog",
-                )
-            )
-    issues.extend(source_area_coverage(root, state, catalogs, areas, path))
-    return issues
-
-
-def source_area_coverage(
-    root: pathlib.Path, state: dict, catalogs: list[dict], areas, path: pathlib.Path
-) -> list[Issue]:
-    import _workspace
-
-    issues = []
-    workspace = _workspace.load(root)
-    for name, source in workspace.sources.items():
-        roots = [path for area in areas if area.source == name for path in area.paths]
-        if source.kind == "opengauss":
-            catalog = next((entry for entry in catalogs if entry["name"] == name), None)
-            if catalog is None:
-                continue
-            missing = [
-                table["name"]
-                for table in catalog["tables"]
-                if "." not in roots
-                and not {table["name"], table["page_slug"]} & set(roots)
-            ]
-        else:
-            revision = _revision(state, name)
-            if revision is None:
-                continue
-            pin = _workspace.pin_dir(root, state["run_id"], name)
-            files = _workspace.captured_files(source, pin, revision)
-            missing = sorted(set(files) - set(_workspace.scoped_files(files, roots)))
-        if missing:
-            issues.append(
-                issue(
-                    "error",
-                    "source-area-uncovered",
-                    str(path),
-                    f"{name}: {len(missing)} uncovered paths; first 20: {missing[:20]}",
-                    category="coverage",
-                    pointer="/source_areas",
-                    suggestion="classify every captured path exactly once, including excluded regions",
-                )
-            )
-    return issues
-
-
-def _validate_intent_environment(
-    root: pathlib.Path,
-    state: dict,
-    catalogs: list[dict],
-    sections: dict,
-    path: pathlib.Path,
-) -> list[Issue]:
-    import _plan
-
-    issues = (
-        _validate_source_areas(root, state, catalogs, sections["source_areas"], path)
-        if "source_areas" in sections
-        else []
-    )
-    for unit_index, unit in enumerate(sections.get("units", [])):
-        scopes, evidence = _plan.normalize_participants(unit.participants, catalogs)
-        pointers: dict[str, list[str]] = {}
-        for participant_index, participant in enumerate(unit.participants):
-            for index, resource in enumerate(participant.evidence):
-                pointers.setdefault(resource, []).append(
-                    f"/units/{unit_index}/participants/{participant_index}/evidence/{index}"
-                )
-        for item in _validate_scopes(
-            root, state, catalogs, unit.id, scopes, evidence, path
-        ):
-            for pointer in pointers.get(
-                item.message, [f"/units/{unit_index}/participants"]
-            ):
-                issues.append(
-                    dataclasses.replace(
-                        item,
-                        pointer=pointer,
-                        actual=item.actual or item.message,
-                        expected=item.expected
-                        or "existing participant paths with in-scope canonical evidence",
-                        example="app/src/request.py#L1-L20",
-                    )
-                )
-    resources = []
-    for collection in ("catalog_groups", "table_replicas", "relationships", "gaps"):
-        resources.extend(
-            (f"/{collection}/{index}/evidence/{j}", resource)
-            for index, item in enumerate(sections.get(collection, []))
-            for j, resource in enumerate(item.evidence)
-        )
-    resources.extend(
-        (f"/concepts/{index}/model_basis/structure_evidence/{j}", resource)
-        for index, item in enumerate(sections.get("concepts", []))
-        for j, resource in enumerate(item.model_basis.structure_evidence)
-    )
-    issues.extend(_plan_evidence_issues(root, state, catalogs, resources, path))
-    return issues
-
-
-def _validate_composition(
-    plan: KnowledgePlan, composition: CompositionMap, path: pathlib.Path
-) -> list[Issue]:
-    issues = []
-    root_paths = [root.path.rstrip("/") for root in composition.reference_roots]
-    for reference_root in root_paths:
-        conflicts = [
-            page.path
-            for page in composition.pages
-            if page.path.startswith(reference_root + "/")
-        ] + [
-            other
-            for other in root_paths
-            if other != reference_root
-            and (
-                other.startswith(reference_root + "/")
-                or reference_root.startswith(other + "/")
-            )
-        ]
-        if conflicts:
-            issues.append(
-                issue(
-                    "error",
-                    "reference-root-overlap",
-                    str(path),
-                    f"{reference_root}: conflicts with {sorted(set(conflicts))}",
-                )
-            )
-    units = {unit.id: unit for unit in plan.effective_units}
-    pages_by_unit = {
-        unit_id: page for page in composition.pages for unit_id in page.units
-    }
-    for page in composition.pages:
-        if pathlib.PurePosixPath(page.path).name in {"index.md", "log.md"}:
-            issues.append(issue("error", "reserved-page", str(path), page.path))
-        parts = pathlib.PurePosixPath(page.path).parts
-        if (
-            len(composition.pages) > 1
-            and page.type not in {"Overview", "Architecture"}
-            and len(parts) < 2
-        ):
-            issues.append(
-                issue(
-                    "error",
-                    "capability-path-required",
-                    str(path),
-                    f"{page.id}: multi-page Wikis place concept pages under a capability directory",
-                )
-            )
-        if any(part in _GENERIC_PAGE_DIRECTORIES for part in parts[:-1]):
-            issues.append(
-                issue(
-                    "error",
-                    "page-type-directory",
-                    str(path),
-                    f"{page.path}: use a capability directory, not a page-type directory",
-                )
-            )
-        page_domains = {
-            domain_id
-            for unit_id in page.units
-            if unit_id in units
-            for domain_id in units[unit_id].domain_ids
-        }
-        for unit_id in page.units:
-            if (
-                unit_id in units
-                and page.type not in _UNIT_PAGE_TYPES[units[unit_id].kind]
-            ):
-                issues.append(
-                    issue(
-                        "error",
-                        "unit-page-type-invalid",
-                        str(path),
-                        f"{unit_id}: {units[unit_id].kind} cannot map to {page.type}; "
-                        f"allowed={_UNIT_PAGE_TYPES[units[unit_id].kind]}",
-                    )
-                )
-        if page.type == "Domain" and len(page_domains) > 1:
-            issues.append(
-                issue(
-                    "error",
-                    "domain-page-cross-domain",
-                    str(path),
-                    f"{page.id}: Domain pages cannot merge {sorted(page_domains)}",
-                )
-            )
-        inherited_sources = {
-            scope.source
-            for unit in [
-                *(units[unit_id] for unit_id in page.units if unit_id in units),
-                *page_projection_units(plan, page),
-            ]
-            for scope in unit.scopes
-        }
-        for diagram in page.diagrams:
-            unknown = set(diagram.sources) - inherited_sources
-            if unknown:
-                issues.append(
-                    issue(
-                        "error",
-                        "diagram-source-outside-scope",
-                        str(path),
-                        f"{page.id}/{diagram.id}: {sorted(unknown)}",
-                    )
-                )
-        modeled = [
-            concept for concept in plan.concepts if concept.model_unit_id in page.units
-        ]
-        if (
-            page.type == "DataModel"
-            and any(concept.model_basis.basis == "opengauss" for concept in modeled)
-            and len(page.diagrams) == 4
-        ):
-            issues.append(
-                issue(
-                    "error",
-                    "generated-diagram-capacity-exceeded",
-                    str(path),
-                    f"{page.id}: reserve one of four diagram slots for the generated physical ER",
-                )
-            )
-        if (
-            page.type == "DataModel"
-            and any(concept.model_basis.basis == "code" for concept in modeled)
-            and not any(diagram.kind == "er" for diagram in page.diagrams)
-        ):
-            issues.append(
-                issue(
-                    "error",
-                    "code-data-model-diagram-required",
-                    str(path),
-                    f"{page.id}: code-derived DataModel pages require an authored ER diagram",
-                )
-            )
-    active_units = {unit.id for unit in plan.effective_units}
-    mapped = [unit for page in composition.pages for unit in page.units]
-    if set(mapped) != active_units or len(mapped) != len(set(mapped)):
-        issues.append(
-            issue(
-                "error",
-                "composition-coverage-invalid",
-                str(path),
-                "knowledge units must be assigned to exactly one page",
-            )
-        )
-    for domain in plan.domains:
-        owner = pages_by_unit.get(domain.owner_unit_id)
-        if owner is not None and owner.type != "Domain":
-            issues.append(
-                issue(
-                    "error",
-                    "domain-definition-owner-invalid",
-                    str(path),
-                    f"{domain.id}: owner unit must map to a Domain page",
-                )
-            )
-    for concept in plan.concepts:
-        owner = pages_by_unit.get(concept.owner_unit_id)
-        if owner is not None and owner.type not in {"Domain", "Concept"}:
-            issues.append(
-                issue(
-                    "error",
-                    "concept-definition-owner-invalid",
-                    str(path),
-                    f"{concept.id}: owner unit must map to a Domain or Concept page",
-                )
-            )
-        if concept.model_unit_id is not None:
-            model = pages_by_unit.get(concept.model_unit_id)
-            if model is not None and model.type != "DataModel":
-                issues.append(
-                    issue(
-                        "error",
-                        "concept-model-owner-invalid",
-                        str(path),
-                        f"{concept.id}: model unit must map to a DataModel page",
-                    )
-                )
-    catalog_sources = {disposition.source for disposition in plan.table_dispositions}
-    reference_sources = {root.source for root in composition.reference_roots}
-    if reference_sources != catalog_sources:
-        issues.append(
-            issue(
-                "error",
-                "reference-root-coverage-invalid",
-                str(path),
-                f"reference roots must cover catalog sources: missing={sorted(catalog_sources - reference_sources)}, unknown={sorted(reference_sources - catalog_sources)}",
-            )
-        )
-    return issues
-
-
-def composition_requirements(plan: KnowledgePlan, subject_digest: str) -> dict:
-    authored = {unit.id for unit in plan.units}
-    return {
-        "kind": "composition-requirements",
-        "subject_digest": subject_digest,
-        "assignment": "each effective unit must appear on exactly one authored page",
-        "effective_units": [
-            {
-                "id": unit.id,
-                "kind": unit.kind,
-                "origin": "authored" if unit.id in authored else "derived",
-                "domain_ids": unit.domain_ids,
-                "concept_ids": unit.concept_ids,
-                "allowed_page_types": _UNIT_PAGE_TYPES[unit.kind],
-            }
-            for unit in plan.effective_units
-        ],
-        "required_slots": [
-            *(
-                {
-                    "kind": "domain-definition",
-                    "id": domain.id,
-                    "unit_id": domain.owner_unit_id,
-                    "page_type": "Domain",
-                }
-                for domain in plan.domains
-            ),
-            *(
-                {
-                    "kind": "concept-definition",
-                    "id": concept.id,
-                    "unit_id": concept.owner_unit_id,
-                    "page_types": ["Domain", "Concept"],
-                }
-                for concept in plan.concepts
-            ),
-            *(
-                {
-                    "kind": "concept-model",
-                    "id": concept.id,
-                    "unit_id": concept.model_unit_id,
-                    "page_type": "DataModel",
-                }
-                for concept in plan.concepts
-                if concept.model_unit_id is not None
-            ),
-        ],
-        "required_reference_sources": sorted(
-            {item.source for item in plan.table_dispositions}
-        ),
-        "path_contract": {
-            "pattern": r"^[a-z0-9][a-z0-9/_.-]*\.md$",
-            "reserved_names": ["index.md", "log.md"],
-            "hierarchy": "non-overview pages in multi-page Wikis require a domain/capability directory",
-        },
-    }
-
-
-def validate_composition_requirements(
-    path: pathlib.Path, expected: dict
-) -> list[Issue]:
-    if not path.is_file():
-        return [
-            issue(
-                "error",
-                "composition-prepare-required",
-                str(path),
-                "run composition prepare before authoring the Composition Map",
-            )
-        ]
-    try:
-        actual = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return [issue("error", "composition-requirements-invalid", str(path), str(exc))]
-    if actual != expected:
-        return [
-            issue(
-                "error",
-                "composition-requirements-stale",
-                str(path),
-                "requirements do not match the approved compiled Plan",
-            )
-        ]
-    return []
-
-
-def page_spec(plan: KnowledgePlan, page) -> dict:
-    units = {unit.id: unit for unit in plan.effective_units}
-    scopes = []
-    evidence_seeds = []
-    seen = set()
-    selected_units = [units[unit_id] for unit_id in page.units if unit_id in units]
-    selected_units.extend(page_projection_units(plan, page))
-    for unit in selected_units:
-        evidence_seeds.extend(unit.evidence_seeds)
-        for scope in unit.scopes:
-            value = (scope.source, tuple(scope.roles), tuple(scope.paths))
-            if value not in seen:
-                seen.add(value)
-                scopes.append(scope.model_dump(mode="json"))
-    sources = {scope["source"] for scope in scopes}
-    return {
-        **page.model_dump(mode="json"),
-        "scopes": scopes,
-        "evidence_seeds": list(dict.fromkeys(evidence_seeds)),
-        "owner": next(iter(sources)) if len(sources) == 1 else "workspace",
-    }
-
-
-def page_projection_units(plan: KnowledgePlan, page) -> list[KnowledgeUnit]:
-    if page.type != "Domain":
+def _stamp_issues(page) -> list[Issue]:
+    if page.status != "stable":
         return []
-    units = {unit.id: unit for unit in plan.effective_units}
-    owned = {unit_id for unit_id in page.units if unit_id in units}
-    domain_ids = {
-        domain_id for unit_id in owned for domain_id in units[unit_id].domain_ids
-    }
+    problem = _stamp_problem(page)
+    if problem is None:
+        return []
     return [
-        unit
-        for unit in plan.effective_units
-        if unit.id not in owned and set(unit.domain_ids) & domain_ids
-    ]
-
-
-def page_evidence_resources(plan: KnowledgePlan, page) -> list[str]:
-    units = {unit.id: unit for unit in plan.effective_units}
-    selected_units = [units[unit_id] for unit_id in page.units]
-    selected_units.extend(page_projection_units(plan, page))
-    domain_ids = {domain_id for unit in selected_units for domain_id in unit.domain_ids}
-    concept_ids = {
-        concept_id for unit in selected_units for concept_id in unit.concept_ids
-    }
-    relationships = [
-        relationship
-        for relationship in plan.relationships
-        if relationship.from_concept_id in concept_ids
-        or relationship.to_concept_id in concept_ids
-    ]
-    concept_ids.update(
-        endpoint
-        for relationship in relationships
-        for endpoint in (relationship.from_concept_id, relationship.to_concept_id)
-    )
-    concepts = [concept for concept in plan.concepts if concept.id in concept_ids]
-    resources = [
-        resource for unit in selected_units for resource in unit.evidence_seeds
-    ]
-    resources.extend(
-        resource for relationship in relationships for resource in relationship.evidence
-    )
-    resources.extend(
-        resource
-        for gap in page_gaps(plan, page)
-        for resource in gap.evidence
-        if any(
-            resource.split("/", 1)[0] == scope.source
-            and _path_in_scope(resource.split("/", 1)[1].split("#", 1)[0], scope.paths)
-            for unit in selected_units
-            for scope in unit.scopes
+        _issue(
+            page.path, 1, "unreviewed-edit", problem,
+            "Set status: draft (keep the edit) so it is reviewed and stamped again, or restore it from git; "
+            "record a human review only with okf verify.",
         )
-    )
-    resources.extend(
-        resource
-        for concept in concepts
-        for resource in concept.model_basis.structure_evidence
-    )
-    resources.extend(
-        resource
-        for disposition in plan.table_dispositions
-        if disposition.domain_id in domain_ids
-        for resource in disposition.evidence
-    )
-    return list(dict.fromkeys(resources))
-
-
-def page_gaps(plan: KnowledgePlan, page) -> list[KnowledgeGap]:
-    units = {unit.id: unit for unit in plan.effective_units}
-    selected = [units[unit_id] for unit_id in page.units]
-    selected.extend(page_projection_units(plan, page))
-    unit_ids = {unit.id for unit in selected}
-    concept_ids = {concept_id for unit in selected for concept_id in unit.concept_ids}
-    domain_ids = {domain_id for unit in selected for domain_id in unit.domain_ids}
-    gap_ids = {
-        gap_id
-        for concept in plan.concepts
-        if concept.id in concept_ids
-        for gap_id in concept.model_basis.gap_ids
-    }
-    gap_ids.update(
-        gap_id
-        for disposition in plan.table_dispositions
-        if disposition.domain_id in domain_ids
-        for gap_id in disposition.gap_ids
-    )
-    return [
-        gap
-        for gap in plan.gaps
-        if (gap.id in gap_ids or not gap.unit_ids or set(gap.unit_ids) & unit_ids)
     ]
 
 
-def page_input_budget(packet: dict) -> list[Issue]:
-    packet_bytes = len(
-        (json.dumps(packet, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    )
-    cache_bytes = sum(
-        pathlib.Path(path).stat().st_size
-        for path in {entry["cache_path"] for entry in packet.get("evidence", [])}
-    )
-    if (
-        packet_bytes > MAX_STRUCTURED_ARTIFACT_BYTES
-        or packet_bytes + cache_bytes > MAX_PAGE_INPUT_BYTES
-    ):
-        return [
-            issue(
-                "error",
-                "page-input-budget-exceeded",
-                packet["output"],
-                f"packet={packet_bytes}, cached evidence={cache_bytes} bytes; "
-                "narrow Intent evidence ranges or split independently owned units, then recompile and prepare again",
-            )
-        ]
-    return []
-
-
-def page_packet(
-    root: pathlib.Path,
-    state: dict,
-    plan: KnowledgePlan,
-    page,
-    composition: CompositionMap,
-    *,
-    skill_dir: pathlib.Path | None = None,
-) -> tuple[dict | None, list[Issue]]:
-    import _state
-
-    path = _state.work_dir(root, state) / "page-packets" / f"{page.id}.json"
-    if not path.is_file():
-        return None, [
-            issue(
-                "error",
-                "page-prepare-required",
-                str(path),
-                f"run page prepare {page.id}",
-            )
-        ]
-    try:
-        packet = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return None, [issue("error", "page-packet-invalid", str(path), str(exc))]
-    if not isinstance(packet, dict):
-        return None, [
-            issue("error", "page-packet-invalid", str(path), "expected an object")
-        ]
-    problems = []
-    expected_inputs = _state._page_inputs(
-        root, state, plan, composition, page, skill_dir=skill_dir
-    )
-    if any(packet.get(key) != value for key, value in expected_inputs.items()):
-        problems.append(
-            issue(
-                "error",
-                "page-packet-stale",
-                str(path),
-                "page packet does not match its current inputs; run page prepare",
-            )
-        )
-    evidence = packet.get("evidence")
-    expected_resources = page_evidence_resources(plan, page)
-    if (
-        not isinstance(evidence, list)
-        or any(not isinstance(item, dict) for item in evidence)
-        or [item.get("seed") for item in evidence] != expected_resources
-    ):
-        problems.append(
-            issue(
-                "error",
-                "page-evidence-registry-invalid",
-                str(path),
-                "prepared evidence must exactly match the page's compiled resources",
-            )
-        )
-        return None, problems
-    for item in evidence:
-        evidence_id = item.get("id", "")
-        cached = _state._cached_evidence(root, state, item["seed"])
-        if cached is None:
-            problems.append(
-                issue(
-                    "error",
-                    "page-evidence-cache-invalid",
-                    str(path),
-                    f"{evidence_id}: missing or invalid prepared evidence",
+def _link_issues(ws, page) -> list[Issue]:
+    issues = []
+    base = PurePosixPath(page.path).parent
+    for target, line in page.structure.links:
+        target = target.strip("<>")
+        path = target.split("#", 1)[0].split("?", 1)[0]
+        if not path or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", path):
+            continue
+        if path.startswith("/"):
+            rel = PurePosixPath(path.lstrip("/"))
+        else:
+            parts: list[str] = []
+            for part in (base / path).parts:
+                if part == "..":
+                    if not parts:
+                        parts = None
+                        break
+                    parts.pop()
+                elif part != ".":
+                    parts.append(part)
+            if parts is None:
+                continue  # leaves the wiki: a source link, not checked here
+            rel = PurePosixPath(*parts) if parts else PurePosixPath(".")
+        if not rel.as_posix().endswith(".md"):
+            continue
+        if not (ws.wiki / rel).is_file():
+            issues.append(
+                _issue(
+                    page, line, "link", f"link target {target} does not exist",
+                    "Link an existing page with a bundle-absolute path such as /modules/billing.md.",
                 )
             )
-            continue
-        cache, cache_path = cached
-        expected_entry = {
-            key: cache.get(key)
-            for key in (
-                "id",
-                "seed",
-                "resource",
-                "source",
-                "source_kind",
-                "binding",
-                "content_digest",
-            )
-        } | {"cache_path": str(cache_path)}
-        if item != expected_entry:
-            problems.append(
-                issue("error", "page-evidence-cache-invalid", str(path), evidence_id)
-            )
-    if not problems:
-        problems.extend(page_input_budget(packet))
-    return (packet if not problems else None), problems
-
-
-def generated_page_spec(
-    root: pathlib.Path, state: dict, plan: KnowledgePlan, page
-) -> dict:
-    spec = page_spec(plan, page)
-    if spec["type"] == "DataModel":
-        import _reference
-
-        meta, _body = _reference.enrich_data_model(
-            root,
-            state,
-            plan,
-            page,
-            {"sources": [], "diagrams": spec["diagrams"]},
-            "<!-- okf-generated:model -->",
-        )
-        spec["diagrams"] = meta["diagrams"]
-    return spec
-
-
-def _validate_page_draft(
-    root: pathlib.Path, state: dict, spec: dict, path: pathlib.Path
-) -> list[Issue]:
-    catalogs = load_indexes(root, state["catalogs"])
-    issues = validate_page(
-        root,
-        state,
-        path,
-        owner=spec["owner"],
-        expected=spec,
-        published=False,
-    )
-    parsed = parse_file(path)
-    if parsed.errors:
-        return issues
-    roots: dict[str, list[str]] = {}
-    for scope in spec["scopes"]:
-        roots.setdefault(scope["source"], []).extend(scope["paths"])
-    cited_sources = set()
-    for source in parsed.meta.get("sources", []):
-        resource = source.get("resource", "") if isinstance(source, dict) else ""
-        catalog_locator = _catalog_locator(catalogs, resource)
-        if catalog_locator is not None:
-            cited_sources.add(catalog_locator[0])
-            if not _catalog_in_scope(catalogs, resource, roots):
-                issues.append(
-                    issue("error", "evidence-outside-scope", str(path), resource)
-                )
-            continue
-        locator = parse_resource(resource)
-        if locator is None:
-            continue
-        source_name, rel, _, _ = locator
-        cited_sources.add(source_name)
-        if source_name not in roots or not _path_in_scope(rel, roots[source_name]):
-            issues.append(issue("error", "evidence-outside-scope", str(path), resource))
-    missing = set(roots) - cited_sources
-    if missing:
-        issues.append(
-            issue(
-                "error",
-                "scoped-source-evidence-missing",
-                str(path),
-                f"page does not cite scoped sources: {sorted(missing)}",
-            )
-        )
     return issues
 
 
-@dataclasses.dataclass
-class PlanInspection:
-    plan: KnowledgePlan | None
-    narrative: str | None
-    ledger_text: str | None
-    issues: list[Issue]
-    checks_ran: list[str]
-    skip_reasons: dict[str, str]
-
-
-def compile_plan_sources(
-    root: pathlib.Path,
-    state: dict,
-    path: pathlib.Path,
-) -> PlanInspection:
-    import _plan
-    from _plan_render import render_narrative
-
+def _secret_issues(page) -> list[Issue]:
+    """Frontmatter (copied into index.md) and body lines; line numbers are file lines."""
     issues = []
-    checks_ran = ["schema"]
-    skipped = {}
-    intent_path = path.with_name("plan-intent.json")
-    intent = None
-    semantics = None
-    analysis = None
-    sections = {}
-    if intent_path.is_file():
-        intent, intent_issues = _model_issues(intent_path, KnowledgePlanIntent)
-        issues.extend(intent_issues)
-        if intent is not None:
-            semantics, analysis = intent, intent.analysis
-            sections = {name: getattr(intent, name) for name in _PLAN_SECTION_ADAPTERS}
-        elif intent_path.stat().st_size <= MAX_STRUCTURED_ARTIFACT_BYTES:
-            try:
-                raw = json.loads(intent_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, ValueError):
-                raw = None
-            if isinstance(raw, dict):
-                for name, adapter in _PLAN_SECTION_ADAPTERS.items():
-                    field = PlanSemantics.model_fields[name]
-                    if name not in raw and field.is_required():
+    lines = _files.text_lines(page.front) + _files.text_lines(page.body)
+    first_body = page.body_offset + 1
+    for number, text in enumerate(lines, 1):
+        if any(pattern.search(text) for pattern in _SECRETS):
+            issues.append(
+                _issue(
+                    page.path, number, "secret",
+                    "line looks like a credential" + (" (frontmatter)" if number < first_body else ""),
+                    "Remove the value; describe where the setting is read instead.",
+                )
+            )
+    return issues
+
+
+def _mermaid_issues(page) -> list[Issue]:
+    return [
+        _issue(page, line, "mermaid", message, fix)
+        for line, message, fix in _diagram.check(page.structure)
+    ]
+
+
+def _todo_issues(page) -> list[Issue]:
+    return [
+        _issue(
+            page, line, "todo", "page still has a todo block",
+            "Fold what you verified into the body, drop the rest, then delete the whole block.",
+            severity="pending",
+        )
+        for line, _ in page.todos
+    ]
+
+
+def _aliases(pages) -> dict[str, tuple[str, re.Pattern]]:
+    """Alias -> (canonical term, pattern) from every Glossary page."""
+    found = {}
+    for page in pages:
+        if page.type != "Glossary" or page.error:
+            continue
+        for table in _page.tables(page).get("glossary", []):
+            for row in table.rows:
+                cells = row.cells + ["", "", "", ""]
+                term = _plain(cells[0])
+                for alias in _plain(cells[2]).replace("，", ",").replace("、", ",").split(","):
+                    alias = alias.strip()
+                    if not alias or alias in ("-", "—") or alias.casefold() == term.casefold():
                         continue
-                    try:
-                        sections[name] = adapter.validate_python(
-                            raw.get(name, field.get_default(call_default_factory=True)),
-                            strict=True,
-                        )
-                    except ValidationError:
-                        pass
-                # Analysis and semantic decisions have independent prerequisites.
-                try:
-                    semantics = PlanSemantics.model_validate(
-                        {k: v for k, v in raw.items() if k != "analysis"}
-                    )
-                except ValidationError:
-                    pass
-                try:
-                    analysis = PlanAnalysis.model_validate(raw.get("analysis"))
-                except ValidationError:
-                    pass
-    else:
-        issues.append(
-            issue(
-                "error",
-                "plan-intent-missing",
-                str(intent_path),
-                "write Plan Intent using plan template and the public schema",
-                category="schema",
-                pointer="/",
-                expected="one Plan Intent JSON object",
-                suggestion="okf plan template --json",
-            )
-        )
-
-    compiled = None
-    catalogs = load_indexes(root, state["catalogs"])
-    environment_sections = (
-        "source_areas",
-        "units",
-        "concepts",
-        "catalog_groups",
-        "table_replicas",
-        "relationships",
-        "gaps",
-    )
-    for name in environment_sections:
-        check = f"intent-environment.{name}"
-        if name in sections:
-            checks_ran.append(check)
-        else:
-            skipped[check] = f"/{name} has schema errors or is missing"
-    issues.extend(
-        _validate_intent_environment(root, state, catalogs, sections, intent_path)
-    )
-    if semantics is not None:
-        checks_ran.append("semantic-compilation")
-        result = _plan.compile_intent(semantics, catalogs)
-        issues.extend(
-            issue(
-                "error",
-                item.code,
-                str(intent_path),
-                item.message,
-                category=item.category,
-                pointer=item.pointer,
-                actual=item.actual,
-                suggestion=item.suggestion,
-                expected=item.expected or item.message,
-                example=item.example,
-                derived_from=item.derived_from,
-            )
-            for item in result.diagnostics
-        )
-        compiled = result.plan
-        if result.derived_checked:
-            checks_ran.append("derived-unit-validation")
-        else:
-            skipped["derived-unit-validation"] = (
-                "semantic compilation did not produce a complete ledger"
-            )
-    else:
-        for check in ("semantic-compilation", "derived-unit-validation"):
-            skipped[check] = "semantic input sections have schema errors or are missing"
-    if analysis is not None:
-        checks_ran.append("analysis-validation")
-        issues.extend(_plan_analysis_issues(analysis, intent_path))
-        resources = [
-            (f"/analysis/{collection}/{i}/evidence/{j}", resource)
-            for collection in ("conclusions", "rejected_hypotheses")
-            for i, item in enumerate(getattr(analysis, collection))
-            for j, resource in enumerate(item.evidence)
-        ]
-        issues.extend(
-            _plan_evidence_issues(root, state, catalogs, resources, intent_path)
-        )
-    else:
-        skipped["analysis-validation"] = "analysis has schema errors or is missing"
-    ledger_text = None
-    if compiled is not None:
-        checks_ran.append("ledger-output-budget")
-        ledger_text = json_text(compiled.model_dump(mode="json", exclude_defaults=True))
-        size = len(ledger_text.encode("utf-8"))
-        if size > MAX_STRUCTURED_ARTIFACT_BYTES:
-            issues.append(
-                issue(
-                    "error",
-                    "plan-ledger-output-too-large",
-                    str(intent_path),
-                    "compiled Ledger exceeds the structured Artifact byte budget",
-                    category="derived",
-                    pointer="/",
-                    actual={"bytes": size},
-                    expected=f"at most {MAX_STRUCTURED_ARTIFACT_BYTES} bytes",
-                    derived_from={
-                        "concepts": len(compiled.concepts),
-                        "catalog_associations": sum(
-                            len(c.model_basis.catalog_tables) for c in compiled.concepts
-                        ),
-                        "authored_units": len(compiled.units),
-                    },
-                    suggestion="report compiler output expansion; remove only semantically redundant associations, never valid evidence",
-                )
-            )
-    else:
-        skipped["ledger-output-budget"] = (
-            "semantic compilation did not produce a ledger"
-        )
-    narrative = None
-    if intent is not None and compiled is not None and not issues:
-        checks_ran.append("narrative-rendering")
-        narrative = render_narrative(intent, compiled, state["language"])
-    else:
-        skipped["narrative-rendering"] = (
-            "Plan inputs must pass all checks before rendering"
-        )
-    return PlanInspection(compiled, narrative, ledger_text, issues, checks_ran, skipped)
+                    if alias.isascii():
+                        pattern = re.compile(rf"(?<![\w-]){re.escape(alias)}(?![\w-])", re.IGNORECASE)
+                    else:
+                        pattern = re.compile(re.escape(alias))
+                    found[alias] = (term, pattern)
+    return found
 
 
-def validate_plan_artifact(
-    root: pathlib.Path,
-    state: dict,
-    path: pathlib.Path,
-) -> tuple[KnowledgePlan | None, list[Issue]]:
-    inspection = compile_plan_sources(root, state, path)
-    compiled, issues = inspection.plan, inspection.issues
-    if inspection.narrative is not None:
-        expected_narrative = inspection.narrative.encode("utf-8")
-        try:
-            actual_narrative = (
-                path.read_bytes()
-                if path.is_file() and path.stat().st_size == len(expected_narrative)
-                else None
-            )
-        except (OSError, UnicodeDecodeError):
-            actual_narrative = None
-        if actual_narrative != expected_narrative:
-            issues.append(
-                issue(
-                    "error",
-                    "plan-narrative-stale"
-                    if path.is_file()
-                    else "plan-compile-required",
-                    str(path),
-                    "generated Plan Narrative is missing or differs from Plan Intent",
-                    category="derived",
-                    expected="the deterministic rendering of current Plan Intent",
-                    suggestion="okf plan compile",
-                )
-            )
-    ledger_path = path.with_name("plan-ledger.json")
-    ledger = None
-    if compiled is not None and not ledger_path.is_file():
-        issues.append(
-            issue(
-                "error",
-                "plan-compile-required",
-                str(ledger_path),
-                "run plan compile to generate the machine ledger",
-                category="derived",
-                suggestion="okf plan compile",
-            )
-        )
-    elif ledger_path.is_file():
-        ledger, ledger_issues = _model_issues(ledger_path, KnowledgePlan)
-        issues.extend(ledger_issues)
-        if (
-            compiled is not None
-            and ledger is not None
-            and (
-                ledger != compiled
-                or ledger_path.read_bytes() != inspection.ledger_text.encode("utf-8")
-            )
-        ):
-            issues.append(
-                issue(
-                    "error",
-                    "plan-ledger-stale",
-                    str(ledger_path),
-                    "generated ledger does not match current intent and catalogs",
-                    category="derived",
-                    suggestion="okf plan compile",
-                )
-            )
-    return (compiled if compiled is not None and ledger == compiled else None), issues
-
-
-def validate_progress_artifact(path: pathlib.Path) -> list[Issue]:
-    if not path.is_file():
-        return [issue("error", "progress-missing", str(path), "write run progress")]
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return [issue("error", "progress-invalid", str(path), str(exc))]
-    if not text.strip() or _INITIAL_PROGRESS in text:
-        return [
-            issue(
-                "error",
-                "progress-stale",
-                str(path),
-                "replace the initial progress note with findings, gaps and next actions",
-            )
-        ]
-    return []
-
-
-def _merge_probe_issues(
-    path: pathlib.Path, probes, id_field: str, expected_ids: set[str] | None
-) -> list[Issue]:
-    if expected_ids is None:
+def _alias_issues(page, glossary) -> list[Issue]:
+    if page.type == "Glossary" or not glossary:
         return []
-    covered = {item_id for probe in probes for item_id in getattr(probe, id_field)}
     issues = []
-    unknown = covered - expected_ids
-    if unknown:
-        issues.append(
-            issue("error", "merge-probe-id-invalid", str(path), str(sorted(unknown)))
-        )
-    if len(expected_ids) > 1:
-        missing = expected_ids - covered
-        if missing:
-            issues.append(
-                issue(
-                    "error",
-                    "merge-probe-incomplete",
-                    str(path),
-                    f"merge probes must cover every routed item: {sorted(missing)}",
+    lines = list(page.structure.prose)
+    lines += [(s.start_line, s.title) for s in page.structure.sections]
+    for table in page.structure.tables:
+        for row in table.rows:
+            lines.append((row.line, " ".join(row.cells)))
+    for line, text in sorted(lines):
+        text = strip_code_spans(text)
+        for alias, (term, pattern) in glossary.items():
+            if pattern.search(text):
+                issues.append(
+                    _issue(
+                        page, line, "alias",
+                        f"uses {alias!r}, which the glossary lists as an alias of {term!r}",
+                        f"Write {term!r}, or put the alias in a code span when quoting code.",
+                        severity="warning",
+                    )
                 )
-            )
-    elif probes:
-        issues.append(
-            issue(
-                "error",
-                "merge-probe-unnecessary",
-                str(path),
-                "merge probes require at least two routed items",
-            )
-        )
     return issues
 
 
-def validate_plan_review(
-    path: pathlib.Path,
-    expected_digest: str | None,
-    unit_ids: set[str] | None = None,
-) -> tuple[PlanReviewReport | None, list[Issue]]:
-    if not path.is_file():
-        return None, [
-            issue(
-                "error",
-                "plan-review-missing",
-                str(path),
-                "run an independent Knowledge Plan review",
-            )
-        ]
-    value, issues = _model_issues(path, PlanReviewReport)
-    if value:
-        if expected_digest is not None and value.subject_digest != expected_digest:
-            issues.append(
-                issue(
-                    "error",
-                    "plan-review-digest-invalid",
-                    str(path),
-                    "plan review does not bind the current Knowledge Plan",
-                )
-            )
-        issues.extend(
-            _merge_probe_issues(path, value.merge_probes, "unit_ids", unit_ids)
+def _why_issues(page) -> list[Issue]:
+    refs = {line for _, line in page.structure.footnote_refs}
+    return [
+        _issue(
+            page, line, "uncited-why", "causal claim without a citation",
+            "Cite the code, comment, commit or doc that records the reason, or write 'rationale not recorded'.",
+            severity="warning",
         )
-        if unit_ids is not None:
-            unknown = {
-                unit_id
-                for report_issue in value.issues
-                if report_issue.status == "open"
-                for unit_id in report_issue.unit_ids
-            } - unit_ids
-            if unknown:
-                issues.append(
-                    issue(
-                        "error",
-                        "plan-review-unit-invalid",
-                        str(path),
-                        str(sorted(unknown)),
-                    )
-                )
-    return value, issues
-
-
-def validate_composition_artifact(
-    path: pathlib.Path, plan: KnowledgePlan | None
-) -> tuple[CompositionMap | None, list[Issue]]:
-    if not path.is_file():
-        return None, [
-            issue(
-                "error", "composition-missing", str(path), "write the Composition Map"
-            )
-        ]
-    value, issues = _model_issues(path, CompositionMap, markdown=True)
-    if value and plan is not None:
-        issues.extend(_validate_composition(plan, value, path))
-    return value, issues
-
-
-def validate_composition_review(
-    path: pathlib.Path, expected_digest: str | None, page_ids: set[str] | None
-) -> tuple[CompositionReviewReport | None, list[Issue]]:
-    if not path.is_file():
-        return None, [
-            issue(
-                "error",
-                "composition-review-missing",
-                str(path),
-                "run an independent Composition review",
-            )
-        ]
-    value, issues = _model_issues(path, CompositionReviewReport)
-    if value:
-        if expected_digest is not None and value.subject_digest != expected_digest:
-            issues.append(
-                issue(
-                    "error",
-                    "composition-review-digest-invalid",
-                    str(path),
-                    "composition review does not bind the current Plan and Composition",
-                )
-            )
-        for report_issue in value.issues:
-            if report_issue.status == "open" and report_issue.area != "composition":
-                issues.append(
-                    issue(
-                        "error",
-                        "composition-review-area-invalid",
-                        str(path),
-                        "Composition review issues must use the composition area",
-                    )
-                )
-            unknown = (
-                set(report_issue.page_ids) - page_ids
-                if page_ids is not None and report_issue.status == "open"
-                else set()
-            )
-            if unknown:
-                issues.append(
-                    issue(
-                        "error",
-                        "composition-review-page-invalid",
-                        str(path),
-                        str(sorted(unknown)),
-                    )
-                )
-        issues.extend(
-            _merge_probe_issues(path, value.merge_probes, "page_ids", page_ids)
-        )
-    return value, issues
-
-
-def validate_drafts(
-    root: pathlib.Path,
-    state: dict,
-    plan: KnowledgePlan,
-    composition: CompositionMap,
-    drafts: pathlib.Path,
-) -> list[Issue]:
-    expected = {page.id: page for page in composition.pages}
-    present = {path.stem: path for path in drafts.glob("*.md")}
-    issues = []
-    for page_id in sorted(set(present) - set(expected)):
-        issues.append(
-            issue("error", "page-draft-unplanned", str(present[page_id]), page_id)
-        )
-    with tempfile.TemporaryDirectory(prefix="okf-draft-check-") as temporary:
-        checked = pathlib.Path(temporary)
-        for page_id in sorted(expected):
-            packet, packet_issues = page_packet(
-                root, state, plan, expected[page_id], composition
-            )
-            issues.extend(packet_issues)
-            if packet is None:
-                continue
-            if page_id not in present:
-                issues.append(
-                    issue(
-                        "error",
-                        "page-draft-missing",
-                        str(drafts / f"{page_id}.md"),
-                        page_id,
-                    )
-                )
-                continue
-            spec = {
-                **page_spec(plan, expected[page_id]),
-                "evidence": packet["evidence"],
-            }
-            parsed_draft = parse_file(present[page_id])
-            if not parsed_draft.errors:
-                structure = extract(parsed_draft.body)
-                if packet["gaps"]:
-                    title = "缺口" if state["language"] == "zh" else "Gaps"
-                    gap_body = "\n".join(
-                        section.content
-                        for section in structure.sections
-                        if section.title == title
-                    )
-                    if parsed_draft.meta.get("coverage") != "partial" or any(
-                        not re.search(
-                            rf"(?<![a-z0-9_.-]){re.escape(gap['id'])}(?![a-z0-9_.-])",
-                            gap_body,
-                        )
-                        for gap in packet["gaps"]
-                    ):
-                        issues.append(
-                            issue(
-                                "error",
-                                "page-gap-coverage-missing",
-                                str(present[page_id]),
-                                "use partial coverage and describe every packet Gap ID in the localized Gaps section",
-                            )
-                        )
-                allowed = {item["id"] for item in packet["evidence"]}
-                refs = {ref for ref, _line in structure.footnote_refs}
-                if structure.footnote_defs:
-                    issues.append(
-                        issue(
-                            "error",
-                            "draft-footnote-definition-forbidden",
-                            str(present[page_id]),
-                            "the kernel writes evidence footnote definitions",
-                        )
-                    )
-                if unknown := refs - allowed:
-                    issues.append(
-                        issue(
-                            "error",
-                            "draft-evidence-id-invalid",
-                            str(present[page_id]),
-                            f"unknown prepared evidence ids: {sorted(unknown)}",
-                        )
-                    )
-            rendered = render_generated_page(
-                root,
-                state,
-                spec,
-                present[page_id],
-                plan=plan,
-                page=expected[page_id],
-            )
-            if rendered is None:
-                parsed = parse_file(present[page_id])
-                messages = parsed.errors
-                if not messages:
-                    try:
-                        DraftFrontmatter.model_validate(parsed.meta, strict=True)
-                    except ValidationError as exc:
-                        messages = model_errors(exc)
-                issues.extend(
-                    issue(
-                        "error", "frontmatter-invalid", str(present[page_id]), message
-                    )
-                    for message in messages
-                )
-                continue
-            path = checked / f"{page_id}.md"
-            path.write_text(rendered, encoding="utf-8", newline="\n")
-            issues.extend(
-                dataclasses.replace(item, path=str(present[page_id]))
-                for item in _validate_page_draft(
-                    root,
-                    state,
-                    generated_page_spec(root, state, plan, expected[page_id]),
-                    path,
-                )
-            )
-    return issues
-
-
-def validate_unbound_drafts(path: pathlib.Path) -> list[Issue]:
-    issues = []
-    for draft in sorted(path.glob("*.md")):
-        parsed = parse_file(draft)
-        issues.extend(
-            issue("error", "frontmatter-invalid", str(draft), message)
-            for message in parsed.errors
-        )
-        if parsed.errors:
-            continue
-        for placeholder, line in extract(parsed.body).placeholders:
-            issues.append(
-                issue("error", "placeholder-remaining", str(draft), placeholder, line)
-            )
-    return issues
-
-
-def validate_review(
-    path: pathlib.Path, expected_digest: str, page_ids: set[str]
-) -> tuple[ReviewReport | None, list[Issue]]:
-    if not path.is_file():
-        return None, [
-            issue(
-                "error", "review-missing", str(path), "run an independent Wiki review"
-            )
-        ]
-    value, issues = _model_issues(path, ReviewReport)
-    if value:
-        if value.subject_digest != expected_digest:
-            issues.append(
-                issue(
-                    "error",
-                    "review-digest-invalid",
-                    str(path),
-                    "review does not bind the current Wiki bundle",
-                )
-            )
-        for report_issue in value.issues:
-            unknown = (
-                set(report_issue.page_ids) - page_ids
-                if report_issue.status == "open"
-                else set()
-            )
-            if unknown:
-                issues.append(
-                    issue(
-                        "error", "review-page-invalid", str(path), str(sorted(unknown))
-                    )
-                )
-    return value, issues
-
-
-def render_generated_page(
-    root: pathlib.Path,
-    state: dict,
-    spec: dict,
-    path: pathlib.Path,
-    *,
-    plan: KnowledgePlan | None = None,
-    page=None,
-) -> str | None:
-    import _workspace
-
-    parsed = parse_file(path)
-    if parsed.errors:
-        return None
-    try:
-        draft = DraftFrontmatter.model_validate(parsed.meta, strict=True)
-    except ValidationError:
-        return None
-    meta = draft.model_dump(mode="json", exclude_none=True)
-    meta.update(
-        {
-            "id": spec["id"],
-            "type": spec["type"],
-            "title": spec["title"],
-            "description": spec["description"],
-            "tags": spec["tags"],
-            "diagrams": spec["diagrams"],
-            "language": state["language"],
-            "status": "draft",
-            "generated": {
-                "by": "repo-wiki",
-                "at": datetime.fromisoformat(state["started_at"]),
-            },
-        }
-    )
-    meta.pop("verified", None)
-    meta.pop("stale_after", None)
-    meta["sources"] = [
-        {"id": item["id"], "resource": item["seed"]}
-        for item in spec.get("evidence", [])
+        for line, text in page.structure.prose
+        if line not in refs and _CAUSAL.search(text) and not _NO_RATIONALE.search(text)
+        and not text.lstrip().startswith("[^")
     ]
-    body = parsed.body
-    if spec["type"] == "DataModel":
-        if plan is None or page is None:
-            raise ValueError(
-                "DataModel rendering requires its Plan and Composition page"
-            )
-        import _reference
-
-        meta, body = _reference.enrich_data_model(root, state, plan, page, meta, body)
-    canonical_resources = {
-        item["id"]: item["resource"] for item in spec.get("evidence", [])
-    }
-    for source in meta["sources"]:
-        if source["id"] in canonical_resources:
-            source["resource"] = canonical_resources[source["id"]]
-    structure = extract(body)
-    refs = {ref for ref, _line in structure.footnote_refs}
-    meta["sources"] = [source for source in meta["sources"] if source["id"] in refs]
-    missing_defs = refs - set(structure.footnote_defs)
-    if missing_defs:
-        resources = {source["id"]: source["resource"] for source in meta["sources"]}
-        body = (
-            body.rstrip()
-            + "\n\n"
-            + "\n".join(
-                f"[^{source_id}]: `{resources[source_id]}`"
-                for source_id in sorted(missing_defs)
-                if source_id in resources
-            )
-            + "\n"
-        )
-
-    workspace = _workspace.load(root)
-    enriched = []
-    for source in meta["sources"]:
-        resource = source["resource"]
-        parsed_resource = parse_resource(resource)
-        if parsed_resource:
-            source_name, rel, _, _ = parsed_resource
-            revision = _revision(state, source_name)
-            if revision:
-                source = dict(source)
-                source.update(
-                    {
-                        key: value
-                        for key, value in _workspace.git_file_metadata(
-                            workspace, revision, rel
-                        ).items()
-                        if value
-                    }
-                )
-        enriched.append(source)
-    meta["sources"] = enriched
-    return render(meta, body)
 
 
-def validate_page(
-    root: pathlib.Path,
-    state: dict,
-    path: pathlib.Path,
-    *,
-    owner: str | None = None,
-    expected: dict | None = None,
-    published: bool = False,
-) -> list[Issue]:
-    catalogs = load_indexes(root, state["catalogs"])
-    parsed = parse_file(path)
-    if parsed.errors:
-        return [
-            issue("error", "frontmatter-invalid", str(path), message)
-            for message in parsed.errors
-        ]
-    try:
-        frontmatter = ConceptFrontmatter.model_validate(parsed.meta, strict=True)
-    except ValidationError as exc:
-        return [
-            issue("error", "frontmatter-invalid", str(path), message)
-            for message in model_errors(exc)
-        ]
+def _parrot_issues(page) -> list[Issue]:
     issues = []
-    if expected is not None:
-        actual_diagrams = [
-            diagram.model_dump(mode="json") for diagram in frontmatter.diagrams
-        ]
-        if (
-            frontmatter.id != expected.get("id")
-            or frontmatter.type != expected.get("type")
-            or actual_diagrams != expected.get("diagrams")
-        ):
-            issues.append(
-                issue(
-                    "error",
-                    "page-plan-metadata-mismatch",
-                    str(path),
-                    "page id, type and diagrams must exactly match the Composition Map",
-                )
-            )
-    for field in ("title", "description", "coverage", "language", "generated"):
-        if getattr(frontmatter, field) is None:
-            issues.append(
-                issue(
-                    "error", "field-missing", str(path), f"repo-wiki requires {field}"
-                )
-            )
-    if published and (
-        frontmatter.status != "stable"
-        or not frontmatter.verified
-        or not frontmatter.stale_after
-    ):
+    size = len(page.body.encode("utf-8"))
+    if size > MAX_PAGE_BYTES:
         issues.append(
-            issue(
-                "error",
-                "trust-incomplete",
-                str(path),
-                "published concepts must be stable, verified and have stale_after",
+            _issue(
+                page.path, 1, "parrot", f"page body is {size // 1024} KiB",
+                "Cut what grep and two or three files answer; split only if two real topics remain.",
+                severity="warning",
             )
         )
-    structure = extract(parsed.body)
-    if frontmatter.language is not None:
-        if frontmatter.language != state.get("language"):
-            issues.append(
-                issue(
-                    "error",
-                    "page-language-mismatch",
-                    str(path),
-                    f"page language must match workspace language {state.get('language')}",
-                )
-            )
-        pattern = _HAN if frontmatter.language == "zh" else _LATIN
-        for field, value in (
-            ("title", frontmatter.title or ""),
-            ("description", frontmatter.description or ""),
-            ("body", parsed.body),
-        ):
-            if not pattern.search(value):
-                issues.append(
-                    issue(
-                        "error",
-                        "language-content-missing",
-                        str(path),
-                        f"{field} has no {frontmatter.language} language text",
-                    )
-                )
-        headings = _template_headings(frontmatter.language, frontmatter.type)
-        if headings is None:
-            issues.append(
-                issue(
-                    "error",
-                    "template-missing",
-                    str(path),
-                    f"missing {frontmatter.language}/{_TEMPLATE_NAMES[frontmatter.type]}",
-                )
-            )
-        else:
-            required, forbidden = headings
-            actual_headings = {section.title for section in structure.sections}
-            for missing in sorted(required - actual_headings):
-                issues.append(
-                    issue(
-                        "error",
-                        "template-heading-missing",
-                        str(path),
-                        f"required {frontmatter.type} heading is missing: {missing}",
-                    )
-                )
-            for section in structure.sections:
-                if section.title in forbidden:
-                    issues.append(
-                        issue(
-                            "error",
-                            "template-heading-leak",
-                            str(path),
-                            f"heading belongs to the other language template: {section.title}",
-                            section.start_line,
-                        )
-                    )
-            table_title = _TABLE_SECTIONS.get((frontmatter.language, frontmatter.type))
-            table_section = next(
-                (
-                    section
-                    for section in structure.sections
-                    if section.title == table_title
-                ),
-                None,
-            )
-            if table_title and (
-                table_section is None
-                or _TABLE_SEPARATOR.search(table_section.content) is None
-            ):
-                issues.append(
-                    issue(
-                        "error",
-                        "required-table-missing",
-                        str(path),
-                        f"{table_title} requires a compact Markdown table",
-                        table_section.start_line if table_section else None,
-                    )
-                )
-    source_citations: dict[str, set[str]] = {}
-    for source in frontmatter.sources:
-        locator = parse_resource(source.resource)
-        source_name = (
-            locator[0] if locator else _catalog_source(catalogs, source.resource)
-        )
-        if source_name:
-            source_citations.setdefault(source_name, set()).add(source.id)
-    for code, message, line in validate_diagrams(
-        structure, frontmatter.diagrams, source_citations
-    ):
-        issues.append(issue("error", code, str(path), message, line))
-    refs = {ref for ref, _ in structure.footnote_refs}
-    defs = set(structure.footnote_defs)
-    source_ids = [source.id for source in frontmatter.sources]
-    if any(source_id is None for source_id in source_ids) or len(source_ids) != len(
-        set(source_ids)
-    ):
-        issues.append(
-            issue(
-                "error",
-                "source-id-invalid",
-                str(path),
-                "source ids are required and unique",
-            )
-        )
-    if refs != set(source_ids) or refs != defs:
-        issues.append(
-            issue(
-                "error",
-                "citation-join-invalid",
-                str(path),
-                "footnote refs, definitions and source ids must match exactly",
-            )
-        )
-    for source in frontmatter.sources:
-        if _catalog_resource(catalogs, source.resource):
+    known = {md.line for kind in _page.tables(page).values() for md in kind}
+    for md in page.structure.tables:
+        if md.line in known or not md.rows:
             continue
-        resolved = _resolve_resource(root, state, source.resource)
-        if resolved is None:
+        cells = [c.strip() for row in md.rows for c in row.cells if c.strip()]
+        cited = any(_FOOTNOTE_REF.search(c) for c in cells)
+        if cells and not cited and sum(bool(_IDENT_CELL.match(c)) for c in cells) >= 0.8 * len(cells):
             issues.append(
-                issue("error", "locator-unresolved", str(path), source.resource)
-            )
-            continue
-        parsed_resource = parse_resource(source.resource)
-        if (
-            owner
-            and owner != "workspace"
-            and parsed_resource
-            and parsed_resource[0] != owner
-        ):
-            issues.append(issue("error", "ownership-bleed", str(path), source.resource))
-        issues.extend(_check_range(*resolved, source.resource))
-    for placeholder, line in structure.placeholders:
-        issues.append(
-            issue("error", "placeholder-remaining", str(path), placeholder, line)
-        )
-    gap_title = "缺口" if frontmatter.language == "zh" else "Gaps"
-    gaps = [section for section in structure.sections if section.title == gap_title]
-    if frontmatter.coverage == "partial":
-        if not gaps or not gaps[0].content:
-            issues.append(
-                issue(
-                    "error",
-                    "gaps-missing",
-                    str(path),
-                    f"partial coverage requires a non-empty {gap_title} section",
-                )
-            )
-    elif frontmatter.coverage == "full" and gaps:
-        issues.append(
-            issue(
-                "error",
-                "gaps-unexpected",
-                str(path),
-                f"full coverage must not include a {gap_title} section",
-                gaps[0].start_line,
-            )
-        )
-    for line, raw in enumerate(parsed.body.splitlines(), 1):
-        if CAUSAL.search(raw) and not _INLINE_REF.search(raw):
-            issues.append(
-                issue(
-                    "warning",
-                    "causal-unanchored",
-                    str(path),
-                    "causal claim has no citation",
-                    line,
+                _issue(
+                    page, md.line, "parrot", "table lists code identifiers without explanation",
+                    "Replace the listing with what an agent cannot read off the code: roles, constraints, why.",
+                    severity="warning",
                 )
             )
     return issues
 
 
-def validate_navigation(path: pathlib.Path, language: str) -> list[Issue]:
-    import _publish
+# --- cross page ----------------------------------------------------------------------------
 
-    expected = _publish.render_indexes(path, language)
-    actual = {
-        item.relative_to(path).as_posix(): item for item in path.rglob("index.md")
-    }
+
+def _canon_issues(ws, pages) -> list[Issue]:
+    by_path = {page.path: page for page in pages}
     issues = []
-    if set(actual) != set(expected):
+    required = {"Glossary": ("glossary",), "Conventions": ("commands", "rules"), "Architecture": ("not_covered",)}
+    for type, path in _page.CANON.items():
+        page = by_path.get(path)
+        if page is None or page.error or page.type != type:
+            issues.append(
+                _issue(
+                    path, None, "canon-missing", f"canon page {path} ({type}) is missing",
+                    f"Create it with okf new {shlex.quote(path)} --type {type} --description '...'.",
+                )
+            )
+            continue
+        found = _page.tables(page)
+        for kind in required[type]:
+            label = kind.replace("_", " ")
+            if kind not in found:
+                issues.append(
+                    _issue(
+                        path, None, "canon-table", f"{type} page has no {label} table",
+                        "Keep the table header from the template (en or zh) exactly.",
+                    )
+                )
+            elif kind != "not_covered" and not any(t.rows for t in found[kind]) and not page.todos:
+                issues.append(
+                    _issue(
+                        path, None, "canon-empty", f"{label} table has no rows",
+                        f"Add grounded {label} rows, or confirm the repository truly has none.",
+                        severity="warning",
+                    )
+                )
+    return issues
+
+
+def _coverage_issues(facts, pages) -> list[Issue]:
+    issues = []
+    covered = module_pages(facts, pages)
+    excluded = module_exclusions(facts, pages)
+    arch = _page.CANON["Architecture"]
+    for module in facts.modules:
+        if covered[module.path] or module.path in excluded:
+            continue
         issues.append(
-            issue(
-                "error",
-                "navigation-index-set-invalid",
-                str(path),
-                f"expected indexes {sorted(expected)}, found {sorted(actual)}",
+            _issue(
+                arch, None, "coverage", f"module {module.path} is in no page scope",
+                f"Add {module.path}/** to a page scope, or add a Not covered row with a reason.",
             )
         )
-    for relative in sorted(set(actual) & set(expected)):
-        if actual[relative].read_text(encoding="utf-8") != expected[relative]:
+    for page, row, path, _ in not_covered_rows(pages):
+        if path and not facts.matches(path):
             issues.append(
-                issue(
-                    "error",
-                    "navigation-index-stale",
-                    str(actual[relative]),
-                    "navigation index does not match the Candidate page tree",
+                _issue(
+                    page, row.line, "not-covered", f"Not covered path {path} matches no tracked file",
+                    "Fix the path or delete the row.",
                 )
             )
     return issues
 
 
-def validate_candidate(
-    root: pathlib.Path, state: dict, *, published: bool
-) -> ValidationResult:
-    import _state
+def _index_issues(ws, facts, pages) -> list[Issue]:
+    if any(p.status == "draft" for p in pages if not p.is_generated) or any(p.error for p in pages):
+        return []
+    import _stamp
 
-    base = root / ".okf-wiki" / "runs" / state["run_id"]
-    candidate = base / "candidate"
-    work = base / "work"
-    plan_path = work / "plan.md"
-    composition_path = work / "composition.md"
-    plan, plan_issues = validate_plan_artifact(root, state, plan_path)
-    ledger_path = work / "plan-ledger.json"
-    plan_digest = (
-        _state._plan_subject_digest(root, state)
-        if plan_path.is_file()
-        and (work / "plan-intent.json").is_file()
-        and ledger_path.is_file()
-        else None
-    )
-    plan_review, plan_review_issues = validate_plan_review(
-        work / "plan-review.json",
-        plan_digest,
-        {unit.id for unit in plan.effective_units} if plan is not None else None,
-    )
-    composition, composition_issues = validate_composition_artifact(
-        composition_path, plan
-    )
-    requirement_issues = (
-        validate_composition_requirements(
-            work / "composition-requirements.json",
-            composition_requirements(plan, plan_digest),
+    expected = _stamp.render_index(ws, pages, facts)
+    index = ws.wiki / "index.md"
+    actual = index.read_text(encoding="utf-8") if index.is_file() else None
+    if actual == expected:
+        return []
+    return [
+        _issue(
+            "index.md", None, "index", "index.md is missing or out of date",
+            "Run okf stamp --by <actor>; it rewrites index.md when no page is a draft.",
         )
-        if plan is not None and plan_digest is not None
-        else []
-    )
-    composition_inputs_exist = all(
-        path.is_file()
-        for path in (
-            plan_path,
-            ledger_path,
-            work / "plan-review.json",
-            work / "composition-requirements.json",
-            composition_path,
-        )
-    )
-    composition_digest = (
-        _state._composition_subject_digest(root, state)
-        if composition_inputs_exist
-        else None
-    )
-    composition_review, composition_review_issues = validate_composition_review(
-        work / "composition-review.json",
-        composition_digest,
-        {page.id for page in composition.pages} if composition is not None else None,
-    )
-    all_pages = sorted(candidate.rglob("*.md")) if candidate.exists() else []
-    pages = [path for path in all_pages if path.name not in ("index.md", "log.md")]
-    issues = [
-        *_at_phase(plan_issues, "plan"),
-        *_at_phase(plan_review_issues, "plan-review"),
-        *_at_phase(requirement_issues, "composition"),
-        *_at_phase(composition_issues, "composition"),
-        *_at_phase(composition_review_issues, "composition-review"),
     ]
-    skipped = []
-    if plan is None:
-        skipped.extend(
-            [
-                "composition-unit-binding",
-                "draft-scope-binding",
-                "page-scope-binding",
-            ]
-        )
-    if composition is None:
-        skipped.extend(
-            [
-                "composition-review-page-binding",
-                "draft-page-binding",
-                "candidate-page-binding",
-            ]
-        )
-    if plan_digest is None:
-        skipped.append("plan-review-digest")
-    if composition_digest is None:
-        skipped.append("composition-review-digest")
-    if plan is None or plan_digest is None:
-        skipped.append("composition-requirements")
-    if plan_review is not None and plan_review.verdict != "approved":
-        issues.append(
-            issue(
-                "error",
-                "plan-review-rejected",
-                str(work / "plan-review.json"),
-                "Knowledge Plan review must be approved",
-                phase="plan-review",
-            )
-        )
-    if composition_review is not None and composition_review.verdict != "approved":
-        issues.append(
-            issue(
-                "error",
-                "composition-review-rejected",
-                str(work / "composition-review.json"),
-                "Composition review must be approved",
-                phase="composition-review",
-            )
-        )
-    page_set = {path.relative_to(candidate).as_posix() for path in pages}
-    page_by_path = {}
-    if composition is not None:
-        page_by_path = {page.path: page for page in composition.pages}
-        if plan is not None:
-            try:
-                import _reference
-
-                generated = _reference.derive_pages(root, state, plan, composition)
-            except (DbError, ValueError) as exc:
-                issues.append(
-                    issue(
-                        "error",
-                        "reference-generation-invalid",
-                        str(candidate),
-                        str(exc),
-                    )
-                )
-                generated = []
-            for page in generated:
-                if page["path"] in page_by_path:
-                    issues.append(
-                        issue(
-                            "error",
-                            "generated-page-path-conflict",
-                            str(candidate),
-                            page["path"],
-                        )
-                    )
-                else:
-                    page_by_path[page["path"]] = page
-    if composition is not None and page_set != set(page_by_path):
-        issues.append(
-            issue(
-                "error",
-                "page-set-mismatch",
-                str(candidate),
-                "candidate pages must exactly match authored and derived pages",
-            )
-        )
-    for path in pages:
-        rel = path.relative_to(candidate).as_posix()
-        page = page_by_path.get(rel)
-        expected = None
-        if page is not None:
-            if isinstance(page, dict):
-                expected = {**page, "owner": "workspace"}
-            elif plan is not None:
-                expected = generated_page_spec(root, state, plan, page)
-            else:
-                expected = page.model_dump(mode="json")
-        issues.extend(
-            _at_phase(
-                validate_page(
-                    root,
-                    state,
-                    path,
-                    owner=expected.get("owner") if expected else None,
-                    expected=expected,
-                    published=published,
-                ),
-                "review",
-            )
-        )
-    issues.extend(
-        _at_phase(validate_navigation(candidate, state["language"]), "review")
-    )
-    allowed = {path.relative_to(candidate).as_posix() for path in all_pages}
-    linked_pages = [path for path in all_pages if path.name != "log.md"]
-    issues.extend(_at_phase(_link_issues(candidate, linked_pages, allowed), "review"))
-    if plan is not None and composition is not None:
-        issues.extend(
-            _at_phase(
-                validate_drafts(root, state, plan, composition, work / "drafts"),
-                "write",
-            )
-        )
-    else:
-        issues.extend(_at_phase(validate_unbound_drafts(work / "drafts"), "write"))
-    return validation_result(_at_phase(issues, "review"), skipped)
 
 
-def _link_issues(
-    base: pathlib.Path, pages: list[pathlib.Path], allowed: set[str]
-) -> list[Issue]:
-    issues = []
-    for path in pages:
-        rel = path.relative_to(base).as_posix()
-        parsed = parse_file(path, reserved=path.name in ("index.md", "log.md"))
-        structure = extract(parsed.body)
-        for target, line in structure.links:
-            clean = unquote(target.split("#", 1)[0].split("?", 1)[0])
-            if not clean or urlparse(clean).scheme or clean.startswith("mailto:"):
-                continue
-            if clean.startswith("/"):
-                rel_target = pathlib.PurePosixPath(clean.lstrip("/"))
-            else:
-                rel_target = pathlib.PurePosixPath(rel).parent / clean
-            normalized = pathlib.PurePosixPath(rel_target)
-            if normalized.as_posix() == rel:
-                issues.append(issue("error", "self-link", str(path), target, line))
-            elif ".." in normalized.parts or normalized.as_posix() not in allowed:
-                issues.append(issue("error", "broken-link", str(path), target, line))
-    return issues
-
-
-def validate_bundle(path: pathlib.Path) -> list[Issue]:
-    issues = []
-    for page in sorted(path.rglob("*.md")):
-        rel = page.relative_to(path).as_posix()
-        if page.name == "index.md":
-            parsed = parse_file(page, reserved=True)
-            if rel == "index.md":
-                if parsed.errors or parsed.meta != {"okf_version": "0.2"}:
-                    issues.append(
-                        issue(
-                            "error",
-                            "index-frontmatter",
-                            str(page),
-                            "root index may contain only okf_version: 0.2",
-                        )
-                    )
-            elif parsed.meta or parsed.errors:
-                issues.append(
-                    issue(
-                        "error",
-                        "index-frontmatter",
-                        str(page),
-                        "nested index must not have frontmatter",
-                    )
-                )
-            for line_no, line in enumerate(parsed.body.splitlines(), 1):
-                if line.startswith("##"):
-                    issues.append(
-                        issue(
-                            "error",
-                            "index-heading",
-                            str(page),
-                            "index groups must use H1 headings",
-                            line_no,
-                        )
-                    )
-        elif page.name == "log.md":
-            parsed = parse_file(page, reserved=True)
-            if parsed.meta or parsed.errors:
-                issues.append(
-                    issue(
-                        "error",
-                        "log-frontmatter",
-                        str(page),
-                        "log must not have frontmatter",
-                    )
-                )
-            for line_no, line in enumerate(parsed.body.splitlines(), 1):
-                if line.startswith("## ") and not re.fullmatch(
-                    r"## \d{4}-\d{2}-\d{2}", line
-                ):
-                    issues.append(
-                        issue(
-                            "error",
-                            "log-date",
-                            str(page),
-                            "log date headings must be YYYY-MM-DD",
-                            line_no,
-                        )
-                    )
-        else:
-            parsed = parse_file(page)
-            if parsed.errors:
-                issues.extend(
-                    issue("error", "frontmatter-invalid", str(page), message)
-                    for message in parsed.errors
-                )
-            else:
-                try:
-                    concept = ConceptFrontmatter.model_validate(
-                        parsed.meta, strict=True
-                    )
-                    if (
-                        concept.status != "stable"
-                        or not concept.verified
-                        or not concept.stale_after
-                    ):
-                        issues.append(
-                            issue(
-                                "error",
-                                "trust-incomplete",
-                                str(page),
-                                "published concepts must be stable, verified and have stale_after",
-                            )
-                        )
-                    structure = extract(parsed.body)
-                    for code, message, line in validate_diagrams(
-                        structure, concept.diagrams
-                    ):
-                        issues.append(issue("error", code, str(page), message, line))
-                except ValidationError as exc:
-                    issues.extend(
-                        issue("error", "frontmatter-invalid", str(page), message)
-                        for message in model_errors(exc)
-                    )
-    return issues
-
-
-def validate_publication(root: pathlib.Path, path: pathlib.Path) -> ValidationResult:
-    import _workspace
-
-    issues = validate_bundle(path)
-    skipped = []
-    manifest_path = path / ".okf-manifest.json"
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        issues.append(issue("error", "manifest-invalid", str(manifest_path), str(exc)))
-        skipped.append("manifest-binding")
-        return validation_result(issues, skipped)
-    if (
-        not isinstance(manifest, dict)
-        or not isinstance(manifest.get("revisions"), list)
-        or not isinstance(manifest.get("catalogs"), list)
-    ):
-        issues.append(
-            issue(
-                "error",
-                "manifest-invalid",
-                str(manifest_path),
-                "manifest fields are invalid",
-            )
-        )
-        skipped.append("manifest-binding")
-        return validation_result(issues, skipped)
-    try:
-        policy = RunPolicy.model_validate(manifest.get("policy"), strict=True)
-    except ValidationError as exc:
-        issues.extend(
-            issue("error", "manifest-policy-invalid", str(manifest_path), message)
-            for message in model_errors(exc)
-        )
-        skipped.append("manifest-binding")
-        return validation_result(issues, skipped)
-    if not re.fullmatch(r"[0-9a-f]{64}", manifest.get("skill_bundle_digest", "")):
-        issues.append(
-            issue(
-                "error",
-                "manifest-skill-digest-invalid",
-                str(manifest_path),
-                "skill bundle digest is missing or invalid",
-            )
-        )
-    if manifest.get("digest") != directory_digest(
-        path, exclude_names={".okf-manifest.json"}
-    ):
-        issues.append(
-            issue(
-                "error", "manifest-digest", str(manifest_path), "bundle digest mismatch"
-            )
-        )
-
-    revisions = []
-    for entry in manifest["revisions"]:
-        if (
-            not isinstance(entry, dict)
-            or not isinstance(entry.get("name"), str)
-            or not re.fullmatch(r"[0-9a-f]{40,64}", entry.get("commit", ""))
-        ):
-            issues.append(
-                issue(
-                    "error",
-                    "revision-invalid",
-                    str(manifest_path),
-                    "Git revision fields are invalid",
-                )
-            )
-            continue
-        revisions.append(entry)
-
-    catalogs = []
-    for entry in manifest["catalogs"]:
-        if not _catalog_record_valid(root, entry):
-            issues.append(
-                issue(
-                    "error",
-                    "catalog-invalid",
-                    str(manifest_path),
-                    "catalog capture is missing or does not match its content hash",
-                )
-            )
-            continue
-        catalogs.append(entry)
-
-    state = {
-        "run_id": manifest.get("run_id"),
-        "revisions": revisions,
-        "catalogs": catalogs,
-        "language": _workspace.load(root).language,
-        "policy": policy.model_dump(mode="json"),
+def counts(issues: list[Issue]) -> dict[str, int]:
+    return {
+        "errors": sum(i.severity == "error" for i in issues),
+        "pending": sum(i.severity == "pending" for i in issues),
+        "warnings": sum(i.severity == "warning" for i in issues),
     }
-    concepts = sorted(
-        page for page in path.rglob("*.md") if page.name not in ("index.md", "log.md")
-    )
-    for page in concepts:
-        issues.extend(validate_page(root, state, page, published=True))
-    linked_pages = sorted(page for page in path.rglob("*.md") if page.name != "log.md")
-    allowed = {page.relative_to(path).as_posix() for page in path.rglob("*.md")}
-    issues.extend(_link_issues(path, linked_pages, allowed))
-    return validation_result(issues, skipped)
-
-
-def validate_proposals(
-    root: pathlib.Path,
-    state: dict,
-    path: pathlib.Path,
-) -> list[Issue]:
-    issues = []
-    expected = {
-        f"agents-block-{item['name']}.md"
-        for item in state["revisions"]
-        if item.get("kind") != "files"
-    }
-    actual = (
-        {item.name for item in path.glob("agents-block-*.md")}
-        if path.exists()
-        else set()
-    )
-    if actual - expected:
-        issues.append(
-            issue(
-                "error",
-                "proposal-set-invalid",
-                str(path),
-                f"unexpected proposal files: {sorted(actual - expected)}",
-            )
-        )
-    begin = re.compile(r"<!--\s*okf-wiki:begin\b[^>]*-->")
-    end = re.compile(r"<!--\s*okf-wiki:end\s*-->")
-    for proposal in sorted(path.glob("agents-block-*.md")):
-        text = proposal.read_text(encoding="utf-8")
-        if len(begin.findall(text)) != 1 or len(end.findall(text)) != 1:
-            issues.append(
-                issue(
-                    "error",
-                    "managed-block-invalid",
-                    str(proposal),
-                    "exactly one managed block is required",
-                )
-            )
-        inside = text.split("-->", 1)[-1].rsplit("<!--", 1)[0]
-        if len([line for line in inside.splitlines() if line.strip()]) > 15:
-            issues.append(
-                issue(
-                    "error",
-                    "managed-block-long",
-                    str(proposal),
-                    "managed block exceeds 15 non-empty lines",
-                )
-            )
-    return issues

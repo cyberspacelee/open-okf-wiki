@@ -1,174 +1,62 @@
 import re
 
+import _files
 from _markdown import CodeFence, Structure
-from _models import DiagramSpec
 
-_ID = re.compile(r"^\s*%%\s*okf-id:\s*([a-z0-9][a-z0-9-]*)\s*$", re.MULTILINE)
-_TITLE = re.compile(r"^\s*accTitle\s*:\s*(\S.*)$", re.MULTILINE)
-_DESCRIPTION = re.compile(
-    r"^\s*accDescr\s*:\s*(\S.*)$|^\s*accDescr\s*\{\s*([^}]*\S[^}]*)\s*\}",
-    re.MULTILINE | re.DOTALL,
-)
-_FOOTNOTE = re.compile(r"\[\^([^\]]+)\]")
 _HEADERS = (
-    (re.compile(r"(?:flowchart|graph)(?:\s+(?:TB|TD|BT|RL|LR))?"), "flowchart"),
-    (re.compile(r"sequenceDiagram"), "sequence"),
-    (re.compile(r"stateDiagram(?:-v2)?"), "state"),
-    (re.compile(r"erDiagram"), "er"),
+    re.compile(r"(?:flowchart|graph)(?:\s+(?:TB|TD|BT|RL|LR))?"),
+    re.compile(r"sequenceDiagram"),
+    re.compile(r"stateDiagram(?:-v2)?"),
+    re.compile(r"erDiagram"),
+    re.compile(r"classDiagram(?:-v2)?"),
 )
 _DANGLING_CONNECTOR = re.compile(
     r"(?:-->|---|-\.->|==>|->>|-->>|->|-\)|--\)|--x|--o)\s*$"
 )
+_SUPPORTED = "flowchart, graph, sequenceDiagram, stateDiagram, erDiagram, classDiagram"
 
 
-def _basic_structure(source: str) -> tuple[str | None, str | None]:
-    lines = [
-        line
-        for raw in source.splitlines()
-        if (line := raw.strip()) and not line.startswith("%%")
-    ]
-    if not lines:
-        return None, "Mermaid fence has no diagram declaration or content"
-    header, separator, inline_body = lines[0].partition(";")
-    kind = next(
-        (kind for pattern, kind in _HEADERS if pattern.fullmatch(header.strip())),
-        None,
-    )
-    if kind is None:
-        return None, "Mermaid fence must start with a supported diagram declaration"
-
-    body = [inline_body.strip()] if separator and inline_body.strip() else []
-    in_description = False
-    for line in lines[1:]:
-        if in_description:
-            if "}" in line:
-                in_description = False
-            continue
-        if line.startswith("accDescr"):
-            in_description = "{" in line and "}" not in line
-            continue
-        if not line.startswith("accTitle"):
-            body.append(line)
-    if not body:
-        return None, "Mermaid fence has no diagram content"
-    for line in body:
-        code = line.split("%%", 1)[0].rstrip(" ;")
-        if _DANGLING_CONNECTOR.search(code):
-            return None, f"Mermaid connector has no target: {line}"
-    return kind, None
-
-
-def _caption_refs(structure: Structure, fence: CodeFence) -> set[str]:
+def _problems(fence: CodeFence) -> list[tuple[int, str, str]]:
+    line = fence.start_line
     if fence.end_line is None:
-        return set()
-    paragraph = []
-    for line in structure.lines[fence.end_line :]:
-        stripped = line.strip()
-        if not stripped:
-            if paragraph:
-                break
-            continue
-        if stripped.startswith(("#", "```", "~~~", "[^")):
-            break
-        paragraph.append(line)
-    return set(_FOOTNOTE.findall("\n".join(paragraph)))
-
-
-def validate(
-    structure: Structure,
-    planned: list[DiagramSpec],
-    source_citations: dict[str, set[str]] | None = None,
-) -> list[tuple[str, str, int | None]]:
-    issues: list[tuple[str, str, int | None]] = []
-    fences = [fence for fence in structure.fences if fence.language == "mermaid"]
-    unclosed = [fence for fence in fences if fence.end_line is None]
-    for fence in unclosed:
-        issues.append(
-            ("mermaid-fence-unclosed", "Mermaid fence is not closed", fence.start_line)
-        )
-    fences = [fence for fence in fences if fence.end_line is not None]
-    actual: dict[str, str | None] = {}
-    for fence in fences:
-        ids = _ID.findall(fence.content)
-        if len(ids) != 1:
-            issues.append(
-                (
-                    "diagram-id-invalid",
-                    "each Mermaid fence requires exactly one %% okf-id comment",
-                    fence.start_line,
-                )
-            )
-            continue
-        diagram_id = ids[0]
-        if diagram_id in actual:
-            issues.append(
-                (
-                    "diagram-id-duplicate",
-                    f"duplicate diagram id: {diagram_id}",
-                    fence.start_line,
-                )
-            )
-        actual[diagram_id] = None
-        if not _TITLE.search(fence.content):
-            issues.append(
-                (
-                    "diagram-accessibility-missing",
-                    f"{diagram_id} requires a non-empty accTitle",
-                    fence.start_line,
-                )
-            )
-        if not _DESCRIPTION.search(fence.content):
-            issues.append(
-                (
-                    "diagram-accessibility-missing",
-                    f"{diagram_id} requires a non-empty accDescr",
-                    fence.start_line,
-                )
-            )
-        caption_refs = _caption_refs(structure, fence)
-        if not caption_refs:
-            issues.append(
-                (
-                    "diagram-evidence-missing",
-                    f"{diagram_id} requires an adjacent cited caption",
-                    fence.end_line,
-                )
-            )
-        elif source_citations is not None:
-            spec = next((item for item in planned if item.id == diagram_id), None)
-            missing = (
-                [
-                    source
-                    for source in spec.sources
-                    if not (source_citations.get(source, set()) & caption_refs)
-                ]
-                if spec
-                else []
-            )
-            if missing:
-                issues.append(
-                    (
-                        "diagram-evidence-missing",
-                        f"{diagram_id} caption must cite each planned Source: {missing}",
-                        fence.end_line,
-                    )
-                )
-
-    for fence in fences:
-        kind, error = _basic_structure(fence.content)
-        if error:
-            issues.append(("mermaid-structure-invalid", error, fence.start_line))
-            continue
-        ids = _ID.findall(fence.content)
-        if len(ids) == 1 and ids[0] in actual:
-            actual[ids[0]] = kind
-    expected = {diagram.id: diagram.kind for diagram in planned}
-    if actual != expected:
-        issues.append(
+        return [(line, "Mermaid fence is not closed", "Close the fence with ```.")]
+    body = [
+        (line + n, text)
+        for n, raw in enumerate(_files.text_lines(fence.content), 1)
+        if (text := raw.strip()) and not text.startswith("%%")
+    ]
+    if not body:
+        return [(line, "Mermaid fence is empty", "Add a diagram or remove the fence.")]
+    first_line, first = body[0]
+    header, separator, inline = first.partition(";")
+    if not any(pattern.fullmatch(header.strip()) for pattern in _HEADERS):
+        return [
             (
-                "diagram-plan-mismatch",
-                f"planned diagrams {expected} do not match Mermaid diagrams {actual}",
-                None,
+                first_line,
+                f"unsupported Mermaid diagram declaration: {header.strip()}",
+                f"Start the fence with one of: {_SUPPORTED}.",
             )
+        ]
+    rest = body[1:]
+    if separator and inline.strip():
+        rest.insert(0, (first_line, inline.strip()))
+    if not rest:
+        return [(line, "Mermaid diagram has no content", "Add nodes and edges.")]
+    return [
+        (
+            number,
+            f"Mermaid connector has no target: {text}",
+            "Add the target node after the connector.",
         )
-    return issues
+        for number, text in rest
+        if _DANGLING_CONNECTOR.search(text.split("%%", 1)[0].rstrip(" ;"))
+    ]
+
+
+def check(structure: Structure) -> list[tuple[int, str, str]]:
+    return [
+        problem
+        for fence in structure.fences
+        if fence.language == "mermaid"
+        for problem in _problems(fence)
+    ]

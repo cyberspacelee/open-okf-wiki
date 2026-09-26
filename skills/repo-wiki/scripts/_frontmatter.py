@@ -48,7 +48,10 @@ def _depth(value: Any) -> int:
 
 
 def parse_page(text: str, *, reserved: bool = False) -> ParsedPage:
-    lines = text.splitlines(keepends=True)
+    # Split on LF only (CR before it kept), so form feeds or U+2028 in a value
+    # cannot move the closing fence or shift body line numbers.
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
     if not lines or lines[0].strip() != "---":
         if reserved:
             return ParsedPage(meta={}, body=text, errors=[])

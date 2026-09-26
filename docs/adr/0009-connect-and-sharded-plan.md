@@ -1,5 +1,7 @@
 # Connect slot and sharded Page Plan
 
+Status: superseded by ADR 0027
+
 Cross-source boundaries are N `connect:<source>` tasks (zero when only one
 Git/files Source exists), not a single `synthesize:workspace` worker.
 Connection is multi-participant with optional contract locators on a files

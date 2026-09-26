@@ -1,260 +1,275 @@
-# Open OKF Wiki v1
+# Open OKF Wiki
 
-A skill-driven producer for thin, evidence-anchored repository Wikis. Agents
-follow skills/repo-wiki/SKILL.md; deterministic Python gates bind Git revisions,
-validate phase artifacts, bind independent review to a candidate digest and
-publish OKF v0.2 generations.
+`repo-wiki` is an agent skill that builds and incrementally updates a
+**repository knowledge layer**: a small, source-cited wiki that coding agents
+read before they change a codebase. The wiki is an OKF v0.2 bundle committed
+next to the code it describes. A deterministic Python kernel (`okf`) handles
+scanning, validation, stamping and change impact. The host agent handles
+judgment by following [SKILL.md](skills/repo-wiki/SKILL.md).
 
-## Install
+## Why
 
-Prerequisites: Git, [uv](https://docs.astral.sh/uv/) and Node.js for the skills
-installer. Until this release reaches the default branch, clone its published
-branch explicitly:
+The wiki is built for agents to pull from. It never sits in an agent's context
+by default.
+An evaluation of repository context files (Gloaguen et al. 2026) found that
+LLM-generated overviews did not raise task success and raised inference cost by
+more than 20%. The main cause was redundancy with the README and the directory
+structure. The layer therefore records only knowledge that is expensive to
+rediscover: design rationale, boundaries, invariants, workflows, terminology,
+conventions, extension points and change impact (priorities and rules in
+[pages.md](skills/repo-wiki/references/pages.md)).
+
+The **Grep Test** applies to every page and section: leave out anything that
+grep plus two or three files would rebuild in a minute. Only a pointer block of
+at most 15 lines is meant to be always loaded, and a human pastes it into
+AGENTS.md (in a hub, into each source's AGENTS.md). The evidence and ablation notes are in
+[repository-knowledge-layer-evidence.md](docs/research/repository-knowledge-layer-evidence.md).
+
+## What it produces
 
 ```text
-git clone --depth 1 --branch v2/skill-harness https://github.com/cyberspacelee/open-okf-wiki.git open-okf-wiki
+<repo>/
+  AGENTS.md              # optional managed pointer block (okf pointer, with approval)
+  docs/wiki/             # default location; choose another with okf init --wiki DIR
+    repo-wiki.yaml       # lang: en|zh (plus sources: [...] in a hub)
+    index.md             # generated: pages grouped by type + Source map
+    architecture.md      # canon: boundaries, dependency direction, Not covered table
+    glossary.md          # canon: Term | Meaning | Avoid | Where
+    conventions.md       # canon: commands table + rules table
+    modules/<name>.md
+    workflows/<name>.md
+    _review.json         # review report; exists only while a review round is open
 ```
 
-From the repository that should receive the Wiki, install the skill at project
-scope. This example assumes the two repositories are siblings:
+There are five author page types: **Architecture**, **Glossary** and
+**Conventions** (together the *canon*, written first) plus **Module** and
+**Workflow**. The OpenGauss extension generates **Schema** and **Table** pages.
+The kernel recognizes the canon tables by their header rows, in English or
+Chinese:
+
+- glossary: Term, Meaning, Avoid, Where
+- commands: Purpose, Command, Status
+- rules: Area, Rule, Enforced by
+- invariants: Invariant, Enforced at, Breaks when
+- change impact: Change, Also change or check
+- Not covered: Path, Reason
+
+Rule `Area` is one of `layout`, `naming`, `api`, `errors`, `logging`,
+`config`, `testing`, `build-ci`, `dependencies`, `vcs`. Each type also has
+required headings that `okf new` writes and `okf validate` checks
+(Architecture: Boundaries and dependencies, Not covered; Conventions: Commands,
+Rules; Module: Responsibility and boundaries; Workflow: Trigger to outcome; zh
+equivalents in zh wikis). Diagrams are recommended, not required.
+
+Every row except Not covered must carry a citation. So must every causal "why"
+sentence. A citation is an ordinary footnote whose definition starts with a
+plain `path#Lx-Ly` locator (`<my app/x.py>#Lx-Ly` for a path with spaces).
+
+```markdown
+---
+type: Module
+title: Billing run
+description: Read before changing invoice generation, proration or billing retries.
+scope: [src/billing/**]
+status: stable
+revision: {.: 3f2a…}                  # source commit the page was checked against
+sources: [{id: retry-cap, resource: src/billing/retry.py#L30-L44}]
+generated: {by: repo-wiki/<model>, at: 2026-09-25T10:00:00Z}
+verified: [{by: repo-wiki-reviewer/<model>, at: 2026-09-25T10:05:00Z}]
+stamp: {content_sha256: …, reviewed_by: repo-wiki-reviewer/<model>}  # hash: body, frontmatter except status, sources, verified, stamp, and reviewed_by
+---
+
+## Responsibility and boundaries
+
+| Invariant | Enforced at | Breaks when |
+|---|---|---|
+| At most 3 charge attempts per invoice. | `RetryPolicy.schedule`[^retry-cap] | Customers are charged repeatedly after a gateway timeout. |
+
+Why 3 attempts: rationale not recorded.
+
+[^retry-cap]: src/billing/retry.py#L30-L44
+```
+
+Authors write `scope`. The kernel writes `status` and `revision`, and at stamp
+time `sources`, `generated`, `verified` and `stamp`. `index.md` lists every
+stable page as `[title](path) - description`. Its **Source map** section links
+each scanned module to the pages that cover it, or to its Not covered reason.
+Modules are build-declared modules plus top-level code directories; a
+top-level code root such as `src/` is split into one module per child (unless
+it has its own manifest, declared modules or a `main` child), and top-level
+test roots are not modules. See [pages.md](skills/repo-wiki/references/pages.md) for the full page
+contract.
+
+## Usage
+
+Requirements: Git, Python 3.12+ and [uv](https://docs.astral.sh/uv/). `okf.py`
+is a uv script that declares PyYAML and psycopg inline. Install the skill into
+the repository that should get the wiki, for example with the skills installer:
 
 ```text
 npx skills@latest add ../open-okf-wiki/skills/repo-wiki --skill repo-wiki -y
 ```
 
-The installer detects supported agents; use `--agent <name>` only to target one.
-Codex and Pi discover project skills under `.agents/skills/`; Pi also supports
-`.pi/skills/`, while Grok Build uses `.grok/skills/` or a configured skill path.
-Add `--copy` where symlink privileges are unavailable. A copied install is a
-versioned bundle, not a development link: reinstall it after upgrading this
-repository and commit its `skills-lock.json` entry. Verify that the harness
-resolves `repo-wiki` to the intended path when discovery scopes overlap.
-Before starting a Run on another machine, update the installed skill. A current
-Run reports contract `single-author-plan-evidence-registry`; another contract identifies a
-stale bundle or legacy Run. Preserve that Workspace for forensics and start from
-a new hub after reinstalling rather than resuming or migrating it.
+You can also copy `skills/repo-wiki/` into your agent's skill directory, such as
+`.agents/skills/`. Then ask the agent to "build a repo wiki", "refresh the
+wiki" or "which wiki pages does this change affect". The skill loops on
+`okf status --json` and does its `next_actions` until the phase is `done`. It
+changes only wiki pages, and AGENTS.md only with your approval. It never
+commits. The source tree must stay clean for the whole session.
 
-The runtime bundle and kernel are host- and model-neutral. Set the actual
-installed directory once for the commands below:
+| Stage | What happens | Exit check |
+|---|---|---|
+| 1 Discover | `okf scan`, read docs, build and CI files; create page stubs whose todo blocks hold briefs; optional parallel scouts | stubs have briefs |
+| 2 Structure | keep only pages that pass the Grep Test; settle `description` and `scope`; list skipped modules in Not covered | no coverage, scope or not-covered errors |
+| 3 Research | write glossary, conventions and architecture first; run build, test and lint commands where it is safe | canon pages have no todo block and no validation error |
+| 4 Write | one writer per remaining page, in parallel, given the three canon pages | no todo block and no validation error anywhere |
+| 5 Review & stamp | `okf review prepare`, a fresh independent reviewer per round writing the review report, `okf stamp` | pages are stable, `index.md` is rewritten |
+| Update | `okf update` redrafts the stale pages; stages 3-5 run again for those pages only | as above |
 
-```bash
-REPO_WIKI_SKILL=.agents/skills/repo-wiki  # Codex or Pi
-# REPO_WIKI_SKILL=.pi/skills/repo-wiki    # Pi native scope
-# REPO_WIKI_SKILL=.grok/skills/repo-wiki  # Grok Build
-```
+Kernel commands (`okf = uv run <skill>/scripts/okf.py`, run from the repository
+or hub root; the read-only `status`, `validate` and `impact` also run from any
+directory below it, including a hub source; every command accepts `--json`, and
+`--wiki DIR` before or after the subcommand):
 
-A Run pins each Git Source at its HEAD commit. Live worktrees may be dirty or
-move afterwards; workers read the Pin. Commit the installed skill and lock
-file, or keep local agent files out of the source. A typical local-only
-`.gitignore` section is:
+| Command | Purpose |
+|---|---|
+| `okf init [--wiki DIR] [--lang en\|zh] [--hub --source NAME ...]` | create `repo-wiki.yaml` and the three canon stubs; refuses a repository (or hub source) without a commit, and writes nothing when it fails |
+| `okf status --json` | derived phase, next actions, counts, up to 20 issues |
+| `okf scan --json` | repository facts at HEAD: modules, entry points, commands, CI, configs, tests, docs, term candidates, co-change pairs |
+| `okf new PATH --type T --description D [--title T] [--scope GLOB ...]` | create a draft page stub with the required headings; a scope glob must match a tracked file |
+| `okf validate [--json] [PATH ...]` | check every page; each issue carries a fix hint; exits 1 on errors |
+| `okf review prepare --json` | review subject: `subject_digest`, draft pages, review report (`_review.json`) path |
+| `okf stamp --by ACTOR [--unreviewed]` | stamp reviewed drafts stable, rewrite `index.md` and list remaining warnings |
+| `okf impact [--files PATH ...] --json` | stale pages since their revision; with `--files`, per path `{read, update, change_impact, canon, note}` |
+| `okf update --json` | redraft stale pages, listing the changes in a todo block; reasons whose page is missing come back as `unplaced` |
+| `okf verify --actor human:ID PAGE ...` | record a human review of stamped pages |
+| `okf pointer [--write FILE]` | print or write (through a symlink such as `CLAUDE.md -> AGENTS.md`) the AGENTS.md pointer block (at most 15 lines: index, must-read glossary and conventions, `impact --files`, an `rg` pattern for invariant rows, verified commands) |
+| `okf db {tables,describe,capture} --url-env VAR ...` | OpenGauss extension |
 
-```gitignore
-.agents/
-skills-lock.json
-.okf-wiki/
-.env
-```
+For **multi-repository hubs** and **OpenGauss** Schema/Table pages, see
+[extensions.md](skills/repo-wiki/references/extensions.md). A hub is a git
+repository that holds only the wiki, with each source as an ignored child
+repository. Locators there start with the source name, for example
+`api/src/…#L10-L40`.
 
-Commit the `.gitignore` change before starting a Run. Keep `wiki/` tracked if
-the exported Wiki belongs in the repository.
+## Incremental update and change impact
 
-## Quick start
+Git provides history and transactions. Each page records a `revision` for each
+source:
 
-Run from the directory that should own the Wiki. Initialization creates an
-empty Workspace; it never assumes that the current directory is a Source:
+- while the page is a draft, the commit it is being written against;
+- once the page is stable, the commit it was checked against.
 
-```text
-uv run $REPO_WIKI_SKILL/scripts/okf.py workspace init --lang zh --freshness-days 90
-uv run $REPO_WIKI_SKILL/scripts/okf.py workspace show --json
-```
+A page is **stale** when a file in its `scope`, or a file it cites, has changed
+since that revision. `okf impact` runs `git diff <revision>..HEAD` once for each
+distinct revision and reports a reason for each affected page:
 
-The Workspace policy is complete and strict. These defaults bound every
-evidence response and all host-agent phases:
+- `cited-moved`, with a suggested new locator when the cited lines moved
+  unchanged
+- `cited-changed`, `cited-deleted` and `cited-context`
+- `scope-added`, `scope-modified` and `scope-deleted`
+- `revision-missing`
+- `catalog-changed` and `catalog-deleted`, for re-captured or removed tables
 
-```text
-uv run $REPO_WIKI_SKILL/scripts/okf.py workspace init --lang zh \
-  --max-active-children 4 --max-children-per-run 128 \
-  --search-max-results 100 --search-max-output-bytes 65536 \
-  --read-default-lines 200 --read-max-lines 1000 \
-  --read-max-output-bytes 262144
-```
+It also reports unmapped modules and deleted Not covered paths. `okf update`
+turns the affected pages back into drafts and writes one reason line per change
+into a todo block, ending in `(since <sha12>)` so `git diff <sha12> -- <path>`
+shows the change. The agent then runs stages 3-5 again for those pages only. A
+commit that
+touches only the wiki does not make a single-repository page stale. While
+coding, `okf impact --files <paths> --json` returns for each path the pages to
+`read` before you edit it, the pages to `update` afterwards, the
+`change_impact` rows to check (`{page, line, change, also}`), the `canon` pages
+and a `note` (a resolved or ambiguous hub path, a Not covered reason, or `no
+page covers this path`). It also works from a subdirectory or from inside a
+hub source; relative paths start at the current directory.
 
-Change policy only between Runs with `workspace configure`; `run start`
-snapshots it and records the installed skill bundle digest. The portable policy
-is always the scheduling target. A harness-native cap is an additional guard,
-not part of the kernel:
+## Trust model
 
-| Harness | Skill discovery | Concurrency enforcement |
-| --- | --- | --- |
-| Codex | `.agents/skills/` | Map the Run value to the project/session native cap below. |
-| [Pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md) | `.agents/skills/` or `.pi/skills/` | Its optional [reference subagent extension](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/examples/extensions/subagent/index.ts) currently caps parallel tasks at four; lower Run values remain coordinator-enforced. |
-| [Grok Build](https://docs.x.ai/build/features/skills-plugins-marketplaces) | `.grok/skills/` or configured paths | [Subagents are native](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/16-subagents.md), but no numeric hard cap is documented; the coordinator enforces the Run value. |
+- **Validation.** `okf validate` checks the following:
+  - locators exist at the page's revision and point to tracked text files;
+  - footnote references and definitions match, and match `sources`;
+  - required citations, required section headings and allowed table values;
+  - module coverage, scope globs and links;
+  - secrets and Mermaid syntax;
+  - a matching `index.md`;
+  - that no stable page was edited after its stamp, body or frontmatter.
 
-Codex native-cap example:
+  Alias use, uncited "why" sentences and parroted code are warnings for the
+  reviewer.
+- **Review.** A reviewer that wrote none of the pages checks every canon row and
+  causal sentence against the source. It samples the remaining prose and routes
+  three invented tasks through `index.md`. It writes only the review report
+  (`_review.json`), which is bound to the drafts by `subject_digest`, so a page
+  edited after review makes the approval stale. Each repair round goes to a new
+  reviewer with a fresh context that reads only the pages, the sources and the
+  previous round's review report; issues carry no IDs or status. After three
+  rounds, the remaining issues go to the user. See
+  [review.md](skills/repo-wiki/references/review.md).
+- **Stamping** needs all of the following: no validation errors, no todo
+  blocks, clean sources with draft revisions at HEAD, and an approved review.
+  Pages stamped this way get a `verified` record. `okf stamp --unreviewed`
+  stamps without that record, so the pages stay honestly unverified; it is
+  refused while a `changes_requested` review report exists. A
+  `stamp.content_sha256` hash over the body, the frontmatter (except
+  `status`, `sources`, `verified` and `stamp`, line endings normalized) and the
+  approving reviewer `stamp.reviewed_by` catches later hand edits, including a
+  `verified` entry nobody earned.
+- **Human review.** You review the wiki as an ordinary `git diff` before you
+  commit. `okf verify --actor human:<id>` adds a human `verified` record; it is
+  the only `verified` entry allowed after the reviewer's.
 
-```toml
-# .codex/config.toml
-[agents]
-max_concurrent_threads_per_session = 4
-```
+## Evaluation
 
-The skill uses a four-slot rolling window by default: a freed slot is refilled
-immediately. Evidence research, page writing, repairs and reviews share that
-one window; children never spawn descendants.
+All scripts are uv scripts under `skills/repo-wiki/evals/`. Each tier-2 script
+has a `selftest` subcommand (for `eval_update.py`, the default run is the
+self-contained test).
 
-Register every clean Git Source explicitly. `link` registers a local
-worktree — paths outside the Workspace are mounted automatically under
-`<workspace>/<name>/` (symlink on POSIX, junction on Windows); `clone`
-materializes a Git URL in the same place. `workspace.json` lives at the hub
-root.
-Source names preserve letter case, while names that differ only by case are
-rejected for Windows portability. The Workspace is always a separate hub;
-register the intended repository from a named child or external path:
-
-```text
-uv run $REPO_WIKI_SKILL/scripts/okf.py source add link ../app --name app
-uv run $REPO_WIKI_SKILL/scripts/okf.py source add link ../services/API --name API
-uv run $REPO_WIKI_SKILL/scripts/okf.py source add clone https://github.com/example/web.git --name Web --ref main
-uv run $REPO_WIKI_SKILL/scripts/okf.py source list --json
-```
-
-The producer never copies a Git source into a private snapshot: linked
-sources are read through their hub mount, workers read a Pin at the recorded
-commit, and citations resolve from Git's object database.
-
-OpenGauss is optional. Store the URL in the operating-system environment or
-in a workspace-root `.env`; the operating-system value wins. Configuration and
-Run state retain only the variable name, never credentials.
-Only `opengauss://` connection URLs are accepted. They remain deployment
-configuration and Catalog provenance. Plan, page and publication evidence uses
-stable logical resources such as `appdb/orders`; the PostgreSQL wire-protocol
-conversion is internal.
-
-```dotenv
-APP_DATABASE_URL=opengauss://user:password@host:5432/database
-```
-
-Inspect the live schema before selecting tables:
-
-```text
-uv run $REPO_WIKI_SKILL/scripts/okf.py db tables --url-env APP_DATABASE_URL --json
-uv run $REPO_WIKI_SKILL/scripts/okf.py db describe orders --url-env APP_DATABASE_URL --json
-uv run $REPO_WIKI_SKILL/scripts/okf.py source add opengauss --name appdb --url-env APP_DATABASE_URL --schema public --table orders --table customers
-```
-
-After `run start`, `catalog tables` / `catalog describe` read the captured
-catalog (table and column comments included) without reconnecting. Workers
-use those commands, not `state.json`, `catalog.json` or Catalog paths from a
-dispatch packet.
-
-Start the Run, then ask the coding agent to use the `repo-wiki` skill and resume
-from status. Run IDs are internal and require no user-supplied session:
+| Script | Measures |
+|---|---|
+| `run_cli_e2e.py` (tier 1) | deterministic lifecycle on a fixture: init → stamp, then moved lines, a changed invariant, a new module and a HEAD move under a draft, checking impact, update and status |
+| `eval_update.py [--strict] [--list] [scenarios ...]` | update recall and precision: planted changes in single-repository and hub fixtures must reach `impact` with the right reason kinds, and `update` must draft exactly those pages |
+| `eval_routing.py tasks\|packet\|baseline\|score` | routing recall: real commits made after the wiki become tasks; a router that sees only `index.md` picks K pages; the score is how many touched files those pages cover |
+| `eval_citations.py sample\|score\|calibrate\|agreement` | citation support rate: blind claim packets for a host-run judge, then scoring and a human calibration sheet with Cohen's kappa |
+| `eval_canon.py score --gold G [--run-commands]` | term, rule and command recall against a hand-curated gold file; `--run-commands` re-runs the `verified` commands in a throwaway worktree |
+| `setup_java_ws.py BASE` | builds a Kill Bill multi-repository hub for live evaluation |
 
 ```text
-uv run $REPO_WIKI_SKILL/scripts/okf.py run start
-uv run $REPO_WIKI_SKILL/scripts/okf.py run status --json
+uv run skills/repo-wiki/evals/run_cli_e2e.py
+uv run skills/repo-wiki/evals/eval_update.py --strict
+uv run skills/repo-wiki/evals/eval_routing.py selftest
+uv run skills/repo-wiki/evals/eval_citations.py selftest
+uv run skills/repo-wiki/evals/eval_canon.py selftest
 ```
 
-The host agent runs one explicit loop until Publication or a real external
-block. `run status` derives the next phase from fixed Plan, progress,
-Composition, draft and review Artifacts. One long-lived planner owns the
-cross-Source model and analysis in the sole authored `plan-intent.json`; the
-Kernel generates readable `plan.md` and strict `plan-ledger.json`. Public
-`okf plan schema --json` and `okf plan template --json` expose the input contract.
-Focused workers write bounded evidence
-notes. After Composition approval, `page prepare <page-id>` creates one bounded,
-cached evidence packet for each independent writer. One fresh
-reviewer checks the complete Candidate. Validation and review defects return to
-the loop.
-
-The opt-in `evals/run_live_eval.py` additionally runs a fresh Wiki-only reader
-and a separate frozen-source judge on three maintenance questions: payment
-recovery, overdue feedback and durable delivery. This spends additional model
-tokens and writes `semantic-answers.json` and `semantic-review.json` in the eval
-Workspace. `evals/grade_run.py` requires these reports to match the exact
-Publication and answers; keyword coverage alone does not establish correctness.
-
-PowerShell 7 can consume every JSON command without inline Python:
-
-```powershell
-$status = uv run $env:REPO_WIKI_SKILL/scripts/okf.py run status --json | ConvertFrom-Json
-$status.next_actions
-```
-
-After a distinct reviewer approves the candidate:
+## Development
 
 ```text
-uv run $REPO_WIKI_SKILL/scripts/okf.py publication publish
-uv run $REPO_WIKI_SKILL/scripts/okf.py publication export --to wiki
-uv run $REPO_WIKI_SKILL/scripts/okf.py validate --published
+skills/repo-wiki/SKILL.md            # the skill's runtime SOP
+skills/repo-wiki/references/         # discovery, pages, review, extensions
+skills/repo-wiki/scripts/okf.py      # CLI; _scan/_page/_validate/_review/_stamp/_impact/_status, _db/_dbpages
+skills/repo-wiki/scripts/tests/      # pytest suite for the kernel
+skills/repo-wiki/assets/templates/   # en and zh page stubs
+skills/repo-wiki/evals/              # tier-1 e2e and tier-2 evaluations
+docs/design/  docs/adr/  docs/research/
 ```
 
-The authoritative publication is
-.okf-wiki/publication/generations/<digest>, selected through current.json.
-wiki/ is an explicit recoverable export suitable for Git. This file/pointer
-design behaves consistently on Windows, Linux and macOS without symlinks.
+Verify, as in [AGENTS.md](AGENTS.md):
 
-## Guarantees
+```text
+cd skills/repo-wiki/scripts && uv run --with pytest --with PyYAML \
+  --with "psycopg[binary]" -m pytest tests -q
+uv run skills/repo-wiki/evals/run_cli_e2e.py     # deterministic lifecycle e2e
+```
 
-- Grep Test keeps the Wiki a routing layer rather than a source mirror.
-- Citations are plain `path#Lx-Ly` locators resolved against the Run's
-  recorded Git commit; line ranges must exist at that revision.
-- Frontmatter is parsed as bounded YAML with duplicate keys and aliases
-  rejected, then validated by Pydantic.
-- Page types and planned Diagram Specs are machine-readable; Mermaid diagram
-  declarations, basic structure, accessibility fields and adjacent evidence
-  captions are gated.
-- generated, verified, status and stale_after make lifecycle and trust
-  machine-readable.
-- Drafts and logical links use stable page IDs; physical paths and generated
-  Navigation Indexes are bound from the Composition Map when the complete
-  Candidate is prepared for review.
-- One living Plan and progress file persist analysis and next actions across
-  context compression. There are no Attempt or checkpoint histories.
-- One immutable Run Policy bounds compact JSON evidence output, active and total
-  child fan-out; search/read continuation prevents rescanning after truncation.
-- One independent Wiki review binds Plan, Composition, drafts and Candidate to
-  an exact digest; every change requires a new complete-bundle review whose
-  packet points to the fixed prior review Artifact.
-- Every Run must close Source Area, Domain and Concept coverage; empty Plans,
-  Compositions and Candidates are rejected.
-- Root index.md contains only okf_version 0.2; nested indexes and log.md have
-  no frontmatter. Candidate and Publication both contain the deterministic
-  navigation tree.
-- OpenGauss catalog access is read-only and selected-table only; canonical
-  resources contain no credentials. Run state stores catalog identity;
-  column bodies and comments live under
-  `.okf-wiki/catalogs/<source>-<short-hash>/`; the manifest retains and verifies
-  the full content hash.
-- Source-facing AGENTS, CONTEXT and ADR changes remain proposals requiring
-  human ratification.
+CI (`.github/workflows/qa.yml`) runs these on Linux, macOS and Windows, plus the
+evaluation commands above and `uvx ruff check skills/repo-wiki`.
 
-## Quality checks
+Further reading:
 
-Cross-platform deterministic QA:
-
-    uv run --with pytest --with pydantic --with PyYAML --with "psycopg[binary]" pytest -q skills/repo-wiki/scripts/tests
-    uv run skills/repo-wiki/evals/run_cli_e2e.py
-
-The live agent eval and grader are under skills/repo-wiki/evals. They inspect
-the current generation, not a legacy mutable wiki directory. The shipped live
-eval adapters cover Codex and Claude; that adapter list is test tooling scope,
-not a restriction on skill runtime hosts or models.
-
-## Layout
-
-    skills/repo-wiki/SKILL.md
-    skills/repo-wiki/references/
-    skills/repo-wiki/assets/templates/
-    skills/repo-wiki/scripts/okf.py
-    workspace.json
-    <source-name>/
-    .okf-wiki/runs/<internal-run-id>/index/
-    .okf-wiki/runs/<internal-run-id>/work/
-    .okf-wiki/pins/<run-id>/<name>/
-    .okf-wiki/catalogs/<source>-<short-hash>/catalog.json
-    .okf-wiki/catalogs/<source>-<short-hash>/tables/<table>.json
-    .okf-wiki/publication/generations/<digest>/
-    wiki/
-
-No prior-version state or CLI compatibility is provided.
+- [CONTEXT.md](CONTEXT.md): project vocabulary
+- [ADR 0027](docs/adr/0027-repository-knowledge-layer.md): the current
+  decision; it supersedes most earlier ADRs, which remain as history
+- [Design](docs/design/repository-knowledge-layer.md): the design document
+- [Kernel contract](docs/design/repository-knowledge-layer-kernel.md): module
+  boundaries, data shapes and CLI output; authoritative for code-level details

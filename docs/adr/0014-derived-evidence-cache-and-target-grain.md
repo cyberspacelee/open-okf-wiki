@@ -1,5 +1,7 @@
 # Derived Evidence Cache; one Target owns one canonical artifact
 
+Status: superseded by ADR 0027
+
 Survey workers write only Survey JSON. After locator validation, the kernel
 derives a versioned, Pin-bound Evidence Cache with numbered source windows;
 connect, plan and write may read it, dispatch rebuilds it, and review ignores

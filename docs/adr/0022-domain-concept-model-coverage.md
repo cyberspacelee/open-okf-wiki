@@ -1,6 +1,6 @@
 # Domain, Concept and model coverage
 
-Status: accepted
+Status: superseded by ADR 0027
 
 Supersedes the admission and empty-Publication decisions in ADR 0002 and ADR
 0019, and the corresponding planning boundary in ADR 0021. It retains OKF v0.2

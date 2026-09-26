@@ -1,5 +1,7 @@
 # Proposals are an optional post-publish command
 
+Status: superseded by ADR 0027
+
 AGENTS/CONTEXT/ADR proposals remain human-ratified (ADR 0004) but are no
 longer a Wiki phase. Write completion opens review; publication does not
 read `proposals/`. `okf propose` runs against the current Publication, may

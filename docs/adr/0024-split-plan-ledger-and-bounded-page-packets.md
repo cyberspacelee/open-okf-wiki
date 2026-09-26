@@ -1,6 +1,6 @@
 # Split Plan ledger and bounded page packets
 
-Status: accepted
+Status: superseded by ADR 0027
 
 Supersedes ADR 0023 and refines ADR 0022 without changing OKF v0.2. Existing
 Run state and Plan artifacts have no compatibility or migration path.

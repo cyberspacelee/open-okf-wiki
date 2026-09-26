@@ -1,5 +1,7 @@
 # Index / Triage / Evidence Cache 最终方案
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-08-28
 状态：已按 greenfield 契约实现；不提供旧 artifact 或 task shape 兼容
 

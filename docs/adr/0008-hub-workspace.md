@@ -1,5 +1,7 @@
 # Hub Workspace: sources are direct children
 
+Status: superseded by ADR 0027
+
 A Workspace is a hub, not a Source. `workspace.json` lives at the hub root
 and Git/files Sources occupy `<workspace>/<name>/` (clone, or a mount of an
 external path). `.okf-wiki/` holds only runtime state: runs, pins, catalogs,

@@ -1,5 +1,7 @@
 # Index / triage / evidence-pack 方案：2026 可行性与设计评估
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-08-28
 范围：当前 `index -> triage -> survey -> connect -> plan -> write -> review`
 实现，以及 `docs/research/index-triage-evidence-pack.md` 所述方案。

@@ -1,5 +1,7 @@
 # Repo Wiki 图形表达、页面粒度与质量门禁
 
+> 历史研究：本文针对已被 [ADR 0027](../adr/0027-repository-knowledge-layer.md) 删除的 Run / Plan pipeline 写成，文中的命令、artifact 与源码位置已不存在；结论仅作证据参考，现行设计见 [repository-knowledge-layer.md](../design/repository-knowledge-layer.md)。
+
 日期：2026-08-29
 
 范围：为 repo-wiki 的完整 greenfield 修复提供研究依据；不考虑历史 Run、旧 Page Plan
@@ -72,7 +74,7 @@ Mermaid 官方语义已经给出足够窄的选择边界：flowchart 表示节�
 | `Table` | 该表的 row shape、keys 和使用边界是什么？ | schema、keys、usage；不重复父 DataModel 的 ER 图 |
 
 `Flow` 和 `Lifecycle` 是完整修复中最关键的新类型：它们从当前
-[`domain.md`](../../skills/repo-wiki/assets/templates/en/domain.md) 的“Lifecycle and failure paths”中
+`domain.md` (`skills/repo-wiki/assets/templates/en/domain.md`, removed) 的“Lifecycle and failure paths”中
 拆出两种不同的推理任务。不要新增 `Diagram` 页面类型；图是页面的视图，不是知识边界。
 
 ### 拆页规则

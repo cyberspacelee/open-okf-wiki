@@ -1,5 +1,7 @@
 # Skill-driven harness replaces host-orchestrated pipeline
 
+Status: accepted; amended by ADR 0027
+
 An earlier host-orchestrated pipeline drove Wiki generation from a ~9.6k-line
 Pi process that owned sessions, budgets, worker contracts, and repair loops.
 The skill harness inverts the trust model: any host coding agent orchestrates
