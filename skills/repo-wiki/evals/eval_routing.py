@@ -494,6 +494,13 @@ _CONVENTIONS = """## Commands
 """
 
 
+def _module_body(how: str, label: str, locator: str) -> str:
+    """A minimal Module page body: every required section, one cited change row."""
+    return (f"## Responsibility\n\nOwns its scope.\n\n## How it works\n\n{how}[^{label}]\n\n"
+            "## Making changes\n\n| Change | Start at | Also change | Verify |\n|---|---|---|---|\n"
+            f"| Behavior | the cited lines[^{label}] | - | review |\n\n[^{label}]: {locator}\n")
+
+
 def _single_fixture(base: Path) -> tuple[Path, str, str]:
     repo = _repo(base / "shop", {
         "README.md": "# Shop\n",
@@ -508,16 +515,14 @@ def _single_fixture(base: Path) -> tuple[Path, str, str]:
     _page.new_page(ws, "modules/payments.md", "Module",
                    "Read before changing the payment gateway client or refunds.", ["src/payments/**"])
     _stamp_wiki(ws, {
-        "architecture.md": "## Boundaries and dependencies\n\nBilling calls payments.[^post]\n\n"
+        "architecture.md": "## Structure\n\nBilling calls payments.[^post]\n\n"
                            "## Not covered\n\n| Path | Reason |\n|---|---|\n| `tests/` | Test code. |\n\n"
                            "[^post]: src/billing/run.py#L1-L3\n",
         "glossary.md": "| Term | Meaning | Avoid | Where |\n|---|---|---|---|\n"
                        "| Billing run | Pass that posts invoices. | | `BillingRun`[^run] |\n\n[^run]: src/billing/run.py#L1\n",
         "conventions.md": _CONVENTIONS,
-        "modules/billing.md": "## Responsibility and boundaries\n\nPosting marks the invoice.[^post]\n\n"
-                              "[^post]: src/billing/run.py#L2-L3\n",
-        "modules/payments.md": "## Responsibility and boundaries\n\nThe client charges invoices.[^charge]\n\n"
-                               "[^charge]: src/payments/client.py#L1-L3\n",
+        "modules/billing.md": _module_body("Posting marks the invoice.", "post", "src/billing/run.py#L2-L3"),
+        "modules/payments.md": _module_body("The client charges invoices.", "charge", "src/payments/client.py#L1-L3"),
     })
     wiki_commit = _commit(repo, "wiki v1")
     _commit(repo, "Raise billing retry cap to five attempts\n\nGateway timeouts need more retries.",
@@ -553,15 +558,13 @@ def _hub_fixture(base: Path) -> tuple[Path, str]:
     _page.new_page(ws, "modules/worker.md", "Module", "Read before changing job execution or job retries.",
                    ["worker/jobs/**"])
     _stamp_wiki(ws, {
-        "architecture.md": "## Boundaries and dependencies\n\napi enqueues jobs for worker.[^handle]\n\n"
+        "architecture.md": "## Structure\n\napi enqueues jobs for worker.[^handle]\n\n"
                            "## Not covered\n\n| Path | Reason |\n|---|---|\n\n[^handle]: api/src/app.py#L1-L2\n",
         "glossary.md": "| Term | Meaning | Avoid | Where |\n|---|---|---|---|\n"
                        "| Handle | Request entry point. | | `handle`[^h] |\n\n[^h]: api/src/app.py#L1\n",
         "conventions.md": _CONVENTIONS,
-        "modules/api.md": "## Responsibility and boundaries\n\nRequests are authorized first.[^auth]\n\n"
-                          "[^auth]: api/src/auth.py#L1-L2\n",
-        "modules/worker.md": "## Responsibility and boundaries\n\nJobs execute in the worker.[^run]\n\n"
-                             "[^run]: worker/jobs/run.py#L1-L2\n",
+        "modules/api.md": _module_body("Requests are authorized first.", "auth", "api/src/auth.py#L1-L2"),
+        "modules/worker.md": _module_body("Jobs execute in the worker.", "run", "worker/jobs/run.py#L1-L2"),
     })
     _commit(hub, "wiki v1")
     _commit(api, "API: validate token authorization", {"src/auth.py": "def authorize(request):\n    return bool(request.token)\n"})

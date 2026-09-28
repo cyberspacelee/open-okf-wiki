@@ -68,7 +68,7 @@ FIXTURE = {
     "third_party/vendor.py": "X = 1\n",
 }
 
-ARCHITECTURE = """## Boundaries and dependencies
+ARCHITECTURE = """## Structure
 
 Billing depends on payments only through `payments.Client`.[^seam]
 
@@ -81,11 +81,11 @@ flowchart LR
 |---|---|---|
 | Billing reaches the gateway only through `Client`. | `BillingRun.post`[^seam] | Charges bypass payment retries. |
 
-## Change impact
+## Cross-module changes
 
-| Change | Also change or check |
-|---|---|
-| `MAX_ATTEMPTS` | `tests/test_retry.py`[^retry-cap] |
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Charge through the gateway differently | `BillingRun.post`[^seam] | `payments.Client` | `tests/test_billing.py` |
 
 ## Not covered
 
@@ -93,10 +93,9 @@ flowchart LR
 |---|---|
 | `third_party/` | Vendored upstream code; never modified here. |
 | `src/payments/` | A thin gateway client; its only seam is described above. |
-| `tests/` | Tests are listed per page under Related tests. |
+| `tests/` | Tests are named per page in the Verify column. |
 
 [^seam]: src/billing/run.py#L1-L11
-[^retry-cap]: src/billing/retry.py#L1
 """
 
 GLOSSARY = """| Term | Meaning | Avoid | Where |
@@ -124,9 +123,21 @@ CONVENTIONS = """## Commands
 [^ruff]: ruff.toml#L1
 """
 
-BILLING = """## Responsibility and boundaries
+BILLING = """## Responsibility
 
 Billing owns invoice posting and charge retries.
+
+## How it works
+
+`BillingRun.post` marks the invoice posted, then `schedule` decides whether a failed charge is retried.[^posted] [^retry-cap]
+
+## Making changes
+
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Change the attempt cap | `MAX_ATTEMPTS`[^retry-cap] | `tests/test_retry.py` | `python -m pytest -q tests/test_retry.py` |
+
+## Invariants
 
 | Invariant | Enforced at | Breaks when |
 |---|---|---|
@@ -139,9 +150,15 @@ Why 3 attempts: rationale not recorded.
 [^retry-cap]: src/billing/retry.py#L1-L7
 """
 
-WORKFLOW = """## Trigger to outcome
+WORKFLOW = """## Flow
 
 The `nightly_billing` Celery task posts one invoice through `BillingRun.post`.[^task]
+
+## Making changes
+
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Schedule or batch size | `nightly_billing`[^task] | - | `tests/test_billing.py` |
 
 [^task]: src/billing/tasks.py#L6-L8
 """
@@ -254,7 +271,7 @@ def run(base: Path) -> None:
         "Read before changing invoice posting or charge retries.", "--scope", "src/billing/**", "--json")
     status = phase(repo, "discover")  # a stub without a brief while the canon briefs are empty
     expect("modules/billing.md" in status["next_actions"][0], f"discover actions {status['next_actions']}")
-    set_body(wiki / "modules/billing.md", "<!-- okf:todo\nInvariant: posted invoice never reposted src/billing/run.py#L7-L10\n-->\n\n## Responsibility and boundaries\n")
+    set_body(wiki / "modules/billing.md", "<!-- okf:todo\nInvariant: posted invoice never reposted src/billing/run.py#L7-L10\n-->\n\n## Responsibility\n")
     status = phase(repo, "discover")  # every canon page needs its brief
     expect("architecture.md" in status["next_actions"][0], f"discover actions {status['next_actions']}")
     brief(wiki / "architecture.md", "Boundary: billing -> payments via Client src/billing/run.py#L1")
@@ -266,6 +283,9 @@ def run(base: Path) -> None:
     okf(repo, "new", "workflows/nightly-billing.md", "--type", "Workflow", "--description",
         "Read before changing the nightly billing task.", "--scope", "src/billing/tasks.py", "--json")
     brief(wiki / "workflows/nightly-billing.md", "Trace: nightly_billing -> BillingRun.post src/billing/tasks.py#L6-L8")
+    hints = [i for i in okf(repo, "validate", "--json", code=1)["issues"]  # coverage errors remain
+             if i["code"] == "hint" and i["page"] == "workflows/nightly-billing.md"]
+    expect(len(hints) == 3 and all(i["severity"] == "pending" for i in hints), f"template hints: {hints}")
     status = phase(repo, "structure")  # src/payments and third_party are in no scope yet
     expect(status["issues"][0]["code"] == "coverage", f"structure issues {status['issues']}")
     set_body(wiki / "architecture.md", ARCHITECTURE)
@@ -318,8 +338,9 @@ def run(base: Path) -> None:
     expect(len(pointer.strip().splitlines()) <= 15, "pointer longer than 15 lines")
     files = okf(repo, "impact", "--files", "src/billing/retry.py", "third_party/vendor.py", "--json")["files"]
     retry = files["src/billing/retry.py"]
-    expect(retry["read"] == ["modules/billing.md"] and retry["update"] == ["architecture.md", "modules/billing.md"]
-           and [r["change"] for r in retry["change_impact"]] == ["MAX_ATTEMPTS"]
+    expect(retry["read"] == ["modules/billing.md"] and retry["update"] == ["modules/billing.md"]
+           and [(r["change"], r["verify"]) for r in retry["change_guide"]]
+           == [("Change the attempt cap", "python -m pytest -q tests/test_retry.py")]
            and retry["canon"] == ["glossary.md", "conventions.md"] and retry["note"] is None,
            f"impact --files: {retry}")
     expect(files["third_party/vendor.py"]["note"] == "not covered: Vendored upstream code; never modified here.",
@@ -416,8 +437,7 @@ def run(base: Path) -> None:
     report = okf(repo, "impact", "--json")
     moved = {(p["page"], r["kind"], r.get("suggested")) for p in report["pages"] for r in p["reasons"]
              if r["kind"].startswith("cited-") and r["path"] == "src/billing/retry.py"}
-    expect(moved == {("architecture.md", "cited-moved", "src/core_retry.py#L1"),
-                     ("modules/billing.md", "cited-moved", "src/core_retry.py#L1-L7")},
+    expect(moved == {("modules/billing.md", "cited-moved", "src/core_retry.py#L1-L7")},
            f"renamed citation: {json.dumps(report, indent=2)}")
 
     # A missing canon page routes to research with the command that restores it,

@@ -34,28 +34,27 @@ Status: accepted. 决策见 [ADR 0027](../adr/0027-repository-knowledge-layer.md
 ## 2. 设计原则
 
 1. **拉取式，不常驻。** 常驻的只有 AGENTS.md 中不超过 15 行的指针块。其余内容按任务检索。
-2. **只写再发现成本高的知识。** Grep Test 适用于所有人写内容：凡是 grep 加读 2–3 个文件
-   一分钟内能重建的，一律不写。已有文档只链接，不复述。
-3. **优先写 why。** 按下面的优先级取舍，越靠前越优先：
-   1. 设计理由
-   2. 边界与依赖方向
-   3. 不变量与 failure mode
-   4. workflow 与生命周期
-   5. 术语
-   6. 开发规范
-   7. 扩展点
-   8. 同步修改点与 gotchas
-4. **术语和规范是 canon。** 它们在其他页面之前写成、先定稿。所有页面使用同一套词汇，
+2. **只写再发现成本高的知识。** 拼装测试（Assembly test）适用于所有人写内容：要跨多个文件
+   或查代码以外的记录（commit、ADR）才能拼出来的留下，一个文件一眼能看清的不写。
+   跨文件的调用链、从入口到落库的数据路径、改一处必须同步改的文件集合都属于前者。
+   已有文档只链接，不复述。
+3. **面向修改代码的 Agent。** 页面在 Agent 动手改它的 scope 之前被读，要回答五个问题：
+   这部分负责什么、不能依赖什么；它怎么运转（入口、跨文件路径、数据、接线）；从哪里开始读、
+   一次典型修改涉及哪些文件；什么不能破坏、还有什么要同步改；怎么验证改对了。
+   设计理由只写有记录的，没有就写"原因未记录"。
+4. **结构跟着代码走。** 每种页面只有少量必需章节；其余章节按这部分代码真正值得说的内容
+   组织、按内容命名，没有内容的章节不写。
+5. **术语和规范是 canon。** 它们在其他页面之前写成、先定稿。所有页面使用同一套词汇，
    由 kernel lint 检查。
-5. **引用轻但不能省。** 只用一层 claim → `path#Lx-Ly` footnote，不做 evidence 注册表。
+6. **引用轻但不能省。** 只用一层 claim → `path#Lx-Ly` footnote，不做 evidence 注册表。
    重要事实必须引用，普通描述不要求。
-6. **判断归 Agent，确定性工作归 kernel。** SKILL.md 只写"识别什么、产出什么"。
+7. **判断归 Agent，确定性工作归 kernel。** SKILL.md 只写"识别什么、产出什么"。
    状态推导、校验、映射、影响分析、盖章都由 `okf` 完成。每条校验失败都带修复提示。
-7. **Git 提供事务和历史。** 知识层与代码一起提交、review、回滚。
+8. **Git 提供事务和历史。** 知识层与代码一起提交、review、回滚。
    kernel 只负责把每页绑定到它被核实时的 revision。
-8. **一个目录就是全部。** skill 只写 wiki 目录（以及用户同意时 AGENTS.md 里的托管指针块）。
+9. **一个目录就是全部。** skill 只写 wiki 目录（以及用户同意时 AGENTS.md 里的托管指针块）。
    不建运行时目录，不改 `.gitignore`。工作状态就是 draft 页面本身。
-9. **OKF 只是持久化格式。** 它约束 frontmatter、footnote 和 index 的形态，不驱动流程。
+10. **OKF 只是持久化格式。** 它约束 frontmatter、footnote 和 index 的形态，不驱动流程。
 
 ---
 
@@ -66,7 +65,7 @@ Status: accepted. 决策见 [ADR 0027](../adr/0027-repository-knowledge-layer.md
 | ID | 不变量 | 由谁保证 |
 |---|---|---|
 | I1 | 每个 locator 在所属页面的 `revision` 上存在，行号在范围内，且是 git 跟踪的文本文件 | `validate` 通过 `git cat-file` 按 revision 读取 |
-| I2 | 必须引用的内容都有 footnote：术语、规范、命令、不变量表的每一行 | `validate` 的表格规则 |
+| I2 | 必须引用的内容都有 footnote：术语、规范、命令、关键约束表、修改指南表的每一行 | `validate` 的表格规则 |
 | I3 | 每页的 `sources` 与正文 footnote 一一对应，不多不少 | `stamp` 从 footnote 派生 `sources`，`validate` 做 join 检查 |
 | I4 | 带 `verified` 的页面，内容正是被 review 批准的那一版 | review subject digest 加 `stamp.content_sha256`（覆盖正文、除 `status`、`sources`、`verified`、`stamp` 外的全部 frontmatter，以及批准者 `stamp.reviewed_by`，换行统一为 LF）；`verified` 只能是 stamp 写入的批准者条目，加上 `okf verify` 追加的 `human:` 条目；手改过正文、frontmatter 或 `verified` 的 stable 页面会报错 |
 | I5 | 页面的 `revision` 之后，只要它 scope 或引用的文件发生变化，该页一定会被报告为 stale | 写作期间：draft 页的 `revision` 必须等于 HEAD 才能 stamp。stamp 之后：`impact` 执行 `git diff revision..HEAD -- scope ∪ cited` |
@@ -221,25 +220,31 @@ Invoices are immutable once posted; corrections are new credit items.[^posted]
   - `okf update` 写入的待协调变更。
 
   页面里只要还有 todo 块，就不能 stamp。写完后删除。HTML 注释在渲染时不可见。
+- **`<!-- okf:hint … -->` 是模板给写作者的提示。** 说明该章节要回答什么；回答后删除。
+  残留的 hint 报 `hint`（pending），和 todo 块一样阻塞 stamp。
 - **只强制必需章节。** `okf new` 按模板写入必需标题，缺少时 validate 报 `section` error；
-  可选章节从 §5.2 的菜单里按需选择，没有内容就省略。
+  其余标题由写作者按内容命名，§5.2 的"常见章节"只是示例，不是菜单。
+  OKF 本身对正文结构只做推荐，不做要求。
 
-### 5.2 页面类型与章节菜单
+### 5.2 页面类型与必需章节
 
-| type | 何时建 | 必需结构（en / zh 标题，`section` 规则检查） | 可选章节 |
+| type | 何时建 | 必需结构（en / zh 标题，`section` 规则检查） | 常见章节（示例，按内容命名） |
 |---|---|---|---|
-| `Architecture` | 恒有，1 页 | Boundaries and dependencies / 边界与依赖方向；Not covered / 未覆盖（Path / Reason 表） | 设计理由；跨模块不变量；变更影响表（改 X → 还要改 / 要检查什么）；已有 ADR 链接 |
-| `Glossary` | 恒有，1 页 | 术语表（见 §5.3） | 歧义与上下文边界 |
-| `Conventions` | 恒有，1 页 | Commands / 命令（命令表）；Rules / 规则（规则表），见 §5.3 | 扩展方式（新增一个 X 的步骤） |
-| `Module` | 有真实边界、不变量或扩展点的模块 | Responsibility and boundaries / 职责与边界 | why；不变量表（不变量 / 强制位置 / 违反后果）；扩展点；failure modes；变更指引；gotchas；相关测试 |
-| `Workflow` | 跨模块、Agent 需要调试或扩展的流程 | Trigger to outcome / 从触发到结果 | 顺序约束与不变量；失败与恢复；从哪里改 |
+| `Architecture` | 恒有，1 页 | Structure / 整体结构；Not covered / 未单独成页（Path / Reason 表） | 设计取舍（链接已有 ADR）；跨模块约束；跨模块修改（修改指南表） |
+| `Glossary` | 恒有，1 页 | 术语表（见 §5.3） | 易混淆的术语 |
+| `Conventions` | 恒有，1 页 | Commands / 常用命令（命令表）；Rules / 开发规则（规则表），见 §5.3 | 新代码放在哪里；每个扩展点一个"新增一个 X"章节 |
+| `Module` | 有真实边界、值得解释的机制、不变量或扩展点的模块 | Responsibility / 模块职责；How it works / 工作原理；Making changes / 修改指南（修改指南表，至少一行） | 关键约束；为什么这样设计；错误处理；新增一个 X；历史兼容；已知的坑 |
+| `Workflow` | Agent 需要调试或扩展的流程，从 scan 触发点或公开入口开始 | Flow / 执行流程；Making changes / 修改指南（修改指南表，至少一行） | 顺序与一致性约束；失败、重试与补偿；出问题时看哪里 |
 
-图是推荐项，不是必需项：Architecture 的边界和 Workflow 的触发到结果通常各配一张 mermaid 图。
+图是推荐项，不是必需项：Architecture 的整体结构、Module 的工作原理和 Workflow 的执行流程通常各配一张 mermaid 图。
+
+中文标题和表头按工程师的日常说法命名，不逐词直译英文（例如"关键约束"而不是"不变量"，
+"由谁保证 / 违反会怎样"而不是"强制位置 / 违反后果"）。
 
 扩展类型 `Schema` / `Table` 只由数据库扩展生成（见 §7.8），不由作者编写。
 
 **一律不写：** 签名列表、字段清单、目录树、配置文件原样复制、注释复述、
-与 README 重复的概览、泛泛的"最佳实践"。
+与 README 重复的概览、泛泛的"最佳实践"、为了凑栏目而写的空章节。
 
 ### 5.3 Canon 页的结构
 
@@ -255,7 +260,8 @@ Invoices are immutable once posted; corrections are new credit items.[^posted]
 - `Meaning` 用文字写明术语归属的模块或上下文（例如 "In billing, …"）。
 - 通用技术词不收，除非它在本仓库里有特殊含义。
 - 每行必须有 footnote，指向定义位置（I2）。
-- `Avoid` 列填别名，逗号分隔，供 I7 的 lint 使用。
+- `Avoid` 列（zh 表头"勿用别名"）填别名，逗号分隔，供 I7 的 lint 使用。
+- zh 表头：术语 / 定义 / 勿用别名 / 代码位置。
 
 **Conventions / Commands**
 
@@ -272,22 +278,32 @@ Invoices are immutable once posted; corrections are new credit items.[^posted]
 |---|---|---|
 | errors | Service code raises `DomainError` subclasses; HTTP mapping happens only in `api/errors.py` (4 instances).[^err] | convention |
 
-- `Area` 取值：layout、naming、api、errors、logging、config、testing、build-ci、dependencies、vcs
-  （提交信息、分支、PR 约定）。同步修改点不是规则，统一写进变更影响表（见下）；扩展知识也不是规则，
-  写进 Conventions 的"扩展方式"和 Module 的"扩展点"。
+- zh 表头：类别 / 规则 / 检查方式。
+- `Area` 取值：layout（各类代码放在哪里）、naming、api、errors、logging、config（加载、默认值、注册）、
+  testing、build-ci、dependencies、vcs（提交信息、分支、PR 约定）。同步修改点不是规则，统一写进修改指南表
+  （见下）；新增一个 X 的步骤也不是规则，写成单独的"新增一个 X"章节。
 - `Enforced by` 取值：lint、typecheck、test、ci、review、convention。
   它告诉 Agent 违反这条规则时工具会不会报错。
 - 证据要求：规则要么来自配置文件，要么至少有两处代码实例（引用其中一处，Rule 单元格里写明实例数）。
 - 没有依据的规则不写。
 
-**变更影响（Change impact）**
+**修改指南（Change guide）**
 
-| Change | Also change or check |
-|---|---|
-| Add an invoice state | `InvoiceState` transitions and `tests/test_invoice_states.py`[^states] |
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Add an invoice state | `InvoiceState`[^states] | transition table in `invoice.py` | `tests/test_invoice_states.py` |
 
-- 只有一个归宿：跨模块的写在 Architecture，模块内的写在该模块的 Change guide。
-- 每行必须引用证据：scan 的 co-change 对、测试，或把两处耦合起来的代码。
+- zh 表头：修改场景 / 从这里改 / 同步修改 / 如何验证。
+- 一行就是一次真实会发生的修改：从哪个文件或符号开始、还要同步改哪些文件（没有写 `-`）、
+  用哪个测试或命令验证。修改场景优先取自 `git log`，同步修改用 scan 的 co-change 核对。
+- Module 和 Workflow 页至少一行（`change-guide`）；跨模块的写在 Architecture。
+- 每行必须引用证据：起点代码、scan 的 co-change 对、测试，或把两处耦合起来的代码。
+  `Start at` 和 `Verify` 不能为空（`table-values`）。
+- `okf impact --files` 把这些行交给正要修改对应文件的 Agent。
+
+**关键约束（Invariants）**
+
+zh 表头：关键约束 / 由谁保证 / 违反会怎样。
 
 **Architecture / Not covered**
 
@@ -370,7 +386,7 @@ Workflow 页时停在 `discover`。
 
 ### 阶段 2 — Structure：确定页面集合
 
-- **Module 与 Workflow 页只在通过 Grep Test 时保留。** 需要的补建，不值得的删掉。页数由知识边界决定，不设目标。
+- **Module 与 Workflow 页只在有"这里有哪些文件"之外的内容时保留**（边界、机制、约束或扩展点）。 需要的补建，不值得的删掉。页数由知识边界决定，不设目标。
 - **不值得建页的模块与触发文件** 写进 Architecture 的 Not covered 表，并附理由；一行 glob 可覆盖一组触发文件。
 - **每页的 `description` 和 `scope` 在此定稿。**
 - **退出条件：** `okf validate` 的覆盖规则（I6，含 `trigger-coverage`）和 scope 规则通过。
@@ -394,9 +410,9 @@ Workflow 页时停在 `discover`。
 ### 阶段 4 — Write：并行写其余页面
 
 - **分工：** 每页派一个 writer。writer 的输入只有：本页路径、Glossary、Conventions、Architecture
-  （变更影响"只有一个归宿"需要它）、`references/pages.md`。
+  （修改指南"只有一个归宿"需要它）、`references/pages.md`。
   简报已经在页面的 todo 块里。
-- **调研：** writer 按 `references/research.md` 先扫 scope 再对账简报，自己写 footnote。
+- **调研：** writer 按 `references/research.md` 先扫 scope（机制与约束两遍），再用 `git log` 演练典型修改得出修改指南，最后对账简报，自己写 footnote。
 - **写作约束：**
   - 章节从菜单中选择；
   - 使用 canonical 术语；
@@ -428,7 +444,7 @@ Workflow 页时停在 `discover`。
   {"subject_digest": "…", "reviewer": "repo-wiki-reviewer/<model>",
    "verdict": "approved|changes_requested",
    "issues": [{"page": "modules/billing.md",
-               "kind": "unsupported|invented-why|parrot|missing|terminology|routing|other",
+               "kind": "unsupported|invented-why|parrot|filler|missing|terminology|routing|other",
                "claim": "…", "fix": "…", "locator": "optional path#Lx-Ly"}]}
   ```
 
@@ -459,7 +475,7 @@ Workflow 页时停在 `discover`。
   - 怎么用知识层：index → 按 description 或 Source map 选页面 → 回被引行核实；
   - glossary 和 conventions 是命名、改代码前的必读页；
   - 改代码前运行 `okf impact --files <paths> --json`；改了某页 scope 内的文件后更新该页或置为 draft；
-  - 打印不变量表的 `rg -nU` 模式；
+  - 打印关键约束表的 `rg -nU` 模式；
   - Status 为 `verified` 的命令。
 
   写入 AGENTS.md 需要用户同意（ADR 0004 精神）。hub 模式下指针多一行，请人把它粘贴进每个 source 的
@@ -487,8 +503,8 @@ Workflow 页时停在 `discover`。
 4. 走阶段 5。review subject 只包含 draft 页面。
 
 开发中的 Agent 还可以运行 `okf impact --files <paths>`。它对每个路径输出
-`{read, update, change_impact, canon, note}`：scope 匹配的页面（修改前读）、引用它的页面（改完后更新）、
-涉及它的变更影响行 `{page, line, change, also}`、canon 页面，以及说明（hub 路径的解析或歧义、Not covered
+`{read, update, change_guide, canon, note}`：scope 匹配的页面（修改前读）、引用它的页面（改完后更新）、
+涉及它的修改指南行 `{page, line, change, start, also, verify}`、canon 页面，以及说明（hub 路径的解析或歧义、Not covered
 理由、`no page covers this path`；路径有歧义时只报歧义）。这个命令只读，任何时候都能用；在子目录或
 hub 的 source 目录内也能运行，相对路径从当前目录算起（source 内补上 source 前缀）；写入命令仍指回根目录。
 
@@ -511,7 +527,7 @@ hub 的 source 目录内也能运行，相对路径从当前目录算起（sourc
 | `okf update --json` | 写页面 | 见 Update |
 | `okf verify --actor human:ID PAGE…` | 写页面 | 追加人工 verified |
 | `okf pointer [--write AGENTS.md]` | 只读或写托管块 | 生成 AGENTS.md 指针 |
-| `okf db capture …`（扩展） | 写页面 | 见 §7.8 |
+| `okf db tables` / `okf db capture [--db NAME]`（扩展） | 读库 / 写页面 | 见 §7.8 |
 
 `--wiki DIR` 在子命令之前或之后都可以。每条 issue 的格式为 `{code, severity, page, line, message, fix}`，
 其中 `fix` 是一句可执行的修复提示。
@@ -557,8 +573,9 @@ warning 排序。`pending` 就是 todo 块：阻塞 stamp，但不让 validate �
 | `revision` | error | draft 页的 revision 等于 HEAD；stable 页的 revision 在 git 历史中存在 | I5 |
 | `locator` | error | 语法合法；在页面 revision 上文件存在；行号在范围内；是文本且被 git 跟踪；不是 `.env` 或密钥类文件 | I1、I8 |
 | `footnote-join` | error | 每个引用都有定义，每个定义都被引用；stable 页的 `sources` 与 footnote 一致 | I3 |
-| `required-citation` | error | 术语、命令、规则、不变量、变更影响表的每行都有 footnote | I2 |
-| `table-values` | error | 命令表的 Status、规则表的 Area 和 Enforced by 取值合法 | I2 |
+| `required-citation` | error | 术语、命令、规则、关键约束、修改指南表的每行都有 footnote | I2 |
+| `table-values` | error | 命令表的 Status、规则表的 Area 和 Enforced by 取值合法；修改指南行的 Start at 和 Verify 不为空 | I2 |
+| `change-guide` | error | 没有 todo 块的 Module / Workflow 页至少有一行修改指南 | — |
 | `coverage` | error | 每个扫描到的模块，其拥有的文件（嵌套模块的文件归嵌套模块）至少有一个落在某页 scope 内，或模块出现在 Not covered 表中且有 reason | I6 |
 | `trigger-coverage` | error | 每个触发文件（scan `triggers`）落在某个 Workflow 页的 scope 内，或被带理由的 Not covered 行（路径、目录或 glob）排除 | I6 |
 | `scope` | error | 每个 glob 至少匹配一个 tracked 文件 | I5 |
@@ -568,9 +585,11 @@ warning 排序。`pending` 就是 todo 块：阻塞 stamp，但不让 validate �
 | `secret` | error | 命中私钥头、云凭据、高熵 token 等模式 | I8 |
 | `mermaid` | error | 支持的图类型、fence 闭合、没有悬空连接 | — |
 | `todo` | pending | 页面仍有 `<!-- okf:todo -->` 块；阻塞 stamp，validate 仍以 0 退出 | — |
+| `hint` | pending | 页面仍有模板的 `<!-- okf:hint -->` 提示；阻塞 stamp，validate 仍以 0 退出 | — |
 | `canon-missing` / `canon-table` / `canon-empty` | error / error / warning | 三页 canon 存在，且各自的必需表格存在；表格为空时提示 | I2 |
 | `not-covered` | error | Not covered 行的路径匹配不到 tracked 文件，或没有理由 | I6 |
 | `index` | error | 没有 draft 页时，`index.md` 与渲染结果不一致 | I9 |
+| `db-binding` | warning | hub 中页面链接的数据库页，其库未绑定（`repos`）到该页 scope 所在的任何 source | — |
 | `alias` | warning | 在代码 span 之外使用了 Glossary 的 `Avoid` 别名 | I7 |
 | `uncited-why` | warning | 因果句（because / so that / 为了 / 因为…）没有 footnote | — |
 | `parrot` | warning | 表格单元格大多只是代码标识符，却没有解释或引用；或者页面超过 40 KB | — |
@@ -604,8 +623,8 @@ warning 排序。`pending` 就是 todo 块：阻塞 stamp，但不让 validate �
 
 模块层面：扫描到的模块集合与各页 scope 对比，得出未映射的新模块和已删除的 Not covered 路径。
 
-`--files` 模式下，按 scope（`read`）、引用（`update`）和变更影响行（`change_impact`：被引 locator 或
-Change 单元格点名该路径）反查页面，不需要 diff，对每个路径输出 `{read, update, change_impact, canon, note}`。
+`--files` 模式下，按 scope（`read`）、引用（`update`）和修改指南行（`change_guide`：被引 locator 或
+Change / Start at 单元格点名该路径）反查页面，不需要 diff，对每个路径输出 `{read, update, change_guide, canon, note}`。
 
 整个算法只用 git 和 frontmatter，不引入任何额外的状态文件。
 
@@ -623,12 +642,37 @@ Change 单元格点名该路径）反查页面，不需要 diff，对每个路�
 
 ### 7.8 扩展：OpenGauss
 
-- **`okf db capture --url-env VAR --schema S --table … [--into reference/<db>]`**
-  - 在只读、可重复读的事务中抓取表结构；
-  - 直接在 wiki 下渲染 `Schema` / `Table` 页面，frontmatter 带 `catalog_sha256` 和 `generated`；
+- **数据库在 `repo-wiki.yaml` 的 `databases` 中声明**，与 `lang`、`sources` 并列：
+
+  ```yaml
+  databases:
+    - name: order_db              # databases/<name>/ 目录名与页面标题
+      url_env: ORDER_DB_URL       # 保存 opengauss:// URL 的变量名（环境变量，其次 .env），绝不写 URL 本身
+      repos: [order-api, order-worker]   # hub 中使用该库的 source；单仓省略
+      schemas:
+        - name: public
+          include: ["t_order*", "*_config"]   # 以 t_order 开头，或以 _config 结尾
+          exclude: ["*_bak"]
+        - "tenant_*"                           # schema 名也可以是 glob
+  ```
+
+- **仓库与数据库是多对多：** 一个仓库通常对应一个库，一个库可以被多个仓库使用，一个仓库也可以用多个库。
+  hub 中 `repos` 必填，决定页面上的"使用方"、`okf db tables` 检查哪些仓库的代码，以及 `db-binding` 警告。
+- **表匹配规则：** `include` / `exclude` 是对表名的 glob（区分大小写）；`include` 默认全部；系统 schema
+  （`pg_*`、`information_schema`）永不匹配。
+- **`okf db tables [--db NAME]`**：列出每条规则取到的表、被 exclude 排除的表、跳过的数量、没匹配到 schema 的规则，
+  以及与绑定仓库代码的差距：代码在用、库里存在但规则没取到的表（`code_not_taken`，带原因和代码 locator），
+  代码点名但匹配的 schema 里没有的表（`code_not_found`）。用它在首次 capture 前调好规则。
+- **`okf db capture [--db NAME]`**
+  - 每个库一个只读、可重复读的事务，按规则取表；
+  - 直接在 wiki 下渲染 `databases/<db>/<schema>.md`（Schema）和 `databases/<db>/<schema>/<table>.md`（Table），
+    frontmatter 带 `catalog_sha256`、`generated` 和 `db: {name, schema, table, repos}`；
+  - capture 永远跟随配置：表被删除或不再匹配时，其生成页面被删除；
+  - 某个库连接失败只影响该库，其余照常 capture，命令以 1 退出；
   - 不保留 JSON 中间文件。
-- **作者页面** 用普通链接引用 Table 页，不使用 footnote locator。
-- **重新 capture 时：** 如果某张表的 hash 变化，所有链接到该 Table 页的作者页面都会被置为 draft，
+- **作者页面** 用普通链接引用 Table 页，不使用 footnote locator；hub 中链接到未绑定本页 source 的库的表，
+  validate 报 `db-binding` 警告。
+- **重新 capture 时：** 如果某张表的 hash 变化或页面被删除，所有链接到该 Table 页的作者页面都会被置为 draft，
   并插入 todo 块（逻辑与 update 相同）。
 - 数据库不参与核心不变量 I1–I9 的定义。
 
@@ -660,7 +704,7 @@ Change 单元格点名该路径）反查页面，不需要 diff，对每个路�
 | `references/pages.md` | 页面类型、章节菜单、写与不写、footnote 与 locator 规则、canon 表格式、好例和坏例各一 | ~180 |
 | `references/research.md` | 写作者的先扫后对账协议：风险信号与检索式、线索标记、handoff 计数 | ~80 |
 | `references/review.md` | 审查清单、issue kinds、抽样要求、路由测试、复审规则、按 scan 事实查遗漏 | ~95 |
-| `references/extensions.md` | 多仓 hub、OpenGauss capture | ~70 |
+| `references/extensions.md` | 多仓 hub、OpenGauss 数据库配置与 capture | ~150 |
 | `assets/templates/{en,zh}/{architecture,glossary,conventions,module,workflow}.md` | `okf new` 使用的桩模板，用注释列出可选章节 | 每个 ~20 |
 
 `discovery.md` 的核心信号：
@@ -682,7 +726,7 @@ Change 单元格点名该路径）反查页面，不需要 diff，对每个路�
   - 提交信息格式（git log）、分支命名、PR 模板 → Area `vcs`；
   - 重复出现的代码模式（≥ 2 处）：错误类型层级、日志封装、配置加载、依赖注入、测试夹具；
   - 目录与命名的一致性；
-  - scan 给出的 co-change 对 → 变更影响表，不是规则。
+  - scan 给出的 co-change 对 → 修改指南表的"同步修改"，不是规则。
 - **不变量与风险：**
   - assert、guard 和校验；
   - 带消息的异常；
@@ -722,7 +766,7 @@ Change 单元格点名该路径）反查页面，不需要 diff，对每个路�
 | Files Source | **延后** | 当前的正确性模型只基于 git 跟踪的文件 |
 | OpenGauss capture 与 Schema/Table 生成 | **保留为扩展**，去掉 catalog 缓存 | 线上数据库结构无法靠 grep 重建，但不影响核心契约 |
 | Hub workspace、多 source locator | **保留并简化** | hub 自身是一个 git 仓，source 是被忽略的子目录；locator 的第一段就是 source 名 |
-| Grep Test | **强化** | 适用于所有作者内容 |
+| Grep Test | **替换** 为拼装测试 | 按"要跨几个文件或记录才能拼出来"判断；跨文件调用链不再被当作可 grep 的内容删掉 |
 | 独立 review、trust 分级 | **保留并如实表达** | 没有独立 reviewer 时标为 unverified，不阻塞 |
 
 ---
@@ -839,4 +883,5 @@ Kill Bill 的 fixture（`evals/setup_java_ws.py`）保留，用作 hub 场景；
 - **Draft / Stable**：未经 review 和已盖章的页面状态，沿用 OKF 的 `status`。
 - **Stale**：页面 revision 之后，其 scope 或引用的文件发生了变化。
 - **Stamp**：kernel 在 review 批准后写入 provenance、trust 和 index 的动作。
-- **Grep Test**：一分钟内可以重新发现的内容不写。
+- **拼装测试（Assembly test）**：要跨多个文件或代码以外的记录才能拼出来的内容留下，一个文件一眼能看清的不写。
+- **修改指南（Change guide）**：`修改场景 | 从这里改 | 同步修改 | 如何验证` 表，Module 和 Workflow 页必有。

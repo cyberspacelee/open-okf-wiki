@@ -95,13 +95,28 @@ frontmatter except `status`, `sources`, `verified` and `stamp`, and
 `reviewed_by`, the approving reviewer), and renders `index.md`.
 _Avoid_: publish
 
-**Change Impact**:
-A cited "change X, also change or check Y" row: cross-module in Architecture,
-module-local in that Module page's Change guide.
-_Avoid_: co-change rule
+**Change Guide**:
+A cited `Change | Start at | Also change | Verify` row: a change the scope
+really gets, where it starts, what must change with it and how to check it.
+Every Module and Workflow page has one; cross-module rows live in Architecture.
+`okf impact --files` hands matching rows to an agent about to edit a file.
+_Avoid_: change impact, co-change rule
 
-**Grep Test**:
-Leave out what grep plus two or three files would rebuild in a minute.
+**Database binding**:
+The `repos` of a database in repo-wiki.yaml: the sources whose code uses it.
+Many-to-many; a repository usually uses one database, one database may serve
+several repositories. Schema rules (`include` / `exclude` globs such as
+`t_order*`, `*_log`) decide which tables a capture takes.
+
+**Hint**:
+An `<!-- okf:hint ... -->` comment a template puts under a section to say what
+it should answer; pending work until the writer answers and deletes it.
+
+**Assembly Test**:
+Keep what takes more than one file or a record outside the code to rebuild
+(a call chain across files, a set of files that change together, a recorded
+reason); leave out what one file answers at a glance.
+_Avoid_: Grep Test
 
 ## Relationships
 

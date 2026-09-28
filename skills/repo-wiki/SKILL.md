@@ -1,12 +1,14 @@
 ---
 name: repo-wiki
-description: Builds and incrementally updates a source-grounded repository knowledge layer (an OKF wiki) that helps coding agents change a codebase safely - architecture, workflows, invariants, project terminology and development conventions, each cited to source lines. Use to create, resume or refresh a repo wiki (single repository or a multi-repository hub, optionally with an OpenGauss schema), or to find which wiki pages a code change affects. Not for API reference dumps, single-file documentation or editing AGENTS.md by hand.
+description: Builds and incrementally updates a source-grounded repository knowledge layer (an OKF wiki) that helps coding agents change a codebase safely - how each module and flow works, where a change starts, what else must change and how to verify it, plus architecture, invariants, project terminology and development conventions, each cited to source lines. Use to create, resume or refresh a repo wiki (single repository or a multi-repository hub, optionally with OpenGauss databases configured per repository), or to find which wiki pages a code change affects. Not for API reference dumps, single-file documentation or editing AGENTS.md by hand.
 ---
 
 # Repo Wiki
 
-Capture what an agent cannot cheaply rediscover: why, boundaries, invariants,
-workflows, terminology, conventions, extension points, gotchas and change impact.
+Capture what an agent needs before changing code and cannot cheaply
+rediscover: how each part works across files, where a change starts, what else
+must change with it and how to verify it, plus boundaries, invariants, recorded
+rationale, terminology and conventions.
 `okf` owns scanning, status, validation, stamping and impact; you own judgment.
 Run every command from the repository root (the hub root in hub mode);
 `status`, `validate` and `impact` also work from any directory below it:
@@ -36,17 +38,21 @@ AGENTS.md, with user approval).
 | `done` | rewrite a stale index with `okf stamp`, or show `git diff -- <wiki>` and commit only if asked; "nothing to do" means the wiki is committed and current |
 
 After `blocked`, `status` lists up to 20 issues, the phase's own first; `pending`
-issues are todo blocks, which block stamp but not validate.
+issues are todo blocks and template hints, which block stamp but not validate.
 
 ## Write, skip, cite
 
-Write only what passes the Grep Test: leave out anything grep plus two or three
-files answers in a minute (signatures, field lists, directory trees, copied
-config, README restatement). Cite every canon table row and every causal "why"
-with a footnote whose definition starts with a locator:
+A page answers an agent about to edit its scope: what this part owns, how it
+works (entry, call path across files, data, wiring), where to start, what else
+changes and how to verify. Keep what takes more than one file or a record to
+rebuild; cut what one file answers at a glance (signatures, field lists,
+directory trees, copied config, README restatement). Past the required
+sections, write only sections this code gives you something to say about,
+named for what they hold. Cite every table row and every causal "why" with a
+footnote whose definition starts with a locator:
 `[^billing-run]: src/billing/run.py#L10-L40`. Write only recorded rationale;
-where none exists, write "rationale not recorded". Priorities, section menu,
-table formats and examples: [pages](references/pages.md).
+where none exists, write "rationale not recorded". Page types, required
+sections, tables, voice and examples: [pages](references/pages.md).
 
 ## 1. Discover
 Run `okf scan --json`. Read README, CONTRIBUTING, docs and ADRs, build and CI
@@ -69,14 +75,19 @@ Discovery runs in two passes; for a large repo dispatch each pass to 2-4 agents:
    across module boundaries and creates the workflow stubs, scoped to the
    trigger files and the files the flow runs through.
 
+When `repo-wiki.yaml` declares `databases`, run `okf db tables`, settle the
+include and exclude rules with the user, then `okf db capture`, so pages can
+link the tables their code uses ([extensions](references/extensions.md)).
+
 Done when every scanned module has a stub scope or a Not covered candidate,
 every trigger file sits in a workflow stub's scope or a Not covered candidate
 in the architecture brief, and `okf status` leaves `discover`. Signals, tracer
 rules and handoff format: [discovery](references/discovery.md).
 
 ## 2. Structure
-Keep module pages only for real boundaries, and workflow pages only for flows an
-agent would debug or extend; delete stubs that fail the Grep Test. Finalize each
+Keep module pages only for real boundaries, mechanisms or extension seams,
+and workflow pages only for flows an agent would debug or extend; delete stubs
+with nothing beyond "what files are here". Finalize each
 page's `description` (when to read it) and `scope` globs. List scanned modules
 not worth a page, and trigger files that start no flow worth a page (plain
 CRUD, health checks), in architecture's Not covered table with a reason; a glob
@@ -91,23 +102,28 @@ Not covered rows yourself. Every writer, canon or not, follows
 brief, then the brief's leads reconciled against it.
 - Glossary: project-specific terms only; one canonical name; aliases in `Avoid`.
 - Conventions: a rule needs a config file or two code instances, counted over
-  the whole repository. Run build, test and lint when safe and record
-  `verified`, `not-run` or `failed`.
-- Architecture: boundaries and dependency direction from scan `deps` (a
-  `mutual` edge is a cycle to explain or flag), recorded rationale, cross-module
-  invariants, shared `resources`, and change impact (scan `co_change`).
+  the whole repository; cover where new code goes, errors, config and
+  registration, and tests. Each extension seam gets an "adding a new X"
+  section. Run build, test and lint when safe and record `verified`,
+  `not-run` or `failed`.
+- Architecture: how the system splits and which way dependencies point, from
+  scan `deps` (a `mutual` edge is a cycle to explain or flag), recorded
+  rationale, cross-module invariants, shared `resources`, and cross-module
+  change guide rows (scan `co_change`).
 
 Keep the required headings `okf new` wrote. Done when the three pages have no
-todo block and `okf validate` shows no error on them.
+todo block or hint and `okf validate` shows no error on them.
 
 ## 4. Write
 Dispatch one writer per remaining page, in parallel. Give each writer the page
 path, glossary, conventions, architecture, [research](references/research.md)
-and [pages](references/pages.md). Writers sweep their scope, reconcile the
-brief, use canonical terms, delete the todo block, and return the page path,
-the counts `leads confirmed / dropped / new findings`, proposed new terms and
-the open-question count. A writer that reports no new finding on a scope with
-triggers, guards or cross-module calls gets a second sweep. Merge accepted
+and [pages](references/pages.md). Writers sweep their scope, rehearse its
+typical changes from `git log`, reconcile the brief, use canonical terms,
+answer and delete the template hints and the todo block, and return the page
+path, the counts `leads confirmed / dropped / new findings`, the change guide
+row count, proposed new terms and the open-question count. A writer that
+reports no new finding on a scope with triggers, guards or cross-module calls
+gets a second sweep. Merge accepted
 terms into the glossary yourself. Done when no page has a todo block and
 `okf validate` shows no error; warnings go to review.
 
@@ -134,8 +150,8 @@ Redo stages 3-5 for those pages only; revisit stage 2 only for unmapped or
 deleted modules, and trace each `unclaimed-trigger` (a new route, listener or
 job) into a Workflow page scope or give it a Not covered row.
 While coding: `okf impact --files <paths> --json` gives, per path, `read` (pages
-to read before editing), `update` (pages citing it), `change_impact` rows to
-check, the `canon` pages and a `note` (e.g. `no page covers this path`). It also
+to read before editing), `update` (pages citing it), `change_guide` rows
+(where to start, what else to change, how to verify), the `canon` pages and a `note` (e.g. `no page covers this path`). It also
 works from a subdirectory or from inside a hub source, with relative paths read
 from the current directory.
 
@@ -147,7 +163,9 @@ from the current directory.
   source's AGENTS.md.
 - `okf verify --actor human:<id> <page>` records a human review of a stable page
   (once per actor until the page is re-stamped); never edit `verified` by hand (validate reports it as `unreviewed-edit`).
-- Multiple repositories (hub) or an OpenGauss schema: [extensions](references/extensions.md).
+- Multiple repositories (hub), or OpenGauss databases declared in `repo-wiki.yaml`
+  (which repositories use each one, which schemas and tables to capture by
+  prefix or suffix globs): [extensions](references/extensions.md).
 
 ## Rules
 - Locators are plain `path#Lx-Ly` relative to the repository root (hub root in

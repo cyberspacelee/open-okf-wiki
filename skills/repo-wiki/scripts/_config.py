@@ -16,8 +16,12 @@ import _git
 
 CONFIG = "repo-wiki.yaml"
 LANGS = ("en", "zh")
-_KEYS = {"lang", "sources"}
+_KEYS = {"lang", "sources", "databases"}
 _SOURCE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_DB_KEYS = {"name", "url_env", "repos", "schemas"}
+_SCHEMA_KEYS = {"name", "include", "exclude"}
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_CATALOG_NAME = re.compile(r"[^\s/\\]+")  # a schema or table name, or a glob over them
 _WILDCARD = re.compile(r"[*?[]")
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 _LOCATOR = re.compile(r"(?P<path>[^#]*)(?:#L(?P<start>\d+)(?:-L(?P<end>\d+))?)?")
@@ -36,6 +40,39 @@ class Source:
 
 
 @dataclass(frozen=True)
+class SchemaRule:
+    """Which tables of which schemas a database capture takes: ``name`` is a schema
+    name or a glob over schema names; a table is taken when it matches an
+    ``include`` glob and no ``exclude`` glob (``t_order*`` starts with, ``*_log``
+    ends with). Globs are case-sensitive, like unquoted catalog names."""
+
+    name: str
+    include: tuple[str, ...] = ("*",)
+    exclude: tuple[str, ...] = ()
+
+    def matches_schema(self, schema: str) -> bool:
+        return fnmatch.fnmatchcase(schema, self.name)
+
+    def includes(self, table: str) -> bool:
+        return any(fnmatch.fnmatchcase(table, g) for g in self.include)
+
+    def takes(self, table: str) -> bool:
+        return self.includes(table) and not any(fnmatch.fnmatchcase(table, g) for g in self.exclude)
+
+
+@dataclass(frozen=True)
+class Database:
+    """A database the wiki documents. ``repos`` are the sources whose code uses it
+    (``(".",)`` in a single repository): a repository usually uses one database,
+    and one database may serve several repositories."""
+
+    name: str
+    url_env: str  # the variable holding its opengauss:// URL; never the URL itself
+    repos: tuple[str, ...]
+    schemas: tuple[SchemaRule, ...]
+
+
+@dataclass(frozen=True)
 class Workspace:
     root: Path
     wiki: Path
@@ -43,6 +80,17 @@ class Workspace:
     lang: str
     hub: bool
     sources: tuple[Source, ...]
+    databases: tuple[Database, ...] = ()
+
+    def database(self, name: str) -> Database:
+        for db in self.databases:
+            if db.name == name:
+                return db
+        known = ", ".join(db.name for db in self.databases) or "none configured"
+        raise ConfigError(
+            f"database {name!r} is not in {self.wiki_rel}/{CONFIG} ({known}); add it "
+            "under databases or pass one of the configured names"
+        )
 
 
 class ConfigError(Exception):
@@ -78,7 +126,7 @@ def load(root: Path, wiki: str | None = None) -> Workspace:
             f"{wiki_rel}/{CONFIG} not found; pass the directory that contains "
             f"{CONFIG} to --wiki, or run okf init"
         )
-    lang, names = _parse(config, f"{wiki_rel}/{CONFIG}")
+    lang, names, databases = _parse(config, f"{wiki_rel}/{CONFIG}")
     if names is None:
         sources = (Source(".", root, ""),)
     else:
@@ -92,6 +140,7 @@ def load(root: Path, wiki: str | None = None) -> Workspace:
         lang=lang,
         hub=names is not None,
         sources=sources,
+        databases=databases,
     )
 
 
@@ -249,7 +298,7 @@ def enclosing_hub(root: Path) -> Path | None:
         return None
     for found in _git.ls_candidates(hub, CONFIG):
         try:
-            _, names = _parse(hub / found, found)
+            _, names, _ = _parse(hub / found, found)
         except ConfigError:
             continue
         if names and root.name in names:
@@ -274,25 +323,140 @@ def _wiki_rel(root: Path, wiki: str) -> str:
     return rel
 
 
-def _parse(config: Path, shown: str) -> tuple[str, list[str] | None]:
+def _parse(config: Path, shown: str) -> tuple[str, list[str] | None, tuple[Database, ...]]:
     try:
         data = yaml.load(config.read_text(encoding="utf-8"), Loader=_frontmatter._Loader)
     except (yaml.YAMLError, _frontmatter.FrontmatterError, UnicodeDecodeError) as exc:
-        raise ConfigError(f"{shown} is not valid YAML ({exc}); fix the file") from None
+        hint = ""
+        if "alias" in str(exc):
+            hint = "; quote globs that start with *, e.g. exclude: ['*_bak']"
+        raise ConfigError(f"{shown} is not valid YAML ({exc}){hint}; fix the file") from None
     if not isinstance(data, dict):
         raise ConfigError(f"{shown} must be a mapping such as 'lang: en'; fix the file")
     unknown = sorted(str(key) for key in data if key not in _KEYS)
     if unknown:
         raise ConfigError(
-            f"{shown} has unknown keys {', '.join(unknown)}; only lang and sources "
-            "are allowed, remove the others"
+            f"{shown} has unknown keys {', '.join(unknown)}; only lang, sources and "
+            "databases are allowed, remove the others"
         )
     lang = data.get("lang")
     if lang not in LANGS:
         raise ConfigError(f"{shown}: lang must be en or zh (got {lang!r}); fix the file")
-    if "sources" not in data:
-        return lang, None
-    return lang, _source_names(data["sources"], f"{shown}: sources")
+    names = _source_names(data["sources"], f"{shown}: sources") if "sources" in data else None
+    databases = _databases(data["databases"], f"{shown}: databases", names) if "databases" in data else ()
+    return lang, names, databases
+
+
+def _databases(value: object, shown: str, sources: list[str] | None) -> tuple[Database, ...]:
+    if not isinstance(value, list) or not value:
+        raise ConfigError(
+            f"{shown} must be a non-empty list of databases, each with name, url_env and "
+            "schemas (plus repos in a hub); or remove databases"
+        )
+    found: list[Database] = []
+    for index, item in enumerate(value):
+        where = f"{shown}[{index}]"
+        if not isinstance(item, dict):
+            raise ConfigError(f"{where} must be a mapping with name, url_env and schemas; fix the entry")
+        unknown = sorted(str(key) for key in item if key not in _DB_KEYS)
+        if unknown:
+            raise ConfigError(
+                f"{where} has unknown keys {', '.join(unknown)}; a database takes only "
+                "name, url_env, repos and schemas (never a URL or password)"
+            )
+        name = item.get("name")
+        if not isinstance(name, str) or not _SOURCE_NAME.fullmatch(name):
+            raise ConfigError(
+                f"{where}: name {name!r} must be a plain name such as order_db; it names "
+                "the wiki directory of this database's pages"
+            )
+        where = f"{shown} {name}"
+        if any(db.name == name for db in found):
+            raise ConfigError(f"{where} is listed twice; merge the entries")
+        env = item.get("url_env")
+        if not isinstance(env, str) or not _ENV_NAME.fullmatch(env):
+            raise ConfigError(
+                f"{where}: url_env must be the name of an environment variable (or .env "
+                "key) holding the opengauss:// URL, such as ORDER_DB_URL; never the URL itself"
+            )
+        found.append(Database(name, env, _db_repos(item.get("repos"), where, sources),
+                              _schema_rules(item.get("schemas"), where)))
+    return tuple(found)
+
+
+def _db_repos(value: object, where: str, sources: list[str] | None) -> tuple[str, ...]:
+    if sources is None:
+        if value is not None:
+            raise ConfigError(
+                f"{where}: repos is only for a hub, where it names the sources using this "
+                "database; in a single repository remove it"
+            )
+        return (".",)
+    if not isinstance(value, list) or not value:
+        raise ConfigError(
+            f"{where}: repos must list the hub sources whose code uses this database, "
+            f"from: {', '.join(sources)}"
+        )
+    repos: list[str] = []
+    for repo in value:
+        if repo not in sources:
+            raise ConfigError(
+                f"{where}: repos names {repo!r}, which is not a source; use one of: "
+                f"{', '.join(sources)}"
+            )
+        if repo in repos:
+            raise ConfigError(f"{where}: repos lists {repo} twice; remove the duplicate")
+        repos.append(repo)
+    return tuple(repos)
+
+
+def _schema_rules(value: object, where: str) -> tuple[SchemaRule, ...]:
+    if value is None:
+        return (SchemaRule("public"),)
+    if not isinstance(value, list) or not value:
+        raise ConfigError(
+            f"{where}: schemas must be a non-empty list of schema names or mappings "
+            "with name, include and exclude; or remove it to capture schema public"
+        )
+    rules: list[SchemaRule] = []
+    for item in value:
+        item = {"name": item} if isinstance(item, str) else item
+        if not isinstance(item, dict):
+            raise ConfigError(f"{where}: schema entry {item!r} must be a name or a mapping with name")
+        unknown = sorted(str(key) for key in item if key not in _SCHEMA_KEYS)
+        if unknown:
+            raise ConfigError(
+                f"{where}: schema entry has unknown keys {', '.join(unknown)}; use name, "
+                "include and exclude"
+            )
+        name = item.get("name")
+        if not isinstance(name, str) or not _CATALOG_NAME.fullmatch(name):
+            raise ConfigError(
+                f"{where}: schema name {name!r} must be a schema name or a glob such as "
+                "tenant_*"
+            )
+        if any(rule.name == name for rule in rules):
+            raise ConfigError(f"{where}: schema {name} is listed twice; merge its include and exclude")
+        include = _globs(item.get("include"), f"{where} schema {name} include", ("*",))
+        exclude = _globs(item.get("exclude"), f"{where} schema {name} exclude", ())
+        rules.append(SchemaRule(name, include, exclude))
+    return tuple(rules)
+
+
+def _globs(value: object, where: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list) or not value or not all(
+        isinstance(g, str) and _CATALOG_NAME.fullmatch(g) for g in value
+    ):
+        raise ConfigError(
+            f"{where} must be a non-empty list of table name globs, e.g. ['t_order*', "
+            "'*_config']: * matches any run of characters, so t_order* starts with "
+            "t_order and *_log ends with _log"
+        )
+    return tuple(value)
 
 
 def _source_names(value: object, shown: str) -> list[str]:

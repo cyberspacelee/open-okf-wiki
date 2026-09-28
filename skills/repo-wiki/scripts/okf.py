@@ -234,29 +234,64 @@ def cmd_pointer(args) -> int:
 def cmd_db(args) -> int:
     import _db
 
-    ws_root = root()
-    url = _db.resolve_url(ws_root, args.url_env)
-    if args.action == "tables":
-        emit(_db.tables(url, args.schema), args.json)
-        return 0
+    ws = workspace(args)
+    if not ws.databases:
+        raise _config.ConfigError(
+            f"no databases in {ws.wiki_rel}/{_config.CONFIG}; add a databases list with name, "
+            "url_env and schemas (see the repo-wiki extensions reference)"
+        )
+    chosen = [ws.database(name) for name in args.db] if args.db else list(ws.databases)
     if args.action == "describe":
-        emit(_db.describe(url, args.table, args.schema), args.json)
+        if len(chosen) != 1:
+            raise _config.ConfigError("okf db describe needs --db NAME when several databases are configured")
+        db = chosen[0]
+        schema = args.schema or _only_schema(db)
+        emit(_db.describe(_db.resolve_url(ws.root, db.url_env), args.table, schema), args.json)
+        return 0
+    if args.action == "tables":
+        import _scan
+
+        out = []
+        for db in chosen:
+            url = _db.resolve_url(ws.root, db.url_env)
+            code = _scan.code_tables(ws, db.repos)
+            out.append({"name": db.name, "repos": [r for r in db.repos if r != "."]}
+                       | _db.select(url, db.schemas, code))
+        emit({"databases": out}, args.json)
         return 0
     import _dbpages
-    import _files
     import _stamp
 
-    ws = workspace(args)
-    capture = _db.capture(url, args.schema, args.table)
-    rendered = _dbpages.render_all(args.name, capture, ws.lang, args.into, _stamp.now())
-    written = []
-    for rel, text in sorted(rendered.items()):
-        file = ws.wiki / rel
-        if not file.is_file() or file.read_text(encoding="utf-8") != text:
-            _files.atomic_text(file, text)
-            written.append(f"{ws.wiki_rel}/{rel}")
-    emit({"pages": [f"{ws.wiki_rel}/{rel}" for rel in sorted(rendered)], "written": written}, args.json)
-    return 0
+    at = _stamp.now()
+    out, failed = [], False
+    for db in chosen:
+        try:
+            capture = _db.capture(_db.resolve_url(ws.root, db.url_env), db.schemas)
+        except _db.DbError as exc:
+            # One unreachable database does not stop the others; the exit code says so.
+            out.append({"name": db.name, "error": str(exc)})
+            failed = True
+            continue
+        rendered = _dbpages.render_database(db.name, [r for r in db.repos if r != "."], capture, ws.lang, at)
+        result = _dbpages.write_database(ws.wiki, db.name, rendered)
+        out.append({
+            "name": db.name,
+            "pages": [f"{ws.wiki_rel}/{rel}" for rel in sorted(rendered)],
+            "written": [f"{ws.wiki_rel}/{rel}" for rel in result["written"]],
+            "removed": [f"{ws.wiki_rel}/{rel}" for rel in result["removed"]],
+            "unmatched_schema_rules": capture["unmatched_schema_rules"],
+        })
+    emit({"databases": out}, args.json)
+    return 1 if failed else 0
+
+
+def _only_schema(db) -> str:
+    exact = [rule.name for rule in db.schemas if not any(ch in rule.name for ch in "*?[")]
+    if len(db.schemas) == 1 and exact:
+        return exact[0]
+    raise _config.ConfigError(
+        f"database {db.name} has several schema rules; pass --schema with the table's schema"
+    )
 
 
 # --- parser ------------------------------------------------------------------------
@@ -313,28 +348,20 @@ def build_parser() -> argparse.ArgumentParser:
     pointer = add("pointer", cmd_pointer, "print (or write) the AGENTS.md pointer block")
     pointer.add_argument("--write", metavar="FILE", help="replace or append the block in FILE")
 
-    db = add("db", cmd_db, "OpenGauss extension: inspect a schema or capture tables as pages")
+    db = add("db", cmd_db, ("OpenGauss extension: list the tables the databases in repo-wiki.yaml "
+                            "take, describe one table, or capture them as pages"))
     db.add_argument("action", choices=["tables", "describe", "capture"])
     db.add_argument("table", nargs="?", help="table name for describe")
-    db.add_argument("--url-env", required=True, help="variable holding an opengauss:// URL")
-    db.add_argument("--schema", default="public")
-    db.add_argument("--table", dest="tables", action="append", help="table to capture (repeatable)")
-    db.add_argument("--name", help="database name used in page paths and titles")
-    db.add_argument("--into", default="reference", help="wiki directory for the pages")
+    db.add_argument("--db", action="append", help="a configured database name (repeatable; default all)")
+    db.add_argument("--schema", help="schema of the table for describe")
     return parser
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    if args.command == "db":
-        if args.action == "describe" and not args.table:
-            print("okf db describe needs a TABLE argument", file=sys.stderr)
-            return 2
-        if args.action == "capture":
-            if not args.tables or not args.name:
-                print("okf db capture needs --table (repeatable) and --name", file=sys.stderr)
-                return 2
-            args.table = args.tables
+    if args.command == "db" and args.action == "describe" and not args.table:
+        print("okf db describe needs a TABLE argument", file=sys.stderr)
+        return 2
     import _db
     import _impact
     import _stamp

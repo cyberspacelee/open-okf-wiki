@@ -42,6 +42,7 @@ class Structure:
     duplicate_defs: list[tuple[str, int]]
     tables: list[MdTable]
     todos: list[tuple[int, str]]
+    hints: list[tuple[int, str]]  # template guidance the writer has not deleted yet
     prose: list[tuple[int, str]]
     fences: list[CodeFence]
     lines: list[str]
@@ -57,6 +58,7 @@ _FNREF = re.compile(r"\[\^([^\]]+)\]")
 _FNDEF = re.compile(r"^\[\^([^\]]+)\]:\s*(.*?)\s*$")
 _DELIMITER_CELL = re.compile(r"^:?-+:?$")
 _TODO = "okf:todo"
+_HINT = "okf:hint"
 
 
 def strip_code_spans(text: str) -> str:
@@ -116,6 +118,7 @@ def extract(body: str) -> Structure:
     duplicate_defs: list[tuple[str, int]] = []
     tables: list[MdTable] = []
     todos: list[tuple[int, str]] = []
+    hints: list[tuple[int, str]] = []
     prose: list[tuple[int, str]] = []
     fences: list[CodeFence] = []
 
@@ -130,6 +133,8 @@ def extract(body: str) -> Structure:
         text = "\n".join(comment).strip()
         if text.startswith(_TODO):
             todos.append((comment_start, text[len(_TODO) :].strip()))
+        elif text.startswith(_HINT):
+            hints.append((comment_start, text[len(_HINT) :].strip()))
 
     i = 0
     while i < len(lines):
@@ -243,6 +248,7 @@ def extract(body: str) -> Structure:
         duplicate_defs=duplicate_defs,
         tables=tables,
         todos=todos,
+        hints=hints,
         prose=prose,
         fences=fences,
         lines=lines,

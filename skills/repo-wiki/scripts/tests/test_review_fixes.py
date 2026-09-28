@@ -327,11 +327,11 @@ def test_paths_with_spaces_validate_stamp_impact_and_eval(tmp_path):
     root, ws = complete(tmp_path, {"my app/核心 a.py": "def core():\n    return 1\n"})
     set_body(ws, "architecture.md", ARCH.replace("`tests/` | Test code.", "`tests/` | Test code.\n| my app | Demo app. "))
     body = (
-        "## Responsibility and boundaries\n\n"
+        "## Responsibility\n\nCore returns one.\n\n## How it works\n\nA constant.\n\n"
         "| Invariant | Enforced at | Breaks when |\n|---|---|---|\n"
         "| Core returns one. | `core`[^core] | Callers break. |\n\n"
-        "## Change guide\n\n| Change | Also change or check |\n|---|---|\n"
-        "| `core` | callers[^core] |\n\n"
+        "## Making changes\n\n| Change | Start at | Also change | Verify |\n|---|---|---|---|\n"
+        "| Return value | `core`[^core] | callers | `pytest -q` |\n\n"
         "[^core]: <my app/核心 a.py>#L1-L2 the core function\n"
     )
     _page.new_page(ws, "modules/core.md", "Module", "Read before core.", ["my app/**"])
@@ -342,7 +342,7 @@ def test_paths_with_spaces_validate_stamp_impact_and_eval(tmp_path):
     page = _page.load_page(ws, "modules/core.md")
     assert page.meta["sources"] == [{"id": "core", "resource": "<my app/核心 a.py>#L1-L2"}]
     files = _impact.impact_files(ws, ["my app/核心 a.py"])["files"]["my app/核心 a.py"]
-    assert files["update"] == ["modules/core.md"] and files["change_impact"]
+    assert files["update"] == ["modules/core.md"] and files["change_guide"]
     commit(root, {"my app/核心 a.py": "# moved\ndef core():\n    return 1\n"}, "move")
     reasons = {p["page"]: p["reasons"] for p in _impact.impact(ws)["pages"]}
     assert reasons["modules/core.md"][0]["suggested"] == "<my app/核心 a.py>#L2-L3"

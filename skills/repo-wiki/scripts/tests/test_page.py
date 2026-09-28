@@ -4,6 +4,7 @@ import stat
 import pytest
 
 import _config
+import _markdown
 import _page
 from helpers import commit, git_repo, wiki_ws, write
 
@@ -313,9 +314,9 @@ TABLES_EN = """\
 |---|---|
 | `third_party/` | Vendored. |
 
-| Change | Also change or check |
-|---|---|
-| a | b |
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| a | b | c | d |
 
 [^br]: src/app.py#L1
 [^led]: src/app.py
@@ -324,7 +325,7 @@ TABLES_EN = """\
 """
 
 TABLES_ZH = """\
-| 术语 | 含义 | 避免 | 位置 |
+| 术语 | 定义 | 勿用别名 | 代码位置 |
 |---|---|---|---|
 | 计费 | 批处理。 | 作业 | `BillingRun`[^br] |
 
@@ -332,10 +333,10 @@ TABLES_ZH = """\
 |---|---|---|
 | 测试 | `pytest`[^pt] | not-run |
 
-| 范畴 | 规则 | 保障 |
+| 类别 | 规则 | 检查方式 |
 |---|---|---|
 
-| 不变量 | 强制位置 | 违反后果 |
+| 关键约束 | 由谁保证 | 违反会怎样 |
 |---|---|---|
 | 不可变 | `a.py`[^inv] | 数据损坏 |
 
@@ -348,8 +349,8 @@ def test_tables_en(tmp_path):
     _, ws = _repo(tmp_path)
     write(ws.wiki / "c.md", {"type": "Glossary"}, TABLES_EN)
     found = _page.tables(_page.load_page(ws, "c.md"))
-    assert set(found) == {"glossary", "commands", "rules", "invariants", "not_covered", "change_impact"}
-    assert found["change_impact"][0].rows[0].footnotes == []
+    assert set(found) == {"glossary", "commands", "rules", "invariants", "not_covered", "change_guide"}
+    assert found["change_guide"][0].rows[0].footnotes == []
     glossary = found["glossary"][0]
     assert glossary.kind == "glossary" and glossary.line == 1
     assert glossary.header == ["Term", "Meaning", "Avoid", "Where"]
@@ -374,6 +375,15 @@ def test_tables_zh(tmp_path):
     assert found["commands"][0].rows[0].cells[2] == "not-run"
     assert found["rules"][0].rows == []
     assert found["invariants"][0].rows[0].footnotes == ["inv"]
+
+
+def test_templates_carry_the_change_guide_table_and_hints():
+    for lang in ("en", "zh"):
+        for type in ("Module", "Workflow"):
+            structure = _markdown.extract(_page.template(lang, type))
+            kinds = [_page.table_kind(t.header) for t in structure.tables]
+            assert kinds == ["change_guide"], (lang, type, kinds)
+            assert structure.hints and not any("okf:hint" in text for _, text in structure.hints)
 
 
 def test_sources_from_footnotes(tmp_path):

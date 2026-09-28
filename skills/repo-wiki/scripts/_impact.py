@@ -183,15 +183,15 @@ def impact_files(ws: _config.Workspace, paths: list[str]) -> dict:
     """What to read and update before changing each path (file or directory).
 
     ``read``: pages whose scope matches the path; ``update``: pages that cite it;
-    ``change_impact``: change impact rows whose Change cell or cited locators
-    mention it; ``canon``: the glossary and conventions pages to read before
+    ``change_guide``: change guide rows whose Change or Start at cell or cited
+    locators mention it, with the Also change and Verify cells; ``canon``: the glossary and conventions pages to read before
     naming or changing code; ``note``: why no page answers for it, or how an
     unprefixed hub path was resolved.
     """
     pages = [p for p in _page.load_pages(ws) if not p.error and not p.is_generated]
     cited = {p.path: {loc.path for _, loc, _ in _validate.cited_locators(p)} for p in pages}
     facts = _validate.Facts(ws)
-    rows = _change_impact_rows(pages)
+    rows = _change_guide_rows(pages)
     not_covered = [(path, reason) for _, _, path, reason in _validate.not_covered_rows(pages) if path]
     canon = [path for path in (_page.CANON["Glossary"], _page.CANON["Conventions"]) if (ws.wiki / path).is_file()]
     texts = _HeadTexts(ws, facts)
@@ -227,8 +227,8 @@ def impact_files(ws: _config.Workspace, paths: list[str]) -> dict:
                 page.path for page in pages
                 if any(c == path or c.startswith(below) for c in cited[page.path])
             ]
-            impact_rows = [
-                {"page": row["page"], "line": row["line"], "change": row["change"], "also": row["also"]}
+            guide_rows = [
+                {key: row[key] for key in ("page", "line", "change", "start", "also", "verify")}
                 for row in rows
                 if _row_mentions(row, path, texts)
             ]
@@ -242,12 +242,12 @@ def impact_files(ws: _config.Workspace, paths: list[str]) -> dict:
                 pass
             elif excluded is not None and not read:
                 notes.append(f"not covered: {excluded or 'no reason given'}")
-            elif not read and not update and not impact_rows:
+            elif not read and not update and not guide_rows:
                 notes.append("no page covers this path")
             result[path] = {
                 "read": read,
                 "update": update,
-                "change_impact": impact_rows,
+                "change_guide": guide_rows,
                 "canon": canon,
                 "note": "; ".join(notes) or None,
             }
@@ -278,14 +278,14 @@ def _resolve_hub_path(ws, facts, path: str) -> tuple[str, str | None]:
     return path, None
 
 
-def _change_impact_rows(pages) -> list[dict]:
-    """Every change impact row with its Change cell, tokens and cited paths."""
+def _change_guide_rows(pages) -> list[dict]:
+    """Every change guide row with its cells, the text to match and cited paths."""
     rows = []
     for page in pages:
         defs = page.structure.footnote_defs
-        for table in _page.tables(page).get("change_impact", []):
+        for table in _page.tables(page).get("change_guide", []):
             for row in table.rows:
-                cells = row.cells + ["", ""]
+                cells = row.cells + ["", "", "", ""]
                 cited = []
                 for label in row.footnotes:
                     token, _ = _config.definition_locator(defs.get(label, ("",))[0])
@@ -297,8 +297,10 @@ def _change_impact_rows(pages) -> list[dict]:
                     "page": page.path,
                     "line": row.line + page.body_offset,
                     "change": _validate._plain(cells[0]),
-                    "also": _validate._plain(cells[1]),
-                    "raw": cells[0],
+                    "start": _validate._plain(cells[1]),
+                    "also": _validate._plain(cells[2]),
+                    "verify": _validate._plain(cells[3]),
+                    "raw": " ".join(cells[:2]),  # Also change names a follow-up, not the change
                     "cited": [c for c in cited if c],
                 })
     return rows
@@ -310,8 +312,9 @@ _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _row_mentions(row: dict, path: str, texts: "_HeadTexts") -> bool:
-    """The row's cited locators or Change cell name the path, a directory or glob
-    covering it, or (for a file) a code identifier that occurs in the file."""
+    """The row's cited locators or its Change or Start at cell name the path, a
+    directory or glob covering it, or (for a file) a code identifier that occurs in
+    the file."""
     below = path + "/"
     if any(c == path or c.startswith(below) or path.startswith(c + "/") for c in row["cited"]):
         return True

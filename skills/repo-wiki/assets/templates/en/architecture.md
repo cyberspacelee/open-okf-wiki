@@ -1,24 +1,15 @@
 <!-- okf:todo
 -->
 
-## Boundaries and dependencies
+## Structure
 
-<!-- Add one mermaid flowchart: modules as nodes, edges in dependency direction (scan deps; explain or flag every mutual edge). -->
+<!-- okf:hint The parts the system splits into, what each owns, which way dependencies point (from scan deps; explain or flag every mutual edge), and the tables and topics modules share (scan resources). Add a mermaid flowchart: modules as nodes, edges along the dependency direction. -->
 
 ## Not covered
 
-<!-- Modules and trigger files not worth a page; a glob row covers a group of trigger files. -->
+<!-- okf:hint Modules and trigger files not worth a page of their own, each with a reason; one glob row may cover a group. -->
 
 | Path | Reason |
 |---|---|
 
-<!-- Optional sections, only when there is grounded content:
-## Design rationale
-## Cross-module invariants
-| Invariant | Enforced at | Breaks when |
-|---|---|---|
-## Change impact
-| Change | Also change or check |
-|---|---|
-## Decision records (links to existing ADRs)
--->
+<!-- okf:hint Add sections that fit this repository, with sourced content only. Common ones: design decisions (link existing ADRs), cross-module invariants (header Invariant | Enforced at | Breaks when), cross-module changes (header Change | Start at | Also change | Verify). Leave out any section with nothing to say. -->

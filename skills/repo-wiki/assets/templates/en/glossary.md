@@ -4,6 +4,4 @@
 | Term | Meaning | Avoid | Where |
 |---|---|---|---|
 
-<!-- Optional sections, only when there is grounded content:
-## Ambiguities and context boundaries
--->
+<!-- okf:hint When terms are easy to confuse (one name, two meanings; near-synonyms for different things; a term that means something else in another module), add a "Commonly confused terms" section explaining each pair. Leave it out otherwise. -->

@@ -88,9 +88,9 @@ lines and is cited here.[^a] Uses `x.y` and `z[^nope]` inline.[^b]
 |---|---|---|
 | X holds. | `f`[^a] | Y breaks. |
 
-| Change | Also change or check |
-|---|---|
-| `A` | `B`[^b] |
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| `A` | `B`[^b] | `C` | `make test` |
 
 | Path | Reason |
 |---|---|
@@ -131,7 +131,7 @@ def test_every_canon_row_and_cited_sentence_is_a_claim(single):
     for claim in claims:
         kinds.setdefault(claim.kind, []).append(claim)
     assert {k: len(v) for k, v in kinds.items()} == {
-        "glossary": 2, "commands": 1, "rules": 1, "invariants": 1, "change_impact": 1, "prose": 10,
+        "glossary": 2, "commands": 1, "rules": 1, "invariants": 1, "change_guide": 1, "prose": 10,
     }
     assert all(c.pool == "canon" for k, v in kinds.items() if k != "prose" for c in v)
     prose = {c.text: c for c in kinds["prose"]}
@@ -158,6 +158,8 @@ def test_every_canon_row_and_cited_sentence_is_a_claim(single):
     glossary = {c.text: c for c in kinds["glossary"]}
     assert "Term: Alpha; Meaning: First thing.; Where: `a`" in glossary
     assert glossary["Term: Beta; Meaning: Uncited row.; Where: nowhere"].labels == []
+    # A change guide row is judged without its Verify cell.
+    assert kinds["change_guide"][0].text == "Change: `A`; Start at: `B`; Also change: `C`"
     assert kinds["commands"][0].text == "Purpose: Tests; Command: `make test`"
     assert kinds["rules"][0].labels == ["a", "b"]
     assert not any("Vendored" in c.text or "uncited" in c.text for c in claims)
@@ -369,14 +371,14 @@ def test_canon_reads_zh_tables_and_only_canon_pages(tmp_path):
     ws = wiki_ws(root, lang="zh")
     rev = commit(root, {}, "base")
     put_page(ws, "glossary.md", "Glossary", (
-        "| 术语 | 含义 | 避免 | 位置 |\n|---|---|---|---|\n| 账单批次 | 过账。 | 发票任务、批处理 | `run`[^m] |\n\n[^m]: Makefile#L1\n"
+        "| 术语 | 定义 | 勿用别名 | 代码位置 |\n|---|---|---|---|\n| 账单批次 | 过账。 | 发票任务、批处理 | `run`[^m] |\n\n[^m]: Makefile#L1\n"
     ), {".": rev})
     put_page(ws, "conventions.md", "Conventions", (
         "| 用途 | 命令 | 状态 |\n|---|---|---|\n| 测试 | `make test`[^m] | verified |\n\n"
-        "| 范畴 | 规则 | 保障 |\n|---|---|---|\n| testing | 测试放在 tests/ 下（3 处）。[^m] | convention |\n\n[^m]: Makefile#L1-L2\n"
+        "| 类别 | 规则 | 检查方式 |\n|---|---|---|\n| testing | 测试放在 tests/ 下（3 处）。[^m] | convention |\n\n[^m]: Makefile#L1-L2\n"
     ), {".": rev})
     put_page(ws, "modules/x.md", "Module", (
-        "| 术语 | 含义 | 避免 | 位置 |\n|---|---|---|---|\n| 模块术语 | x | - | `y`[^m] |\n\n[^m]: Makefile#L1\n"
+        "| 术语 | 定义 | 勿用别名 | 代码位置 |\n|---|---|---|---|\n| 模块术语 | x | - | `y`[^m] |\n\n[^m]: Makefile#L1\n"
     ), {".": rev}, scope=["Makefile"])
     gold = {
         "terms": [{"term": "批处理"}, {"term": "模块术语"}],

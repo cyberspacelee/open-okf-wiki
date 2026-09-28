@@ -442,7 +442,7 @@ _SELF_FILES = {
     "tests/test_run.py": "def test_run():\n    assert True\n",
 }
 
-_SELF_ARCH = """## Boundaries and dependencies
+_SELF_ARCH = """## Structure
 
 Billing has no dependencies.
 
@@ -484,9 +484,19 @@ _SELF_CONVENTIONS = """## Commands
 [^err]: src/billing/api.py#L1-L5
 """
 
-_SELF_MODULE = """## Responsibility and boundaries
+_SELF_MODULE = """## Responsibility
 
-Billing posts invoices.[^run]
+Billing posts invoices.
+
+## How it works
+
+`post` marks the invoice.[^run]
+
+## Making changes
+
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Posting | `post`[^run] | - | `sh check.sh` |
 
 [^run]: src/billing/run.py#L1-L3
 """

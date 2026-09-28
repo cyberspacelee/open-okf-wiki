@@ -189,23 +189,49 @@ def test_line_counts_split_on_newline_only(tmp_path):
 def test_required_sections_per_type(tmp_path):
     _, ws = complete(tmp_path)
     assert not [i for i in _validate.validate(ws) if i.code == "section"]
-    set_body(ws, "modules/billing.md", BILLING.replace("## Responsibility and boundaries", "## Overview"))
+    set_body(ws, "modules/billing.md", BILLING.replace("## How it works", "## Overview"))
     arch = _page.load_page(ws, "architecture.md").body
     set_body(ws, "architecture.md", arch.replace("## Not covered", "## Skipped paths"))
     conventions = _page.load_page(ws, "conventions.md").body
     set_body(ws, "conventions.md", conventions.replace("## Rules", "### rules"))  # any level, any case
     _page.new_page(ws, "workflows/post.md", "Workflow", "Read before posting.", ["src/billing/**"])
-    set_body(ws, "workflows/post.md", "Posting.\n")
+    set_body(ws, "workflows/post.md", "## Making changes\n\nPosting.\n")
     found = {(i.page, i.message) for i in _validate.validate(ws) if i.code == "section"}
     assert found == {
-        ("modules/billing.md", "Module page lacks the section 'Responsibility and boundaries' (职责与边界)"),
-        ("architecture.md", "Architecture page lacks the section 'Not covered' (未覆盖)"),
-        ("workflows/post.md", "Workflow page lacks the section 'Trigger to outcome' (从触发到结果)"),
+        ("modules/billing.md", "Module page lacks the section 'How it works' (工作原理)"),
+        ("architecture.md", "Architecture page lacks the section 'Not covered' (未单独成页)"),
+        ("workflows/post.md", "Workflow page lacks the section 'Flow' (执行流程)"),
     }
     assert all(i.severity == "error" for i in _validate.validate(ws) if i.code == "section")
-    # The zh heading satisfies the rule in an en wiki too; diagrams stay optional.
-    set_body(ws, "workflows/post.md", "## 从触发到结果\n\nPosting.\n")
+    # The zh heading satisfies the rule in an en wiki too; other headings are free.
+    set_body(ws, "workflows/post.md", "## 执行流程\n\nPosting.\n\n## 修改指南\n\n## Retry and idempotency\n")
     assert "workflows/post.md" not in {i.page for i in _validate.validate(ws) if i.code == "section"}
+
+
+def test_module_and_workflow_pages_need_a_change_guide_row(tmp_path):
+    _, ws = complete(tmp_path)
+    assert not [i for i in _validate.validate(ws) if i.code == "change-guide"]
+    empty = BILLING.replace("| Change posting | `BillingRun.post`[^posted] | - | `tests/test_run.py` |\n", "")
+    set_body(ws, "modules/billing.md", empty)
+    found = [i for i in _validate.validate(ws) if i.code == "change-guide"]
+    assert [(i.page, i.severity) for i in found] == [("modules/billing.md", "error")]
+    # While a todo block says the page is being written, the row is not asked for yet.
+    set_body(ws, "modules/billing.md", "<!-- okf:todo\nlead\n-->\n\n" + empty)
+    assert not [i for i in _validate.validate(ws) if i.code == "change-guide"]
+    # Start at and Verify must say something; Also change may be a dash.
+    set_body(ws, "modules/billing.md", BILLING.replace("| `tests/test_run.py` |", "| - |"))
+    messages = [i.message for i in _validate.validate(ws) if i.code == "table-values"]
+    assert messages == ["change guide row has no Verify: 'Change posting'"]
+
+
+def test_template_hints_are_pending_until_deleted(tmp_path):
+    _, ws = complete(tmp_path)
+    set_body(ws, "modules/billing.md", BILLING.replace(
+        "Billing posts invoices.", "Billing posts invoices.\n\n<!-- okf:hint say more\nover lines -->"))
+    found = [(i.code, i.severity, i.line) for i in _validate.validate(ws) if i.code == "hint"]
+    assert len(found) == 1 and found[0][:2] == ("hint", "pending")
+    stub = _page.new_page(ws, "workflows/post.md", "Workflow", "Read before posting.", ["src/billing/**"])
+    assert len(stub.structure.hints) == 3
 
 
 def test_zh_templates_carry_their_required_sections(tmp_path):

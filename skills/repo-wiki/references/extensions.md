@@ -1,7 +1,7 @@
 # Extensions
 
 Two optional additions to the normal loop: a hub that documents several
-repositories in one wiki, and an OpenGauss schema rendered as wiki pages. The
+repositories in one wiki, and OpenGauss databases rendered as wiki pages. The
 stages, page rules and review are unchanged; only the differences are here.
 
 ## Hub: several repositories, one wiki
@@ -57,45 +57,105 @@ Differences from a single repository:
   `scope` lists globs from both sources; the architecture page states which
   source depends on which.
 
-## OpenGauss schema
+## OpenGauss databases
 
 Table structure comes from the live catalog, never from reading ORM models or
 migrations. The kernel renders `Schema` and `Table` pages; you never write or
 edit them.
 
-Pass the connection as a variable name, never as a URL on the command line.
-`--url-env VAR` reads `VAR` from the environment, then from `.env` at the
-repository root; the value must be an `opengauss://user@host:port/db` URL.
-`.env` serves only this lookup: never read it otherwise, cite it, or copy its
-values into a page. Queries run in a read-only, repeatable-read transaction.
+### Configure the databases
+
+Databases are declared in `repo-wiki.yaml`, next to `lang` and `sources`. Each
+entry says which variable holds its URL, which repositories use it, and which
+schemas and tables to capture:
+
+```yaml
+lang: zh
+sources: [order-api, order-worker, billing]      # hub only
+databases:
+  - name: order_db                 # directory under databases/ and page titles
+    url_env: ORDER_DB_URL          # variable (environment, then .env) holding opengauss://...
+    repos: [order-api, order-worker]   # hub sources whose code uses it; omit in a single repository
+    schemas:
+      - name: public
+        include: ["t_order*", "*_config"]   # starts with t_order, or ends with _config
+        exclude: ["*_bak", "*_tmp"]
+      - name: "tenant_*"                    # a schema glob: every tenant schema
+        include: ["t_*"]
+      - audit                               # a bare name: every table of audit
+  - name: billing_db
+    url_env: BILLING_DB_URL
+    repos: [billing]                        # schemas omitted: every table of public
+```
+
+- **Repositories and databases.** A repository usually uses one database; one
+  database may serve several repositories (two services sharing a store), and
+  a repository may use more than one. In a hub, `repos` must list the sources
+  whose code reads or writes the database; the list drives the "used by" line
+  of the pages, which code `okf db tables` checks, and the `db-binding`
+  warning. In a single repository omit `repos`.
+- **Matching.** `include` and `exclude` are globs over table names: `*` is any
+  run of characters, so `t_order*` means "starts with `t_order`" and `*_log`
+  "ends with `_log`"; `?` is one character. A table is captured when an
+  `include` matches and no `exclude` does; `include` defaults to every table.
+  Matching is case-sensitive, like unquoted catalog names (lowercase). A
+  schema `name` may be a glob too; system schemas (`pg_*`,
+  `information_schema`) never match.
+- **Quote globs.** A YAML value that starts with `*` must be quoted
+  (`"*_bak"`); unquoted, YAML reads it as an alias and the config fails.
+- **Secrets.** `url_env` names a variable, never a URL. The URL is read from the
+  environment, then from `.env` at the workspace root, and must be an
+  `opengauss://user@host:port/db` URL. `.env` serves only this lookup: never
+  read it otherwise, cite it, or copy its values into a page. When a variable
+  is missing, ask the user to set it; never write a URL into a tracked file.
+
+Queries run in a read-only, repeatable-read transaction.
+
+### Commands
 
 | command | use |
 |---|---|
-| `okf db tables --url-env VAR [--schema S]` | list tables in a schema (default `public`) |
-| `okf db describe TABLE --url-env VAR` | inspect one table before deciding to capture it |
-| `okf db capture --url-env VAR --schema S --table T ... --name DB [--into reference]` | render one Schema page and one Table page per table under the wiki |
+| `okf db tables [--db NAME]` | per database: the tables each schema rule takes, the ones an `exclude` dropped, how many others it skipped, rules that matched no schema, and the gaps against the bound repositories' code |
+| `okf db describe TABLE [--db NAME] [--schema S]` | inspect one table before widening a rule to take it |
+| `okf db capture [--db NAME]` | render the configured databases (all, or the named ones) as pages |
 
-Capture the tables that the modules and workflows read or write; capture the
-whole schema only when it is small. `--name` is the database name used in page
-paths and titles; `--into` is the directory inside the wiki the pages go under
-(Schema page `<into>/<DB>.md`, Table pages `<into>/tables/<table>.md`). Commit the
-generated pages with the rest of the wiki.
+Tune the rules before the first capture. `okf db tables` lists
+`code_not_taken`, tables the bound repositories' code reads or writes that the
+catalog holds but the rules leave out (with the reason and a code locator),
+and `code_not_found`, tables the code names that no matched schema holds
+(another database, a view, a stale name). Widen `include` or narrow `exclude`
+until every table the code uses is taken, unless the user says otherwise.
+Show the user a rule change before making it: the config is theirs.
 
-**Author pages link, never cite.** Link a Table page with a normal
-bundle-absolute link, e.g. `[invoices](/reference/tables/invoices.md)`, where
-the path is the one capture printed. Table pages are never footnote targets; a
-claim about code that uses the table still cites the code. Do not restate
-columns, types or constraints the Table page already shows; write what the
-catalog cannot say: which module owns the table, which invariants the code adds
-on top of it, which workflow writes it.
+Capture writes, per schema, `databases/<db>/<schema>.md` (Schema page) and
+`databases/<db>/<schema>/<table>.md` (Table pages), so tables of the same name
+in two schemas or databases stay apart. Capture always follows the config:
+generated pages of a table that was dropped or no longer matches are removed.
+Commit the generated pages with the rest of the wiki.
+
+### Link, never cite
+
+Link a Table page with a normal bundle-absolute link, e.g.
+`[t_order](/databases/order_db/public/t_order.md)`, where the path is the one
+capture printed. Link the table of the database the page's code uses: in a hub,
+linking a table whose database is bound to none of the page's sources raises a
+`db-binding` warning (a wrong database, or a `repos` entry missing). Table
+pages are never footnote targets; a claim about code that uses the table still
+cites the code. Do not restate columns, types or constraints the Table page
+already shows; write what the catalog cannot say: which module owns the table,
+which invariants the code adds on top of it, which workflow writes it.
+
+### Re-capture and failures
 
 **Re-capture** regenerates the pages from the live catalog; each carries a
-`catalog_sha256`. When a table's hash changes, `okf impact --json` lists every
-author page linking that Table page and `okf update --json` drafts them with a
-todo block, like any code change. Redo stages 3-5 for those pages.
+`catalog_sha256`. When a table's hash changes or its page is removed,
+`okf impact --json` lists every author page linking it and `okf update --json`
+drafts them with a todo block, like any code change. Redo stages 3-5 for those
+pages.
 
-**Capture failure is a blocker.** A missing variable, a bad URL, an unreachable
-database, missing `psycopg` or a permission error stops the database part: report
-the error to the user and continue the code-only wiki. Never hand-write Schema
-or Table pages, and never fill the gap with a schema reconstructed from models,
-migrations or SQL files.
+**Capture failure is a blocker for that database only.** A missing variable, a
+bad URL, an unreachable database, missing `psycopg` or a permission error is
+reported per database (`error`), the others are still captured, and the
+command exits 1. Report the error to the user and continue the rest of the
+wiki. Never hand-write Schema or Table pages, and never fill the gap with a
+schema reconstructed from models, migrations or SQL files.

@@ -23,7 +23,7 @@ model. Workflow:
     eval_citations.py selftest
 
 A claim is every canon table row (glossary, commands, rules, invariants,
-change_impact) plus every prose sentence that carries a footnote: all causal
+change_guide) plus every prose sentence that carries a footnote: all causal
 sentences, and up to --per-page other sentences per page, drawn with --seed.
 Cited lines are read from git at the page's revision (per source in a hub).
 Claim ids hash page, first footnote label and the claim text, so they are
@@ -119,7 +119,8 @@ def is_causal(text: str) -> bool:
 
 
 # Cells that record project choices or session state, not facts the cited lines can back.
-_UNJUDGED_CELLS = {"glossary": {2}, "commands": {2}}  # Avoid, Status
+# A change guide's Verify names a test or command the cited lines need not contain.
+_UNJUDGED_CELLS = {"glossary": {2}, "commands": {2}, "change_guide": {3}}  # Avoid, Status, Verify
 
 
 def _row_text(kind: str | None, header: list[str], cells: list[str]) -> str:
@@ -828,24 +829,28 @@ _SELF_CONVENTIONS = """## Commands
 [^test]: Makefile#L1-L2
 """
 
-_SELF_MODULE = """## Responsibility and boundaries
+_SELF_MODULE = """## Responsibility
 
 Billing posts invoices. Posting is guarded in `post()`.[^post] Posted invoices are
 immutable so that the ledger never drifts.[^guard] Retries stop at `MAX`.[^cap]
 The cap lives in `retry.py` and uses `a.b` names.[^cap] Constants live in a
 big module.[^big] Nothing here is cited.
 
+## How it works
+
 - Retry scheduling returns None at the cap.[^cap]
 - Uncited list item.
+
+## Making changes
 
 | Invariant | Enforced at | Breaks when |
 |---|---|---|
 | A posted invoice is never posted again. | `post`[^guard] | Double charge. |
 | Every row is judged. | nowhere | Nothing. |
 
-| Change | Also change or check |
-|---|---|
-| `MAX` | `schedule`[^cap] |
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Cap | `MAX`[^cap] | `schedule` | review |
 
 | Note | Detail |
 |---|---|
@@ -922,7 +927,7 @@ def _selftest(base: Path) -> None:
     packets = [json.loads(line) for line in (out / PACKETS).read_text(encoding="utf-8").splitlines()]
     by_kind = Counter(c["kind"] for c in claims)
     _check(by_kind["glossary"] == 2 and by_kind["commands"] == 1 and by_kind["rules"] == 1, f"canon rows {by_kind}")
-    _check(by_kind["invariants"] == 2 and by_kind["change_impact"] == 1, f"module rows {by_kind}")
+    _check(by_kind["invariants"] == 2 and by_kind["change_guide"] == 1, f"module rows {by_kind}")
     pools = Counter(c["pool"] for c in claims)
     manifest = json.loads((out / MANIFEST).read_text(encoding="utf-8"))
     # Prose sentences: post, big, list item, table row (+ "cap lives", "Retries stop"); 2 sampled.
@@ -937,7 +942,7 @@ def _selftest(base: Path) -> None:
     uncited = [c for c in claims if not c["labels"]]
     _check(len(uncited) == 1 and uncited[0]["kind"] == "invariants", f"uncited rows {uncited}")
     # Evidence is read at the page revision, not HEAD, and large ranges are bounded.
-    cap = next(c for c in claims if c["kind"] == "change_impact")
+    cap = next(c for c in claims if c["kind"] == "change_guide")
     _check("1 | MAX = 3" in cap["evidence"][0]["text"] and cap["evidence"][0]["rev"] == rev, f"cap evidence {cap['evidence']}")
     big = [e for c in claims for e in c["evidence"] if e.get("locator") == "src/billing/big.py"]
     for item in big:

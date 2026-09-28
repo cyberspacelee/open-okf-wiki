@@ -972,6 +972,27 @@ def _dependency_facts(imports: _code.Imports, module_paths: set[str]) -> tuple[l
     return deps, central
 
 
+def code_tables(ws: _config.Workspace, repos) -> dict[str, str]:
+    """Table name (lowercase, no schema) -> first locator, over the production code
+    of the given sources at HEAD: the tables their code reads or writes, found the
+    same way as scan ``resources``."""
+    found: dict[str, tuple[str, int]] = {}
+    for source in ws.sources:
+        if source.name not in repos:
+            continue
+        with _git.BlobReader(source.path) as blobs:
+            tree = _Tree(ws, source, blobs)
+            candidates = [p for p in tree.files if (_term_file(p) or _mapper_candidate(p)) and not is_test_path(p)]
+            for path, text in tree.texts(candidates):
+                if text is None or _is_generated(text):
+                    continue
+                for kind, name, line in _code.resources_in(path, text):
+                    site = (tree.ws(path), line)
+                    if kind == "table" and (name not in found or site < found[name]):
+                        found[name] = site
+    return {name: _config.Locator(path, line, line).text() for name, (path, line) in sorted(found.items())}
+
+
 def _resource_facts(named: list[tuple[str, str, str, int]], module_paths: set[str]) -> list[dict]:
     """Topics and tables named in two or more modules, with the first site per module."""
     sites: dict[tuple[str, str], dict[str, tuple[str, int]]] = defaultdict(dict)

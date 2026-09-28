@@ -14,7 +14,7 @@ FILES = {
     "tests/test_run.py": "def test_run():\n    assert True\n",
 }
 
-ARCH = """## Boundaries and dependencies
+ARCH = """## Structure
 
 Billing has no dependencies.
 
@@ -47,7 +47,19 @@ CONVENTIONS = """## Commands
 [^test]: Makefile#L1-L2
 """
 
-BILLING = """## Responsibility and boundaries
+BILLING = """## Responsibility
+
+Billing posts invoices.
+
+## How it works
+
+`post` refuses an invoice that is already posted.[^posted]
+
+## Making changes
+
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Change posting | `BillingRun.post`[^posted] | - | `tests/test_run.py` |
 
 | Invariant | Enforced at | Breaks when |
 |---|---|---|

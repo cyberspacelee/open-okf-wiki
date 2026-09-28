@@ -17,7 +17,7 @@ only). No pydantic. Standard library otherwise. All git access goes through
 |---|---|---|
 | `_files.py` | `atomic_text`, `atomic_json`, `normalize_newlines`, `text_lines` | — |
 | `_frontmatter.py` | safe YAML frontmatter parse/render (kept) | yaml |
-| `_markdown.py` | fence-aware body structure: sections, links, footnote refs/defs (code spans excluded), tables, todo blocks, prose lines | — |
+| `_markdown.py` | fence-aware body structure: sections, links, footnote refs/defs (code spans excluded), tables, todo blocks, hints, prose lines | — |
 | `_diagram.py` | basic Mermaid structure check | `_markdown` |
 | `_git.py` | every git subprocess call | — |
 | `_config.py` | `Workspace`, `Source`, config load/init, hub-source detection, locator parse, path resolve, compiled globs | `_git`, yaml |
@@ -50,6 +50,24 @@ class Workspace:
     lang: str          # "en" | "zh"
     hub: bool
     sources: tuple[Source, ...]
+    databases: tuple[Database, ...] = ()   # repo-wiki.yaml `databases`, in file order
+    def database(self, name: str) -> Database   # ConfigError naming the configured ones
+
+@dataclass(frozen=True)
+class SchemaRule:
+    name: str                        # schema name or glob (tenant_*)
+    include: tuple[str, ...] = ("*",)  # table name globs; t_order* = starts with, *_log = ends with
+    exclude: tuple[str, ...] = ()
+    def matches_schema(self, schema: str) -> bool
+    def includes(self, table: str) -> bool   # some include glob matches
+    def takes(self, table: str) -> bool      # includes and no exclude glob matches
+
+@dataclass(frozen=True)
+class Database:
+    name: str                  # [A-Za-z0-9][A-Za-z0-9._-]*; wiki directory databases/<name>/
+    url_env: str               # variable name ([A-Za-z_][A-Za-z0-9_]*), never a URL
+    repos: tuple[str, ...]     # hub: bound sources (required, non-empty); single repository: (".",)
+    schemas: tuple[SchemaRule, ...]   # default (SchemaRule("public"),)
 
 class ConfigError(Exception): ...          # message is user-facing, includes the fix
 class NotInitialized(ConfigError): ...     # no wiki configured here: status reports phase init
@@ -59,6 +77,16 @@ def init(root: Path, wiki: str = "docs/wiki", lang: str = "en",
          hub_sources: list[str] | None = None, create_canon: bool = True) -> Workspace
 ```
 
+- `repo-wiki.yaml` keys: `lang`, `sources` (hub), `databases`. A database
+  entry takes only `name`, `url_env`, `repos` and `schemas`; a `schemas` item is
+  a name or `{name, include, exclude}` (each a non-empty list of globs or one
+  string). Globs use `fnmatch.fnmatchcase`. Every problem is a `ConfigError`
+  naming the entry and the fix: an unknown key (a `url` key is refused with
+  "never a URL"), a `url_env` that is not a variable name, a duplicate database
+  or schema, `repos` in a single repository, missing `repos` or a `repos` entry
+  that is not a source in a hub, and a YAML alias error (an unquoted `*_bak`)
+  gets a hint to quote globs. The relation is many-to-many: a repository
+  usually uses one database, one database may serve several repositories.
 - `load` requires `root` to be a git toplevel. Without `wiki`, it finds the
   unique `repo-wiki.yaml` among `git ls-files --cached --others
   --exclude-standard` of `root` (so ignored hub sources are skipped). Zero →
@@ -200,11 +228,11 @@ en or zh):
 
 | kind | en header | zh header | citation required |
 |---|---|---|---|
-| `glossary` | Term, Meaning, Avoid, Where | 术语, 含义, 避免, 位置 | yes |
+| `glossary` | Term, Meaning, Avoid, Where | 术语, 定义, 勿用别名, 代码位置 | yes |
 | `commands` | Purpose, Command, Status | 用途, 命令, 状态 | yes |
-| `rules` | Area, Rule, Enforced by | 范畴, 规则, 保障 | yes |
-| `invariants` | Invariant, Enforced at, Breaks when | 不变量, 强制位置, 违反后果 | yes |
-| `change_impact` | Change, Also change or check | 变更, 同步修改或检查 | yes |
+| `rules` | Area, Rule, Enforced by | 类别, 规则, 检查方式 | yes |
+| `invariants` | Invariant, Enforced at, Breaks when | 关键约束, 由谁保证, 违反会怎样 | yes |
+| `change_guide` | Change, Start at, Also change, Verify | 修改场景, 从这里改, 同步修改, 如何验证 | yes |
 | `not_covered` | Path, Reason | 路径, 原因 | no |
 
 `Table(kind, header: list[str], rows: list[Row], line: int)`;
@@ -212,26 +240,31 @@ en or zh):
 Command `Status` values: `verified`, `not-run`, `failed`. Rule `Area` values:
 `layout`, `naming`, `api`, `errors`, `logging`, `config`, `testing`,
 `build-ci`, `dependencies`, `vcs` (commit message, pull request and branch
-conventions). Extension knowledge is not a rule area: it lives in the
-Conventions "Extension recipes" section and a Module page's "Extension
-points". Change impact is a table of its own
-(Architecture across modules, a module's Change guide within it), not a rule area. `Enforced by` values:
-`lint`, `typecheck`, `test`, `ci`, `review`, `convention`. Values are the same
-tokens in zh pages.
+conventions). Extension knowledge is not a rule area: steps to add a new X
+are an "adding a new X" section (Conventions, or the owning Module page).
+`Enforced by` values: `lint`, `typecheck`, `test`, `ci`, `review`,
+`convention`. Values are the same tokens in zh pages. A change guide row's
+`Start at` and `Verify` cells must not be empty or `-` (`table-values`);
+`Also change` may be `-`. Change guide rows live on Module and Workflow pages
+(`_page.CHANGE_GUIDE_TYPES`, at least one row each, `change-guide`) and, for
+cross-module changes, on Architecture.
 
 Todo block: `<!-- okf:todo` up to the next `-->`, may span lines; outside
-fences. `Structure.todos: list[tuple[int, str]]` (line, text).
+fences. `Structure.todos: list[tuple[int, str]]` (line, text). Hint:
+`<!-- okf:hint` up to the next `-->`, the template's guidance for a section;
+`Structure.hints: list[tuple[int, str]]` (line, text). Every other HTML
+comment is ignored.
 
 Required sections (`_page.REQUIRED_SECTIONS`): a heading of any level whose
 text equals the en or zh title (case-insensitive, whitespace collapsed). The
-templates carry them; diagrams and the optional sections stay recommendations.
+templates carry them; every other heading is the writer's choice.
 
 | type | required headings (en / zh) |
 |---|---|
-| Architecture | Boundaries and dependencies / 边界与依赖方向; Not covered / 未覆盖 |
-| Conventions | Commands / 命令; Rules / 规则 |
-| Module | Responsibility and boundaries / 职责与边界 |
-| Workflow | Trigger to outcome / 从触发到结果 |
+| Architecture | Structure / 整体结构; Not covered / 未单独成页 |
+| Conventions | Commands / 常用命令; Rules / 开发规则 |
+| Module | Responsibility / 模块职责; How it works / 工作原理; Making changes / 修改指南 |
+| Workflow | Flow / 执行流程; Making changes / 修改指南 |
 | Glossary | none (the glossary table is enforced by `canon-table`) |
 
 Footnote definition grammar: `[^label]: <locator>( <note>)?`. The locator is
@@ -291,10 +324,16 @@ def validate(ws, pages=None, *, only: list[str] | None = None, facts: Facts | No
 Rule codes, severities and semantics are exactly design §7.3, plus:
 
 - Severity `pending` marks unfinished work rather than a defect: the `todo`
-  issue of every todo block. Pending issues block stamp like errors, count
-  under `pending` in status and validate, and do not fail `validate` (exit 0).
+  issue of every todo block and the `hint` issue of every template hint left
+  in a page. Pending issues block stamp like errors, count under `pending` in
+  status and validate, and do not fail `validate` (exit 0).
 - `section` (error): a page lacks a required section of its type (see Page
   model); the message names the en and zh heading.
+- `db-binding` (warning, hub only): a page whose scope globs all start with
+  source names links a generated database page whose `db.repos` shares none of
+  those sources.
+- `change-guide` (error): a Module or Workflow page without a todo block has
+  no change guide row.
 
 - `config` (error): config or hub problems surfaced as issues by status.
 - `canon-missing` (error): a canon page file is absent.
@@ -588,8 +627,8 @@ review), which reads the previous round's file as input:
              "locator": "src/x.py#L1-L4"}]}
 ```
 
-`kind` ∈ unsupported, invented-why, parrot, missing, terminology, routing,
-other. `approved` requires an empty `issues` list; `changes_requested`
+`kind` ∈ unsupported, invented-why, parrot, filler, missing, terminology,
+routing, other. `approved` requires an empty `issues` list; `changes_requested`
 requires at least one issue. Unknown keys are invalid. `reviewer` is an actor
 (`<producer>/<version>` or `human:<id>`).
 
@@ -635,10 +674,11 @@ requires at least one issue. Unknown keys are invalid. `reviewer` is an actor
   description or Source map, then check claims in the cited lines;
   `<wiki>/glossary.md` and `<wiki>/conventions.md` are must-read before naming
   or changing code; before editing, `okf impact --files <paths> --json` lists
-  pages to read, pages to update and change-impact rows; after changing files
+  pages to read, pages to update and change guide rows (where to start, what
+  else to change, how to verify); after changing files
   in a page's `scope`, update the page or set `status: draft` with a todo
   block; invariant rows (whole invariant tables, header and rows) are printed by
-  `rg -nU '^\|\s*Invariant\s*\|.*\n(\|.*\n)*' <wiki>` (zh: `不变量`), with
+  `rg -nU '^\|\s*Invariant\s*\|.*\n(\|.*\n)*' <wiki>` (zh: `关键约束`), with
   `<wiki>` shell-quoted (`shlex.quote`) when it holds spaces. In a hub one
   more line asks to paste the block into each source's AGENTS.md too (paths are
   relative to the hub root); the kernel never writes into sources. The
@@ -703,9 +743,10 @@ update before changing it:
 ```json
 {"files": {"src/billing/retry.py": {
   "read": ["modules/billing.md"],
-  "update": ["architecture.md", "modules/billing.md"],
-  "change_impact": [{"page": "architecture.md", "line": 21, "change": "MAX_ATTEMPTS",
-                     "also": "tests/test_retry.py"}],
+  "update": ["modules/billing.md"],
+  "change_guide": [{"page": "modules/billing.md", "line": 21, "change": "Change the attempt cap",
+                    "start": "MAX_ATTEMPTS", "also": "tests/test_retry.py",
+                    "verify": "python -m pytest -q tests/test_retry.py"}],
   "canon": ["glossary.md", "conventions.md"],
   "note": null}}}
 ```
@@ -714,15 +755,15 @@ update before changing it:
   glob with a tracked file below it (`src/*.py` for `src`, via
   `Facts.matches`) or a scope literal prefix below it.
 - `update`: pages with a citation of the path (or, for a directory, below it).
-- `change_impact`: rows of every change impact table (Architecture and module
-  Change guides) that concern the path: a cited locator of the row is the path,
-  below the directory, or a directory above it; or the Change cell names it: a
-  path or glob token matching it (`src/billing/**`), its file name
+- `change_guide`: rows of every change guide table (Architecture, Module and
+  Workflow pages) that concern the path: a cited locator of the row is the path,
+  below the directory, or a directory above it; or the Change or Start at cell
+  names it: a path or glob token matching it (`src/billing/**`), its file name
   (`retry.py`), or, for a file, a code-span identifier of 3+ characters that
   occurs as a word in the file at HEAD (`` `MAX_ATTEMPTS` ``, `` `BillingRun.post` ``).
-  A path named only in the Also cell does not count. `line` is the file line of
-  the row; `change` and `also` are the cells without backticks and footnote
-  references.
+  A path named only in the Also change or Verify cell does not count. `line` is
+  the file line of the row; `change`, `start`, `also` and `verify` are the
+  cells without backticks and footnote references.
 - `canon`: the glossary and conventions pages that exist (wiki-relative), to
   read before naming or changing code.
 - `note`: null, or `; `-joined notes: `resolved <given> to <path> (only source
@@ -731,7 +772,7 @@ update before changing it:
   <path>; prefix it with the source name` (then the only note: the path names
   no file yet), `not covered: <reason>` when a Not covered row matches the path
   and no scope does, or `no page covers this path` when read, update and
-  change_impact are all empty.
+  change_guide are all empty.
 
 Page lists are wiki-relative and sorted by page path. The CLI turns every
 given path into a workspace-relative one, reading a relative path from the
@@ -838,7 +879,9 @@ without `--json` go to stderr (`okf: ...`), with `--json` as `{"error": ...}`.
 | `update --json` | `{"drafted", "rebased", "unplaced", "impact"}` |
 | `verify --actor human:ID PAGE ... [--json]` | a page already verified by the actor since its stamp is a no-op listed in `already_verified` |
 | `pointer [--write FILE]` | FILE must resolve inside the workspace root (exit 2 otherwise) |
-| `db tables|describe|capture ...` | extension |
+| `db tables [--db NAME]... --json` | extension; `{"databases": [{name, repos, database, schemas: [{schema, tables, excluded, skipped}], unmatched_schema_rules, code_not_taken: [{table, schema, reason, locator}], code_not_found: [{table, locator}]}]}`; code tables come from `_scan.code_tables(ws, db.repos)` (lowercase, compared case-insensitively) |
+| `db describe TABLE [--db NAME] [--schema S]` | extension; `--db` needed with several databases, `--schema` unless the database has one exact schema rule |
+| `db capture [--db NAME]... --json` | extension; one read-only snapshot per database: `_db.capture(url, rules)` → `_dbpages.render_database` → `_dbpages.write_database`, which writes changed pages and removes generated pages of that database (generator `repo-wiki/okf-db`, `db.name`) the capture no longer produces. Layout `databases/<db>/<schema>.md` and `databases/<db>/<schema>/<table>.md` (slugs); `db` frontmatter `{name, schema, table?, repos?}` (repos only in a hub, also appended to the description as "Used by"). A rule set taking no table is a `DbError`. Per database `{name, pages, written, removed, unmatched_schema_rules}` or `{name, error}`; any error exits 1 after the other databases are captured. With no `databases` configured every `db` action is a `ConfigError` |
 
 ## Tests
 

@@ -175,7 +175,7 @@ def selftest(base: Path) -> dict:
                    ["src/order/api.py", "src/order/service.py"])
     page = ws.wiki / "workflows/checkout.md"
     head, _, _ = page.read_text(encoding="utf-8").partition("\n---\n")
-    page.write_text(head + "\n---\n\n## Trigger to outcome\n\nOrder and outbox rows share one "
+    page.write_text(head + "\n---\n\n## Flow\n\nOrder and outbox rows share one "
                     "transaction.[^tx]\n\n[^tx]: src/order/service.py#L2-L4\n", encoding="utf-8")
     _write(ws.wiki, {
         "glossary.md": "---\ntype: Glossary\ntitle: Glossary\ndescription: Terms.\n---\n\n"

@@ -61,7 +61,10 @@ def resolve_url(root: pathlib.Path, env_ref: str) -> str:
     else:
         env_dict = load_env(root)
         if var_name not in env_dict:
-            raise DbError(f"Variable '{var_name}' not found")
+            raise DbError(
+                f"Variable '{var_name}' not found in the environment or .env; ask the user to "
+                "set it to the opengauss:// URL (never write the URL into a tracked file)"
+            )
         url = env_dict[var_name]
 
     parsed = urlsplit(url)
@@ -161,15 +164,79 @@ def _table_rows(conn, schema: str) -> list[dict]:
     ]
 
 
-def tables(url: str, schema: str = "public") -> dict:
+def _schema_names(conn) -> list[str]:
+    """User schemas: the catalog's own (pg_*, information_schema) left out."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT n.nspname FROM pg_catalog.pg_namespace n ORDER BY n.nspname")
+        names = [row[0] for row in cur.fetchall()]
+    return [n for n in names if not n.startswith("pg_") and n != "information_schema"]
+
+
+def _select(conn, rules) -> tuple[dict[str, dict], list[str]]:
+    """Resolve schema rules against the catalog: per matched schema, the relations a
+    rule takes, the names an include matched but an exclude dropped, and how many
+    other tables the schema holds; plus the rules that matched no schema."""
+    names = _schema_names(conn)
+    by_schema: dict[str, list] = {}
+    unmatched = []
+    for rule in rules:
+        hits = [name for name in names if rule.matches_schema(name)]
+        if not hits:
+            unmatched.append(rule.name)
+        for name in hits:
+            by_schema.setdefault(name, []).append(rule)
+    chosen = {}
+    for schema, schema_rules in sorted(by_schema.items()):
+        rows = _table_rows(conn, schema)
+        taken = [r for r in rows if any(rule.takes(r["name"]) for rule in schema_rules)]
+        kept = {r["name"] for r in taken}
+        excluded = [
+            r["name"] for r in rows
+            if r["name"] not in kept and any(rule.includes(r["name"]) for rule in schema_rules)
+        ]
+        dropped = kept | set(excluded)
+        chosen[schema] = {"taken": taken, "excluded": excluded,
+                          "other": [r["name"] for r in rows if r["name"] not in dropped]}
+    return chosen, unmatched
+
+
+def select(url: str, rules, code_tables: dict[str, str] | None = None) -> dict:
+    """The tables a database's schema rules take, for tuning the rules before capture.
+
+    ``code_tables`` (lowercase name -> locator, from the bound repositories' code)
+    adds the gaps: ``code_not_taken``, tables the code uses that a matched schema
+    holds but the rules leave out; ``code_not_found``, tables the code names that
+    no matched schema holds (another database, a view, a stale name)."""
     with _snapshot(url) as (conn, fingerprint):
-        names = [row["name"] for row in _table_rows(conn, schema)]
-        return {
-            "database": fingerprint["database"],
-            "schema": schema,
-            "count": len(names),
-            "tables": names,
-        }
+        chosen, unmatched = _select(conn, rules)
+    held: dict[str, tuple[str, str]] = {}  # lowercase name -> (schema, why not taken)
+    taken: set[str] = set()
+    for schema, entry in chosen.items():
+        taken |= {r["name"].lower() for r in entry["taken"]}
+        for name in entry["excluded"]:
+            held.setdefault(name.lower(), (schema, "excluded"))
+        for name in entry["other"]:
+            held.setdefault(name.lower(), (schema, "not included"))
+    not_taken, not_found = [], []
+    for name, locator in sorted((code_tables or {}).items()):
+        if name in taken:
+            continue
+        if name in held:
+            schema, why = held[name]
+            not_taken.append({"table": name, "schema": schema, "reason": why, "locator": locator})
+        else:
+            not_found.append({"table": name, "locator": locator})
+    return {
+        "database": fingerprint["database"],
+        "schemas": [
+            {"schema": schema, "tables": [r["name"] for r in entry["taken"]],
+             "excluded": entry["excluded"], "skipped": len(entry["other"])}
+            for schema, entry in chosen.items()
+        ],
+        "unmatched_schema_rules": unmatched,
+        "code_not_taken": not_taken,
+        "code_not_found": not_found,
+    }
 
 
 def _column_rows(conn, relation_oid: int) -> tuple[list[dict], dict[int, str]]:
@@ -462,20 +529,15 @@ def describe(url: str, table: str, schema: str = "public") -> dict:
         return _describe_row(conn, schema, relation)
 
 
-def _inspect_catalog(
-    url: str, schema: str, selected: list[str]
-) -> tuple[dict, list[dict]]:
+def _inspect_catalog(url: str, rules) -> tuple[dict, dict[str, list[dict]], list[str]]:
     with _snapshot(url) as (conn, fingerprint):
-        available = _table_rows(conn, schema)
-        by_name = {item["name"]: item for item in available}
-        missing = sorted(set(selected) - set(by_name))
-        if missing:
-            raise DbError(
-                f"Tables not found in schema '{schema}': {', '.join(missing)}"
-            )
-        return fingerprint, [
-            _describe_row(conn, schema, by_name[name]) for name in selected
-        ]
+        chosen, unmatched = _select(conn, rules)
+        described = {
+            schema: [_describe_row(conn, schema, row) for row in entry["taken"]]
+            for schema, entry in chosen.items()
+            if entry["taken"]
+        }
+        return fingerprint, described, unmatched
 
 
 def _extract_dbname(url: str) -> str:
@@ -489,19 +551,23 @@ def _hash_json(value: dict) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def capture(url: str, schema: str, table_names, *, inspect=_inspect_catalog) -> dict:
-    """Describe the named tables in one read-only snapshot, with content hashes."""
-    names = sorted(set(table_names))
-    fingerprint, described = inspect(url, schema, names)
-    tables = {item["name"]: item for item in described}
-    missing = [name for name in names if name not in tables]
-    if missing:
-        raise DbError(f"Tables not found in schema '{schema}': {', '.join(missing)}")
-    hashes = {name: _hash_json(tables[name]) for name in names}
-    return {
-        "server": fingerprint,
-        "schema": schema,
-        "tables": {name: tables[name] for name in names},
-        "sha256": hashes,
-        "catalog_sha256": _hash_json({"schema": schema, "tables": hashes}),
-    }
+def capture(url: str, rules, *, inspect=_inspect_catalog) -> dict:
+    """Describe every table the schema rules take, in one read-only snapshot, with
+    per-table hashes and one catalog hash per schema."""
+    fingerprint, described, unmatched = inspect(url, rules)
+    if not any(described.values()):
+        raise DbError(
+            f"the schema rules matched no table in database '{fingerprint.get('database', 'unknown')}'; "
+            "run okf db tables to see what the catalog holds and fix include and exclude"
+        )
+    schemas = {}
+    for schema, rows in sorted(described.items()):
+        tables = {row["name"]: row for row in sorted(rows, key=lambda r: r["name"])}
+        hashes = {name: _hash_json(table) for name, table in tables.items()}
+        schemas[schema] = {
+            "schema": schema,
+            "tables": tables,
+            "sha256": hashes,
+            "catalog_sha256": _hash_json({"schema": schema, "tables": hashes}),
+        }
+    return {"server": fingerprint, "schemas": schemas, "unmatched_schema_rules": unmatched}

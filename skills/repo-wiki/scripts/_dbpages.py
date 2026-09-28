@@ -3,7 +3,8 @@
 import hashlib
 import re
 
-from _frontmatter import render
+import _files
+from _frontmatter import parse_page, render
 
 GENERATOR = "repo-wiki/okf-db"
 
@@ -45,6 +46,8 @@ _TEXT = {
         "no_indexes": "No indexes.",
         "partitions": "Partitions",
         "partition_header": "| Partition | Type | Strategy | Boundaries | Tablespace |",
+        "used_by": " Used by: {repos}.",
+        "sep": ", ",
     },
     "zh": {
         "schema_description": (
@@ -81,6 +84,8 @@ _TEXT = {
         "no_indexes": "无索引。",
         "partitions": "分区",
         "partition_header": "| 分区 | 类型 | 策略 | 边界 | 表空间 |",
+        "used_by": "使用方：{repos}。",
+        "sep": "、",
     },
 }
 
@@ -350,28 +355,51 @@ def _table_body(t, db, schema, table, schema_link, table_link, tables) -> str:
     return "\n\n".join(parts)
 
 
-def render_all(db_name: str, capture: dict, lang: str, root_dir: str, at: str) -> dict[str, str]:
-    """Return {wiki-relative path: page text} for one Schema page and its Table pages."""
+DATABASES_DIR = "databases"
+
+
+def database_dir(db_name: str) -> str:
+    """Wiki directory holding every generated page of one configured database."""
+    return f"{DATABASES_DIR}/{db_name}"
+
+
+def render_database(db_name: str, repos, capture: dict, lang: str, at: str) -> dict[str, str]:
+    """Return {wiki-relative path: page text} for a whole-database capture (see
+    ``_db.capture``): per schema one Schema page ``databases/<db>/<schema>.md`` and
+    one Table page per table under ``databases/<db>/<schema>/``. ``repos`` are the
+    hub sources bound to the database; empty in a single repository."""
+    schema_slug = slugs(capture["schemas"])
+    pages: dict[str, str] = {}
+    for schema, part in capture["schemas"].items():
+        pages |= render_schema(db_name, list(repos), part, lang, database_dir(db_name), schema_slug[schema], at)
+    return pages
+
+
+def render_schema(db_name: str, repos: list[str], capture: dict, lang: str, root_dir: str,
+                  schema_slug: str, at: str) -> dict[str, str]:
+    """One Schema page and its Table pages for one schema of a capture."""
     t = _TEXT[lang]
     root = root_dir.strip("/")
     schema = capture["schema"]
     tables = dict(sorted(capture["tables"].items()))
     slug = slugs(tables)
-    schema_path = f"{root}/{db_name}.md"
+    schema_path = f"{root}/{schema_slug}.md"
+    used_by = t["used_by"].format(repos=t["sep"].join(repos)) if repos else ""
 
     def table_link(name: str) -> str:
-        return f"/{root}/tables/{slug[name]}.md"
+        return f"/{root}/{schema_slug}/{slug[name]}.md"
 
     def meta(kind: str, title: str, description: str, sha: str, **db) -> dict:
+        binding = {"repos": repos} if repos else {}
         return {
             "type": kind,
             "title": title,
-            "description": description,
+            "description": description + used_by,
             "tags": ["database", kind.lower()],
             "status": "stable",
             "generated": {"by": GENERATOR, "at": at},
             "catalog_sha256": sha,
-            "db": {"name": db_name, "schema": schema, **db},
+            "db": {"name": db_name, "schema": schema, **db, **binding},
         }
 
     pages = {
@@ -386,10 +414,10 @@ def render_all(db_name: str, capture: dict, lang: str, root_dir: str, at: str) -
         )
     }
     for name, table in tables.items():
-        pages[f"{root}/tables/{slug[name]}.md"] = render(
+        pages[f"{root}/{schema_slug}/{slug[name]}.md"] = render(
             meta(
                 "Table",
-                f"{schema}.{name}",
+                f"{db_name}.{schema}.{name}",
                 t["table_description"].format(schema=schema, table=name),
                 capture["sha256"][name],
                 table=name,
@@ -398,3 +426,26 @@ def render_all(db_name: str, capture: dict, lang: str, root_dir: str, at: str) -
             + "\n",
         )
     return pages
+
+
+def write_database(wiki, db_name: str, rendered: dict[str, str]) -> dict[str, list[str]]:
+    """Write the rendered pages of one database under ``wiki`` and remove the
+    generated pages of that database the capture no longer produces (a table
+    dropped or no longer taken by the rules). Paths are wiki-relative."""
+    written, removed = [], []
+    for rel, text in sorted(rendered.items()):
+        file = wiki / rel
+        if not file.is_file() or file.read_text(encoding="utf-8") != text:
+            _files.atomic_text(file, text)
+            written.append(rel)
+    base = wiki / database_dir(db_name)
+    existing = sorted(f.relative_to(wiki).as_posix() for f in base.rglob("*.md")) if base.is_dir() else []
+    for rel in existing:
+        file = wiki / rel
+        if rel in rendered:
+            continue
+        meta = parse_page(file.read_text(encoding="utf-8")).meta
+        if meta.get("generated", {}).get("by") == GENERATOR and (meta.get("db") or {}).get("name") == db_name:
+            file.unlink()
+            removed.append(rel)
+    return {"written": written, "removed": removed}

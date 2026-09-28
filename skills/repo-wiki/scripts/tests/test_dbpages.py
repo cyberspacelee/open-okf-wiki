@@ -1,6 +1,6 @@
 import re
 
-from _dbpages import render_all, slugs
+from _dbpages import render_database, render_schema, slugs, write_database
 from _diagram import check
 from _frontmatter import parse_page
 from _markdown import extract
@@ -120,18 +120,18 @@ def _shop():
 
 
 def _pages(capture=None, lang="en"):
-    return render_all("app", capture or _shop(), lang, "reference/app", AT)
+    return render_schema("app", [], capture or _shop(), lang, "reference/app", "public", AT)
 
 
 def test_paths_and_frontmatter():
     pages = _pages()
     assert sorted(pages) == [
-        "reference/app/app.md",
-        "reference/app/tables/audit.md",
-        "reference/app/tables/customers.md",
-        "reference/app/tables/orders.md",
+        "reference/app/public.md",
+        "reference/app/public/audit.md",
+        "reference/app/public/customers.md",
+        "reference/app/public/orders.md",
     ]
-    schema = parse_page(pages["reference/app/app.md"])
+    schema = parse_page(pages["reference/app/public.md"])
     assert schema.errors == []
     assert schema.meta["type"] == "Schema"
     assert schema.meta["status"] == "stable"
@@ -141,7 +141,7 @@ def test_paths_and_frontmatter():
     assert schema.meta["title"] and schema.meta["description"]
     assert isinstance(schema.meta["tags"], list)
 
-    table = parse_page(pages["reference/app/tables/customers.md"])
+    table = parse_page(pages["reference/app/public/customers.md"])
     assert table.meta["type"] == "Table"
     assert table.meta["catalog_sha256"] == _shop()["sha256"]["customers"]
     assert table.meta["db"] == {"name": "app", "schema": "public", "table": "customers"}
@@ -149,13 +149,13 @@ def test_paths_and_frontmatter():
 
 
 def test_schema_lists_tables_with_bundle_absolute_links():
-    body = parse_page(_pages()["reference/app/app.md"]).body
-    assert "| [customers](/reference/app/tables/customers.md) | People who order |" in body
-    assert "[orders](/reference/app/tables/orders.md)" in body
+    body = parse_page(_pages()["reference/app/public.md"]).body
+    assert "| [customers](/reference/app/public/customers.md) | People who order |" in body
+    assert "[orders](/reference/app/public/orders.md)" in body
 
 
 def test_er_diagram_has_only_active_fks_within_capture():
-    body = parse_page(_pages()["reference/app/app.md"]).body
+    body = parse_page(_pages()["reference/app/public.md"]).body
     structure = extract(body)
     assert check(structure) == []
     [fence] = [f for f in structure.fences if f.language == "mermaid"]
@@ -169,15 +169,15 @@ def test_er_diagram_has_only_active_fks_within_capture():
 
 def test_er_diagram_omitted_without_active_fks():
     capture = _capture(_table("audit", [_col("id")], [_pk("audit_pkey", ["id"])]))
-    body = parse_page(_pages(capture)["reference/app/app.md"]).body
+    body = parse_page(_pages(capture)["reference/app/public.md"]).body
     assert "```mermaid" not in body
     assert "No active foreign keys" in body
 
 
 def test_table_page_fk_links_composite_keys_and_statuses():
-    body = parse_page(_pages()["reference/app/tables/orders.md"]).body
+    body = parse_page(_pages()["reference/app/public/orders.md"]).body
     assert "\n# Schema\n" in body
-    assert "[app.public](/reference/app/app.md)" in body
+    assert "[app.public](/reference/app/public.md)" in body
     fk_rows = {
         line.split(" | ")[0].strip("| `"): line
         for line in body.splitlines()
@@ -185,10 +185,10 @@ def test_table_page_fk_links_composite_keys_and_statuses():
     }
     composite = fk_rows["orders_customer_fk"]
     assert "`tenant_id, customer_id`" in composite
-    assert "[public.customers](/reference/app/tables/customers.md) (`tenant_id`, `id`)" in composite
+    assert "[public.customers](/reference/app/public/customers.md) (`tenant_id`, `id`)" in composite
     assert composite.endswith("| active |")
     assert fk_rows["orders_soft_fk"].endswith("| soft |")
-    assert "[public.audit](/reference/app/tables/audit.md)" in fk_rows["orders_unvalidated_fk"]
+    assert "[public.audit](/reference/app/public/audit.md)" in fk_rows["orders_unvalidated_fk"]
     assert fk_rows["orders_unvalidated_fk"].endswith("| not validated |")
     region = fk_rows["orders_region_fk"]
     assert "geo.regions" in region and "](" not in region
@@ -196,7 +196,7 @@ def test_table_page_fk_links_composite_keys_and_statuses():
     assert "## Partitions" in body and "`orders_2026`" in body
     assert "| `customer_id` | `bigint` | yes | - | - |" in body
 
-    customers = parse_page(_pages()["reference/app/tables/customers.md"]).body
+    customers = parse_page(_pages()["reference/app/public/customers.md"]).body
     assert "`tenant_id`, `id` (`customers_pkey`)" in customers
     assert "## Partitions" not in customers
     assert "No foreign keys." in customers
@@ -204,12 +204,12 @@ def test_table_page_fk_links_composite_keys_and_statuses():
 
 def test_zh_headers():
     pages = _pages(lang="zh")
-    body = parse_page(pages["reference/app/tables/orders.md"]).body
+    body = parse_page(pages["reference/app/public/orders.md"]).body
     assert "| 列 | 类型 | 可空 | 默认值 | 注释 |" in body
     assert "\n# Schema\n" in body
     assert "| `customer_id` | `bigint` | 是 | - | - |" in body
     assert "## 外键" in body
-    schema = parse_page(pages["reference/app/app.md"])
+    schema = parse_page(pages["reference/app/public.md"])
     assert "| 表 | 注释 |" in schema.body
     assert re.search(r"[一-鿿]", schema.meta["description"])
 
@@ -229,9 +229,9 @@ def test_slug_collision_gets_sha1_suffix():
     )
     pages = _pages(capture)
     assert len(pages) == 3
-    schema = parse_page(pages["reference/app/app.md"]).body
+    schema = parse_page(pages["reference/app/public.md"]).body
     for name in ("Order Items", "order-items"):
-        assert f"[{name}](/reference/app/tables/{result[name]}.md)" in schema
+        assert f"[{name}](/reference/app/public/{result[name]}.md)" in schema
 
 
 def test_output_is_deterministic():
@@ -240,3 +240,51 @@ def test_output_is_deterministic():
     shuffled["tables"] = dict(reversed(shuffled["tables"].items()))
     assert _pages(shuffled) == first
     assert _pages() == first
+
+
+def _database(repos=()):
+    public, tenant = _shop(), _shop()
+    tenant["schema"] = "tenant_a"
+    capture = {"server": {}, "schemas": {"public": public, "tenant_a": tenant}, "unmatched_schema_rules": []}
+    return render_database("order_db", list(repos), capture, "zh", AT)
+
+
+def test_database_layout_keeps_same_named_tables_of_each_schema_apart():
+    pages = _database(["order-api", "order-worker"])
+    assert sorted(pages) == [
+        "databases/order_db/public.md",
+        "databases/order_db/public/audit.md",
+        "databases/order_db/public/customers.md",
+        "databases/order_db/public/orders.md",
+        "databases/order_db/tenant_a.md",
+        "databases/order_db/tenant_a/audit.md",
+        "databases/order_db/tenant_a/customers.md",
+        "databases/order_db/tenant_a/orders.md",
+    ]
+    table = parse_page(pages["databases/order_db/tenant_a/orders.md"]).meta
+    assert table["title"] == "order_db.tenant_a.orders"
+    assert table["db"] == {"name": "order_db", "schema": "tenant_a", "table": "orders",
+                           "repos": ["order-api", "order-worker"]}
+    assert table["description"].endswith("使用方：order-api、order-worker。")
+    body = parse_page(pages["databases/order_db/tenant_a.md"]).body
+    assert "[orders](/databases/order_db/tenant_a/orders.md)" in body
+    # A single repository records no binding.
+    single = parse_page(_database()["databases/order_db/public.md"]).meta
+    assert "repos" not in single["db"] and "使用方" not in single["description"]
+
+
+def test_write_database_rewrites_changed_pages_and_removes_dropped_ones(tmp_path):
+    pages = _database()
+    first = write_database(tmp_path, "order_db", pages)
+    assert first["written"] == sorted(pages) and first["removed"] == []
+    assert write_database(tmp_path, "order_db", pages) == {"written": [], "removed": []}
+    note = tmp_path / "databases/order_db/notes.md"
+    note.write_text("---\ntype: Module\ntitle: n\ndescription: d\n---\n\nhand-written\n", encoding="utf-8")
+    other_db = _database()
+    other = {k.replace("order_db", "pay_db"): v for k, v in other_db.items()}
+    write_database(tmp_path, "pay_db", other)
+    kept = {k: v for k, v in pages.items() if "tenant_a" not in k}
+    result = write_database(tmp_path, "order_db", kept)
+    assert result == {"written": [], "removed": sorted(k for k in pages if "tenant_a" in k)}
+    # Hand-written pages and other databases' pages are never removed.
+    assert note.is_file() and (tmp_path / "databases/pay_db/tenant_a.md").is_file()

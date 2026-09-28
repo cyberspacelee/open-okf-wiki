@@ -15,7 +15,7 @@ import _page
 
 REVIEW_FILE = "_review.json"
 VERDICTS = ("approved", "changes_requested")
-KINDS = ("unsupported", "invented-why", "parrot", "missing", "terminology", "routing", "other")
+KINDS = ("unsupported", "invented-why", "parrot", "filler", "missing", "terminology", "routing", "other")
 ACTOR = re.compile(r"human:[^\s/]+|[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:+-]*")
 _KEYS = {"subject_digest", "reviewer", "verdict", "issues"}
 _ISSUE_KEYS = {"page", "kind", "claim", "fix", "locator"}

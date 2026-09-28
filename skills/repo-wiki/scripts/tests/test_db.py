@@ -1,7 +1,8 @@
 import pytest
 
 import _db
-from _db import DbError, capture, describe, load_env, resolve_url, tables
+from _config import SchemaRule
+from _db import DbError, capture, describe, load_env, resolve_url, select
 
 
 @pytest.mark.parametrize(
@@ -73,8 +74,11 @@ class FakeCursor:
                     )
                 ],
             )
+        elif "from pg_catalog.pg_namespace n order by" in normalized:
+            self.rows = self.connection.responses.get("schemas", [("public",)])
         elif "from pg_catalog.pg_class c" in normalized:
-            self.rows = self.connection.responses.get("tables", [])
+            responses = self.connection.responses
+            self.rows = responses.get(("tables", params[0]), responses.get("tables", []))
         elif "left join pg_catalog.pg_attrdef" in normalized:
             self.rows = self.connection.responses.get(("columns", params[0]), [])
         elif "from pg_catalog.pg_constraint" in normalized:
@@ -114,7 +118,7 @@ class FakeConn:
         self.closed = True
 
 
-def test_tables_handshakes_and_uses_one_read_only_repeatable_read_snapshot(monkeypatch):
+def test_select_handshakes_and_uses_one_read_only_repeatable_read_snapshot(monkeypatch):
     conn = FakeConn(
         {
             "tables": [
@@ -125,11 +129,12 @@ def test_tables_handshakes_and_uses_one_read_only_repeatable_read_snapshot(monke
     )
     monkeypatch.setattr(_db, "_connect", lambda _url: conn)
 
-    assert tables("opengauss://localhost/app") == {
+    assert select("opengauss://localhost/app", [SchemaRule("public")]) == {
         "database": "app",
-        "schema": "public",
-        "count": 2,
-        "tables": ["orders", "staging"],
+        "schemas": [{"schema": "public", "tables": ["orders", "staging"], "excluded": [], "skipped": 0}],
+        "unmatched_schema_rules": [],
+        "code_not_taken": [],
+        "code_not_found": [],
     }
     statements = [sql for sql, _params in conn.sql]
     assert (
@@ -139,11 +144,62 @@ def test_tables_handshakes_and_uses_one_read_only_repeatable_read_snapshot(monke
     assert conn.closed
 
 
+def _catalog():
+    return FakeConn(
+        {
+            "schemas": [("audit",), ("information_schema",), ("pg_toast",), ("public",),
+                        ("tenant_a",), ("tenant_b",)],
+            ("tables", "public"): [
+                (10, "t_order", "", "r", "p"),
+                (11, "t_order_item", "", "r", "p"),
+                (12, "t_order_bak", "", "r", "p"),
+                (13, "sys_config", "", "r", "p"),
+                (14, "user_log", "", "r", "p"),
+                (15, "customer", "", "r", "p"),
+            ],
+            ("tables", "tenant_a"): [(20, "t_order", "", "r", "p")],
+            ("tables", "tenant_b"): [(30, "t_order", "", "r", "p"), (31, "scratch", "", "r", "p")],
+        }
+    )
+
+
+def test_select_applies_prefix_suffix_rules_schema_globs_and_reports_code_gaps(monkeypatch):
+    conn = _catalog()
+    monkeypatch.setattr(_db, "_connect", lambda _url: conn)
+    rules = [
+        SchemaRule("public", include=("t_order*", "*_config"), exclude=("*_bak",)),
+        SchemaRule("tenant_*", include=("t_*",)),
+        SchemaRule("missing_schema"),
+    ]
+    code = {"customer": "src/Customer.java#L3", "t_order": "src/Order.java#L2",
+            "t_order_bak": "src/Backup.java#L9", "invoice": "src/Invoice.java#L1"}
+    result = select("opengauss://localhost/app", rules, code)
+    assert result["schemas"] == [
+        {"schema": "public", "tables": ["t_order", "t_order_item", "sys_config"],
+         "excluded": ["t_order_bak"], "skipped": 2},
+        {"schema": "tenant_a", "tables": ["t_order"], "excluded": [], "skipped": 0},
+        {"schema": "tenant_b", "tables": ["t_order"], "excluded": [], "skipped": 1},
+    ]
+    assert result["unmatched_schema_rules"] == ["missing_schema"]
+    # The code uses customer and t_order_bak, which the rules leave out; invoice is
+    # in no matched schema at all.
+    assert result["code_not_taken"] == [
+        {"table": "customer", "schema": "public", "reason": "not included", "locator": "src/Customer.java#L3"},
+        {"table": "t_order_bak", "schema": "public", "reason": "excluded", "locator": "src/Backup.java#L9"},
+    ]
+    assert result["code_not_found"] == [{"table": "invoice", "locator": "src/Invoice.java#L1"}]
+    # System schemas never match, even a catch-all rule.
+    conn = _catalog()
+    monkeypatch.setattr(_db, "_connect", lambda _url: conn)
+    everything = select("u", [SchemaRule("*")])
+    assert [s["schema"] for s in everything["schemas"]] == ["audit", "public", "tenant_a", "tenant_b"]
+
+
 def test_handshake_failure_is_redacted(monkeypatch):
     conn = FakeConn({"handshake": []})
     monkeypatch.setattr(_db, "_connect", lambda _url: conn)
     with pytest.raises(DbError, match="did not identify itself as OpenGauss") as error:
-        tables("opengauss://secret:token@localhost/app")
+        select("opengauss://secret:token@localhost/app", [SchemaRule("public")])
     assert "secret" not in str(error.value)
     assert "token" not in str(error.value)
 
@@ -302,65 +358,57 @@ def _described_table(name="Order Items", comment="line items"):
     }
 
 
-def _inspect(*described):
+def _inspect(*described, unmatched=()):
     calls = []
 
-    def inspect(url, schema, selected):
-        calls.append((url, schema, list(selected)))
-        by_name = {item["name"]: item for item in described}
-        return _SERVER, [by_name[name] for name in selected if name in by_name]
+    def inspect(url, rules):
+        calls.append((url, list(rules)))
+        by_schema = {}
+        for item in described:
+            by_schema.setdefault(item["schema"], []).append(item)
+        return _SERVER, by_schema, list(unmatched)
 
     inspect.calls = calls
     return inspect
 
 
-def test_capture_returns_tables_hashes_and_server_fingerprint():
-    inspect = _inspect(_described_table("b"), _described_table("a"))
-    result = capture("opengauss://db/app", "Public Data", ["b", "a"], inspect=inspect)
+def test_capture_returns_per_schema_tables_hashes_and_server_fingerprint():
+    other = dict(_described_table("c"), schema="audit")
+    inspect = _inspect(_described_table("b"), _described_table("a"), other, unmatched=["gone"])
+    rules = [SchemaRule("Public Data"), SchemaRule("audit"), SchemaRule("gone")]
+    result = capture("opengauss://db/app", rules, inspect=inspect)
 
-    assert inspect.calls == [("opengauss://db/app", "Public Data", ["a", "b"])]
-    assert set(result) == {"server", "schema", "tables", "sha256", "catalog_sha256"}
-    assert result["server"] == _SERVER
-    assert result["schema"] == "Public Data"
-    assert list(result["tables"]) == ["a", "b"]
-    assert result["tables"]["a"]["columns"][0]["type"] == "bigint"
-    assert result["sha256"]["a"] == _db._hash_json(result["tables"]["a"])
-    assert len(result["catalog_sha256"]) == 64
+    assert inspect.calls == [("opengauss://db/app", rules)]
+    assert set(result) == {"server", "schemas", "unmatched_schema_rules"}
+    assert result["server"] == _SERVER and result["unmatched_schema_rules"] == ["gone"]
+    assert list(result["schemas"]) == ["Public Data", "audit"]
+    part = result["schemas"]["Public Data"]
+    assert set(part) == {"schema", "tables", "sha256", "catalog_sha256"}
+    assert list(part["tables"]) == ["a", "b"]
+    assert part["tables"]["a"]["columns"][0]["type"] == "bigint"
+    assert part["sha256"]["a"] == _db._hash_json(part["tables"]["a"])
+    assert len(part["catalog_sha256"]) == 64
 
 
 def test_capture_hashes_change_only_for_changed_tables():
-    first = capture("u", "s", ["a", "b"], inspect=_inspect(
-        _described_table("a", "first"), _described_table("b")
-    ))
-    second = capture("u", "s", ["a", "b"], inspect=_inspect(
-        _described_table("a", "second"), _described_table("b")
-    ))
-    same = capture("u", "s", ["b", "a"], inspect=_inspect(
-        _described_table("a", "first"), _described_table("b")
-    ))
-
-    assert first["sha256"]["a"] != second["sha256"]["a"]
-    assert first["sha256"]["b"] == second["sha256"]["b"]
-    assert first["catalog_sha256"] != second["catalog_sha256"]
+    rules = [SchemaRule("Public Data")]
+    first = capture("u", rules, inspect=_inspect(_described_table("a", "first"), _described_table("b")))
+    second = capture("u", rules, inspect=_inspect(_described_table("a", "second"), _described_table("b")))
+    same = capture("u", rules, inspect=_inspect(_described_table("b"), _described_table("a", "first")))
+    one, two = first["schemas"]["Public Data"], second["schemas"]["Public Data"]
+    assert one["sha256"]["a"] != two["sha256"]["a"]
+    assert one["sha256"]["b"] == two["sha256"]["b"]
+    assert one["catalog_sha256"] != two["catalog_sha256"]
     assert same == first
 
 
-def test_capture_names_missing_tables():
-    with pytest.raises(DbError, match="ghost"):
-        capture("u", "s", ["a", "ghost"], inspect=_inspect(_described_table("a")))
+def test_capture_refuses_rules_that_take_no_table():
+    with pytest.raises(DbError, match="matched no table.*okf db tables"):
+        capture("u", [SchemaRule("public", include=("nothing_*",))], inspect=_inspect())
 
 
-def test_capture_uses_one_connection_and_snapshot(monkeypatch):
-    conn = FakeConn(
-        {
-            "tables": [
-                (10, "orders", "orders", "r", "p"),
-                (11, "customers", "customers", "r", "p"),
-            ],
-            ("columns", 10): [(1, "id", "bigint", False, None, "")],
-            ("columns", 11): [(1, "id", "bigint", False, None, "")],
-        }
-    )
+def test_capture_uses_one_connection_and_snapshot_for_every_schema(monkeypatch):
+    conn = _catalog()
     connections = []
 
     def connect(_url):
@@ -368,22 +416,19 @@ def test_capture_uses_one_connection_and_snapshot(monkeypatch):
         return conn
 
     monkeypatch.setattr(_db, "_connect", connect)
-    result = capture("opengauss://localhost/app", "public", ["orders", "customers"])
+    rules = [SchemaRule("public", include=("t_order*",), exclude=("*_bak",)), SchemaRule("tenant_*")]
+    result = capture("opengauss://localhost/app", rules)
 
     assert connections == [conn]
     assert conn.closed
     assert sum(sql.startswith("begin transaction") for sql, _ in conn.sql) == 1
     assert sum("opengauss_version()" in sql for sql, _ in conn.sql) == 1
-    assert list(result["tables"]) == ["customers", "orders"]
+    assert {s: list(p["tables"]) for s, p in result["schemas"].items()} == {
+        "public": ["t_order", "t_order_item"],
+        "tenant_a": ["t_order"],
+        "tenant_b": ["scratch", "t_order"],
+    }
     assert result["server"]["database"] == "app"
-
-
-def test_capture_live_missing_table_is_named(monkeypatch):
-    conn = FakeConn({"tables": [(10, "orders", "orders", "r", "p")]})
-    monkeypatch.setattr(_db, "_connect", lambda _url: conn)
-    with pytest.raises(DbError, match="ghost"):
-        capture("opengauss://localhost/app", "public", ["orders", "ghost"])
-    assert conn.closed
 
 
 def test_psycopg_url_only_translates_opengauss():

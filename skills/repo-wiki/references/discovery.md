@@ -16,32 +16,35 @@ verify or drop every candidate.
 | `deps` | module edges `from` → `to` with the import `count`, the first import `locator`, and `mutual: true` when the modules import each other (a cycle); Java/Kotlin, Python, JS/TS (relative paths and workspace package names) and Go imports, test code excluded. The dependency direction Architecture states comes from here |
 | `central` | files imported from two or more other modules, most importers first: shared kernels whose change ripples widely |
 | `resources` | message topics and database tables named in two or more modules (listener annotations, consumers, send/publish calls with a literal name, entity mappings, MyBatis mapper XML, SQL files and SQL string literals), with one locator per module: coupling that no import shows |
-| `entry_points` | process entry points (declared scripts, JVM `main` programs, Python files with `if __name__ == "__main__":`, `Dockerfile`, `web.xml`, API specs); never a test file. Framework entry points are in `triggers` |
+| `entry_points` | process entry points (declared scripts, JVM `main` programs, Python files with `if __name__ == "__main__":`, `Dockerfile`, `web.xml`, API specs); never a test file. Framework entry points are in `triggers`. With few or no triggers (a library, a CLI, a compiler), these and the most-imported `central` files are where tracers start |
 | `commands`, `ci` | command candidates, each with the locator that defines it and the `cwd` it runs from (relative to the source root the locator names): that file's directory, or the source root when the command names that file by its source-root path. `kind` (`build`, `test`, `lint`, `format`, `typecheck`, `other`) says which Conventions row it can fill. A Python file with PEP 723 inline metadata (`# /// script`) is the command `uv run <path>` with `cwd` `.` (the source root). Besides declared scripts and targets, scan adds each build tool's own commands (Maven, Gradle, Cargo, Go, Python tools, .NET, CMake) with the project's wrapper, runner or lock prefix; to narrow a Maven reactor to one module add `-pl <module> -am`. A CI step `uses <workflow>` runs a reusable workflow kept elsewhere |
 | `configs` | lint, format and type configs: rule candidates with `Enforced by` lint or typecheck; a file repeated per module is listed a few times only |
 | `tests` | test layout and naming pattern: a `testing` rule candidate |
 | `docs` | README, CONTRIBUTING, CONTEXT, GLOSSARY, ARCHITECTURE, ADRs, AGENTS/CLAUDE.md, PR templates to read and link, not restate; files under a `templates/` or `assets/` directory are skeletons, not docs |
 | `terms` | term candidates with first locator and count, a fair share per kind: `defined` (bold definitions in docs), `state` (an enum-like type, with its first `members`), `camel` (type names used across directories); test files and Markdown under `templates/` or `assets/` add no candidates and do not count toward any kind's count. Abbreviations come from docs and code reading, not from scan |
-| `co_change` | file pairs that change together: change impact rows (Architecture across modules, module Change guide within one); build-manifest version bumps are left out |
+| `co_change` | file pairs that change together: the Also change cell of change guide rows (Architecture across modules, a Module or Workflow page within one); build-manifest version bumps are left out |
 | `truncated` | one entry per key whose list hit its limit, saying how many were shown and where to find the rest; empty when nothing was cut |
 
 Then read README, CONTRIBUTING, the build and CI files, the entry points and
 the listed docs.
 
-## Six categories
+## Seven categories
 
 | category | signals | keep when | lands in |
 |---|---|---|---|
-| Modules and boundaries | scan `modules` and `deps` (direction, `mutual` cycles); `central` files; a module's public surface; who calls whom across a boundary | the boundary constrains a change (an allowed dependency direction, a seam, an owner) | architecture brief, plus a module stub when it has an invariant, extension point or rationale of its own |
-| Workflows | scan `triggers`; a topic or table in `resources` that one module writes and another reads; follow calls from a trigger until they cross at least one module boundary | spans modules and an agent would debug or extend it | workflow stub scoped to its trigger files and the files the flow runs through; a trigger worth no page is a Not covered candidate |
+| Modules and boundaries | scan `modules` and `deps` (direction, `mutual` cycles); `central` files; a module's public surface; who calls whom across a boundary | the boundary constrains a change (an allowed dependency direction, a seam, an owner) | architecture brief, plus a module stub when it has a mechanism, invariant or extension seam of its own |
+| Mechanisms | a call chain that crosses files inside a module; where objects are created, transformed and persisted; registries, dependency injection, config switches, plugin discovery | explaining it takes more than one file | the module brief (How it works) |
+| Workflows | scan `triggers`; a topic or table in `resources` that one module writes and another reads; with few triggers, `entry_points` and the public API of `central` files; follow calls from the entry until they cross at least one module boundary | spans modules and an agent would debug or extend it | workflow stub scoped to its trigger files and the files the flow runs through; a trigger worth no page is a Not covered candidate |
 | Terminology | see [Terminology](#terminology) | project-specific | glossary brief |
 | Conventions and commands | see [Conventions](#conventions) | config-backed or ≥2 instances | conventions brief |
+| Typical changes | `git log --format='%h %s' -- <module>`; scan `co_change`; extension seams with two or more implementations | the change recurs, or a seam invites it | the brief of the page whose scope it starts in, as a `Change:` lead |
 | Invariants and risks | asserts, guards, validation; exceptions with messages; transactions, locks, idempotency keys; DB constraints; restricted state transitions; must/never in test names; TODO/FIXME/HACK/NOTE; rollback and retry logic | breaking it corrupts data, loses work or fails silently | the owning module or workflow brief; cross-module ones in the architecture brief |
 | Open questions | a why you cannot find; conflicting code and docs; dead-looking paths | an answer would change what the page says | the brief of the page it concerns |
 
 A module earns its own page only when it has something beyond "what files are
-here": a real boundary, an invariant, an extension point or recorded rationale.
-Anything else becomes a Not covered row or a line in architecture.
+here": a real boundary, a mechanism worth explaining, an invariant, an
+extension seam or recorded rationale. Anything else becomes a Not covered row
+or a line in architecture.
 
 ## Terminology
 
@@ -61,12 +64,16 @@ across modules; test names that describe behavior.
 ## Conventions
 
 Signals: lint, format and type configs; CI steps; CONTRIBUTING; repeated code
-patterns such as error type hierarchy, logging wrapper, config loading,
-dependency injection, test fixtures; consistent directory and file naming.
-Commit message format (`git log --format=%s -30`), branch naming and PR
-templates are rules with Area `vcs`. Steps to add a new X go in Conventions'
-Extension recipes, not in a rule; co-change pairs from scan become change
-impact rows, not rules.
+patterns such as error type hierarchy, logging wrapper, config loading and
+registration, dependency injection, test fixtures; consistent directory and
+file naming. Collect what an agent adding code needs: where each kind of code
+goes (`layout`), how errors are raised and translated (`errors`), how config is
+loaded and new components registered (`config`), how tests are written and
+named (`testing`). Commit message format (`git log --format=%s -30`), branch
+naming and PR templates are rules with Area `vcs`. Steps to add a new X (a
+provider, adapter, endpoint, job) are an "adding a new X" section, not a rule:
+record the seam, its registration point and one existing implementation to
+copy. Co-change pairs from scan become change guide rows, not rules.
 
 **Evidence threshold:** a rule comes from a config file, or from at least two
 code instances. Record the instance count and the locators. One instance is an
@@ -93,6 +100,8 @@ locators and questions, not prose:
 ```markdown
 <!-- okf:todo
 Boundary: billing calls payments only via payments.Client? src/billing/charge.py#L8-L21
+Mechanism: run.py loads due subscriptions -> invoice.post -> charge(); src/billing/run.py#L12-L40
+Change: raise retry cap touched retry.py + tests/test_retry.py (a1b2c3d)
 Invariant: posted invoice never mutated; guard src/billing/invoice.py#L40-L58
 Invariant: at most 3 charge attempts; src/billing/retry.py#L30-L44
 Open question: why 3 attempts? nothing in docs or commit messages yet
@@ -132,7 +141,9 @@ Workflows cross the areas scouts are split by, so a second pass assigns them
 by trigger, not by area. Group scan `triggers` by module and kind (all `http`
 controllers of `order`, all `job` files of `billing`), add one group per topic
 in `resources` that two modules share, and give each tracer one to three
-groups. Its task names the trigger files, the output (workflow stubs and
+groups. A repository with few or no triggers (a library, a CLI, a compiler)
+still has flows: group its `entry_points` and the public API of its most
+imported `central` files, and trace those the same way. Its task names the trigger files, the output (workflow stubs and
 briefs), the tools (`rg`, the language server's references, `git log`) and
 where to stop: at the outcome (a row written, a message sent, a response
 returned) or where the flow enters a page another tracer owns.

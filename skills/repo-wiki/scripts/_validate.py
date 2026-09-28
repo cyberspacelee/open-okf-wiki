@@ -24,7 +24,7 @@ _CAUSAL = re.compile(
     r"\b(because|so that|in order to|to avoid|to prevent|the reason)\b|因为|为了|以便|以免|由于|原因是",
     re.IGNORECASE,
 )
-_NO_RATIONALE = re.compile(r"rationale not recorded|理由未记录|未记录理由", re.IGNORECASE)
+_NO_RATIONALE = re.compile(r"rationale not recorded|原因未记录|理由未记录|未记录理由", re.IGNORECASE)
 _SECRETS = (
     re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----"),
     re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
@@ -269,6 +269,7 @@ def validate(
         for reader in readers.values():
             reader.close()
     issues += _canon_issues(ws, pages)
+    issues += _db_binding_issues(ws, pages)
     issues += _coverage_issues(facts, pages)
     issues += _index_issues(ws, facts, pages)
     if only is not None:
@@ -316,6 +317,8 @@ def _page_issues(ws, facts, page, readers, glossary) -> list[Issue]:
     issues += _secret_issues(page)
     issues += _mermaid_issues(page)
     issues += _todo_issues(page)
+    issues += _hint_issues(page)
+    issues += _change_guide_issues(page)
     issues += _alias_issues(page, glossary)
     issues += _why_issues(page)
     issues += _parrot_issues(page)
@@ -555,6 +558,16 @@ def _value_issues(page, kind, table, row) -> list[Issue]:
                     f"Use one of: {', '.join(allowed)}.",
                 )
             )
+    if kind == "change_guide":
+        for index, name in ((1, "Start at"), (3, "Verify")):
+            if not cells[index] or cells[index] in ("-", "—"):
+                issues.append(
+                    _issue(
+                        page, row.line, "table-values", f"change guide row has no {name}: {cells[0][:60]!r}",
+                        ("Name the file or symbol to open first." if index == 1 else
+                         "Name the test, command or manual check that shows the change works."),
+                    )
+                )
     if kind == "not_covered" and not cells[1]:
         issues.append(
             _issue(
@@ -727,6 +740,33 @@ def _todo_issues(page) -> list[Issue]:
     ]
 
 
+def _hint_issues(page) -> list[Issue]:
+    return [
+        _issue(
+            page, line, "hint", "page still has a template hint",
+            "Answer the hint in the section it sits in, then delete the whole <!-- okf:hint --> comment.",
+            severity="pending",
+        )
+        for line, _ in page.structure.hints
+    ]
+
+
+def _change_guide_issues(page) -> list[Issue]:
+    """A Module or Workflow page must tell an agent where to start a change and how
+    to check it; skipped while a todo block says the page is still being written."""
+    if page.type not in _page.CHANGE_GUIDE_TYPES or page.todos:
+        return []
+    if any(t.rows for t in _page.tables(page).get("change_guide", [])):
+        return []
+    return [
+        _issue(
+            page.path, None, "change-guide", f"{page.type} page has no change guide row",
+            ("Under Making changes (修改指南) add a Change | Start at | Also change | Verify row "
+             "for a change this scope really gets (git log on the scope shows them)."),
+        )
+    ]
+
+
 def _aliases(pages) -> dict[str, tuple[str, re.Pattern]]:
     """Alias -> (canonical term, pattern) from every Glossary page."""
     found = {}
@@ -816,6 +856,45 @@ def _parrot_issues(page) -> list[Issue]:
 
 
 # --- cross page ----------------------------------------------------------------------------
+
+
+def _db_binding_issues(ws, pages) -> list[Issue]:
+    """In a hub, a page scoped to some sources that links a database page whose
+    database is bound (repo-wiki.yaml ``repos``) to none of them: a table of the
+    wrong database, or a binding the config is missing."""
+    if not ws.hub:
+        return []
+    names = {source.name for source in ws.sources}
+    by_path = {page.path: page for page in pages}
+    issues = []
+    for page in pages:
+        if page.error or page.is_generated or not page.scope:
+            continue
+        firsts = {str(glob).split("/", 1)[0] for glob in page.scope}
+        if not firsts <= names:
+            continue  # a glob starting with a wildcard may reach every source
+        base = PurePosixPath(page.path).parent
+        for target, line in page.structure.links:
+            path = target.strip("<>").split("#", 1)[0]
+            if not path or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", path):
+                continue
+            rel = path.lstrip("/") if path.startswith("/") else (base / path).as_posix()
+            other = by_path.get(PurePosixPath(rel).as_posix())
+            db = other.meta.get("db") if other is not None and other.is_generated else None
+            repos = db.get("repos") if isinstance(db, dict) else None
+            if not isinstance(repos, list) or firsts & set(repos):
+                continue
+            issues.append(
+                _issue(
+                    page, line, "db-binding",
+                    f"links {other.path} of database {db.get('name')}, which repo-wiki.yaml binds to "
+                    f"{', '.join(repos)}, while this page covers {', '.join(sorted(firsts))}",
+                    "Link the table of the database this code uses, or add the source to that "
+                    "database's repos and re-run okf db capture.",
+                    severity="warning",
+                )
+            )
+    return issues
 
 
 def _canon_issues(ws, pages) -> list[Issue]:

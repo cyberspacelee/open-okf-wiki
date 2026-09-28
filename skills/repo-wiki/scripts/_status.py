@@ -79,10 +79,14 @@ def status(root: Path, wiki: str | None = None) -> dict:
     empty_canon = [p.path for p in canon if empty_brief(p)]
     open_triggers = [i for i in issues if i.code == "trigger-coverage"]
     untraced = bool(open_triggers) and not any(p.type == "Workflow" for p in body_pages)
+    uncaptured = [db.name for db in ws.databases
+                  if not any((p.meta.get("db") or {}).get("name") == db.name for p in pages if p.is_generated)]
+    capture = (f"okf db tables, then okf db capture: databases {', '.join(uncaptured)} have no pages yet "
+               "(references/extensions.md)")
     if canon and (empty_canon or stubs or untraced):
         if not body_pages and len(empty_canon) == len(canon):
-            return done("discover", ["okf scan --json, then stage 1 (Discover)"], [])
-        actions = []
+            return done("discover", ["okf scan --json, then stage 1 (Discover)"] + ([capture] if uncaptured else []), [])
+        actions = [capture] if uncaptured else []
         if empty_canon or stubs:
             missing = empty_canon + stubs
             shown = ", ".join(missing[:10]) + (" ..." if len(missing) > 10 else "")

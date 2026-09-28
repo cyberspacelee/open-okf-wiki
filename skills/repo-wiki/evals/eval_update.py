@@ -157,7 +157,7 @@ SHOP = {
 }
 
 SHOP_PAGES = {
-    "architecture.md": """## Boundaries and dependencies
+    "architecture.md": """## Structure
 
 Billing depends on payments only through `payments.Client`.[^seam]
 
@@ -165,11 +165,11 @@ Billing depends on payments only through `payments.Client`.[^seam]
 |---|---|---|
 | Billing reaches the gateway only through `Client`. | `BillingRun.post`[^seam] | Charges bypass payment retries. |
 
-## Change impact
+## Cross-module changes
 
-| Change | Also change or check |
-|---|---|
-| `MAX_ATTEMPTS` | `tests/test_retry.py`[^retry-cap] |
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Attempt cap | `MAX_ATTEMPTS`[^retry-cap] | `tests/test_retry.py` | `python -m pytest -q` |
 
 ## Not covered
 
@@ -177,7 +177,7 @@ Billing depends on payments only through `payments.Client`.[^seam]
 |---|---|
 | `third_party/` | Vendored upstream code; never modified here. |
 | `src/reports/` | Read-only report helpers with no invariants. |
-| `tests/` | Tests are listed per page under Related tests. |
+| `tests/` | Tests are named per page in the Verify column. |
 
 [^seam]: src/billing/run.py#L1-L11
 [^retry-cap]: src/billing/retry.py#L1
@@ -207,9 +207,21 @@ Billing depends on payments only through `payments.Client`.[^seam]
 [^lint]: Makefile#L4-L5
 [^ruff]: ruff.toml#L1
 """,
-    "modules/billing.md": """## Responsibility and boundaries
+    "modules/billing.md": """## Responsibility
 
-Billing owns invoice posting and charge retries. Posting charges through `payments.Client`.[^charge]
+Billing owns invoice posting and charge retries.
+
+## How it works
+
+Posting charges through `payments.Client`.[^charge]
+
+## Making changes
+
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Posting rules | `BillingRun.post`[^posted] | - | `tests/test_billing.py` |
+
+## Invariants
 
 | Invariant | Enforced at | Breaks when |
 |---|---|---|
@@ -222,15 +234,31 @@ Why 3 attempts: rationale not recorded.
 [^charge]: src/billing/run.py#L11
 [^retry-cap]: src/billing/retry.py#L1-L7
 """,
-    "modules/payments.md": """## Responsibility and boundaries
+    "modules/payments.md": """## Responsibility
 
-Payments wraps the gateway; charges and refunds go through `Client`.[^client]
+Payments wraps the gateway.
+
+## How it works
+
+Charges and refunds go through `Client`.[^client]
+
+## Making changes
+
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Gateway call | `Client`[^client] | - | `tests/test_billing.py` |
 
 [^client]: src/payments/client.py#L1-L3
 """,
-    "workflows/checkout.md": """## Trigger to outcome
+    "workflows/checkout.md": """## Flow
 
 A billing run posts the invoice[^post] and the gateway client charges it.[^charge]
+
+## Making changes
+
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Charge step | `Client.charge`[^charge] | - | `tests/test_billing.py` |
 
 ```mermaid
 flowchart LR
@@ -269,7 +297,7 @@ JOB_PY = "def run(job):\n    return job.execute()\n"
 JOB_RETRY_PY = "LIMIT = 5\n"
 
 HUB_PAGES = {
-    "architecture.md": """## Boundaries and dependencies
+    "architecture.md": """## Structure
 
 api enqueues work that worker executes; they share no code.[^handle]
 
@@ -296,21 +324,47 @@ api enqueues work that worker executes; they share no code.[^handle]
 | Area | Rule | Enforced by |
 |---|---|---|
 """,
-    "modules/api.md": """## Responsibility and boundaries
+    "modules/api.md": """## Responsibility
+
+The API owns request handling.
+
+## How it works
 
 The API authorizes each request before dispatching it.[^auth]
 
+## Making changes
+
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Authorization | `authorize`[^auth] | - | manual request |
+
 [^auth]: api/src/auth.py#L1-L2
 """,
-    "modules/worker.md": """## Responsibility and boundaries
+    "modules/worker.md": """## Responsibility
+
+The worker owns job execution.
+
+## How it works
 
 The worker executes queued jobs.[^run]
 
+## Making changes
+
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Job execution | `run`[^run] | - | manual job run |
+
 [^run]: worker/jobs/run.py#L1-L2
 """,
-    "workflows/request.md": """## Trigger to outcome
+    "workflows/request.md": """## Flow
 
 A request is handled by the API[^handle] and its job runs in the worker.[^run]
+
+## Making changes
+
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Hand-off to the worker | `handle`[^handle] | `run` | manual request |
 
 [^handle]: api/src/app.py#L1-L2
 [^run]: worker/jobs/run.py#L1-L2

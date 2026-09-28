@@ -39,8 +39,8 @@ _CANON_TEXT = {
     "en": {
         "Architecture": (
             "Architecture",
-            ("Read first: boundaries, dependency direction, design rationale and "
-             "what is not covered."),
+            ("Read first: how the system is split, which way dependencies point, "
+             "cross-module changes and what has no page."),
         ),
         "Glossary": (
             "Glossary",
@@ -49,51 +49,57 @@ _CANON_TEXT = {
         ),
         "Conventions": (
             "Conventions",
-            ("Read before changing code: commands, and rules for layout, naming, "
-             "errors, logging, config, tests and CI."),
+            ("Read before changing code: commands, where new code goes, how to extend, "
+             "and the rules for errors, config, tests and CI."),
         ),
     },
     "zh": {
-        "Architecture": ("架构", "先读：边界、依赖方向、设计理由，以及未覆盖的范围。"),
+        "Architecture": ("架构", "先读：系统怎么拆分、依赖方向、跨模块改动，以及哪些代码没有单独成页。"),
         "Glossary": (
             "术语表",
             "遇到不清楚的项目术语、缩写或状态名时，或在给新事物命名前阅读。",
         ),
         "Conventions": (
             "开发规范",
-            "修改代码前阅读：命令，以及目录布局、命名、错误、日志、配置、测试和 CI 的规则。",
+            "修改代码前阅读：常用命令、新代码放在哪里、如何扩展，以及错误处理、配置、测试和 CI 的规则。",
         ),
     },
 }
 
 TABLE_KINDS = {
-    "glossary": (("term", "meaning", "avoid", "where"), ("术语", "含义", "避免", "位置")),
+    "glossary": (("term", "meaning", "avoid", "where"), ("术语", "定义", "勿用别名", "代码位置")),
     "commands": (("purpose", "command", "status"), ("用途", "命令", "状态")),
-    "rules": (("area", "rule", "enforced by"), ("范畴", "规则", "保障")),
+    "rules": (("area", "rule", "enforced by"), ("类别", "规则", "检查方式")),
     "invariants": (
         ("invariant", "enforced at", "breaks when"),
-        ("不变量", "强制位置", "违反后果"),
+        ("关键约束", "由谁保证", "违反会怎样"),
     ),
-    "change_impact": (("change", "also change or check"), ("变更", "同步修改或检查")),
+    "change_guide": (
+        ("change", "start at", "also change", "verify"),
+        ("修改场景", "从这里改", "同步修改", "如何验证"),
+    ),
     "not_covered": (("path", "reason"), ("路径", "原因")),
 }
-CITED_KINDS = ("glossary", "commands", "rules", "invariants", "change_impact")
+CITED_KINDS = ("glossary", "commands", "rules", "invariants", "change_guide")
 COMMAND_STATUS = ("verified", "not-run", "failed")
-# Extension knowledge is not a rule area: it lives in Conventions "Extension
-# recipes" and a Module page's "Extension points". vcs: commit message, pull
+# Extension knowledge is not a rule area: steps to add a new X are an extension
+# recipe (Conventions, or the owning Module page). vcs: commit message, pull
 # request and branch conventions.
 RULE_AREAS = (
     "layout", "naming", "api", "errors", "logging", "config", "testing",
     "build-ci", "dependencies", "vcs",
 )
 # Headings every page of a type must keep from its template (en or zh, any level,
-# case-insensitive). Diagrams and the optional sections stay recommendations.
+# case-insensitive). Every other heading is the writer's choice.
 REQUIRED_SECTIONS = {
-    "Architecture": (("Boundaries and dependencies", "边界与依赖方向"), ("Not covered", "未覆盖")),
-    "Conventions": (("Commands", "命令"), ("Rules", "规则")),
-    "Module": (("Responsibility and boundaries", "职责与边界"),),
-    "Workflow": (("Trigger to outcome", "从触发到结果"),),
+    "Architecture": (("Structure", "整体结构"), ("Not covered", "未单独成页")),
+    "Conventions": (("Commands", "常用命令"), ("Rules", "开发规则")),
+    "Module": (("Responsibility", "模块职责"), ("How it works", "工作原理"), ("Making changes", "修改指南")),
+    "Workflow": (("Flow", "执行流程"), ("Making changes", "修改指南")),
 }
+# Page types that must carry at least one change guide row: the pages an agent
+# opens right before editing their scope.
+CHANGE_GUIDE_TYPES = ("Module", "Workflow")
 ENFORCED_BY = ("lint", "typecheck", "test", "ci", "review", "convention")
 FOOTNOTE_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 

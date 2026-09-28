@@ -138,7 +138,7 @@ def test_impact_reasons(tmp_path):
     assert files["src/billing/run.py"]["read"] == ["modules/billing.md"]
     assert files["src/billing/run.py"]["update"] == ["glossary.md", "modules/billing.md"]
     assert files["Makefile"]["read"] == [] and files["Makefile"]["update"] == ["conventions.md"]
-    assert files["other.txt"] == {"read": [], "update": [], "change_impact": [],
+    assert files["other.txt"] == {"read": [], "update": [], "change_guide": [],
                                   "canon": ["glossary.md", "conventions.md"],
                                   "note": "no page covers this path"}
 
@@ -189,7 +189,7 @@ def test_git_calls_do_not_grow_with_pages(tmp_path, monkeypatch):
     root, ws = complete(tmp_path)
     for n in range(12):
         _page.new_page(ws, f"workflows/w{n}.md", "Workflow", "Read w.", ["src/billing/**"])
-        set_body(ws, f"workflows/w{n}.md", BILLING.replace("Responsibility and boundaries", "Trigger to outcome"))
+        set_body(ws, f"workflows/w{n}.md", BILLING.replace("## Responsibility", "## Flow").replace("## How it works", "## Steps"))
     assert _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)["blocked"] == []
     commit(root, {}, "wiki")
     commit(root, {"src/billing/retry.py": "MAX = 4\n"})
@@ -256,7 +256,7 @@ def test_status_phases(tmp_path):
     # A stub without a brief while the canon briefs are empty: still discovering.
     status = _status.status(root)
     assert status["phase"] == "discover" and "modules/a.md" in status["next_actions"][0]
-    set_body(ws, "modules/a.md", "<!-- okf:todo\nBoundary: a owns x\n-->\n\n## Responsibility and boundaries\n")
+    set_body(ws, "modules/a.md", "<!-- okf:todo\nBoundary: a owns x\n-->\n\n## Responsibility\n")
     # Every canon page needs its brief too.
     status = _status.status(root)
     assert status["phase"] == "discover" and "glossary.md" in status["next_actions"][0]
@@ -350,10 +350,12 @@ def test_hub_lifecycle(tmp_path):
         _page.new_page(ws, "modules/app.md", "Module", "Read before app.", ["src/**"])
     _page.new_page(ws, "workflows/request.md", "Workflow", "Read before changing request handling.",
                    ["api/src/**", "worker/jobs/**"])
-    set_body(ws, "architecture.md", "## Boundaries and dependencies\n\napi enqueues work for worker.\n\n## Not covered\n\n| Path | Reason |\n|---|---|\n")
+    set_body(ws, "architecture.md", "## Structure\n\napi enqueues work for worker.\n\n## Not covered\n\n| Path | Reason |\n|---|---|\n")
     set_body(ws, "glossary.md", "| Term | Meaning | Avoid | Where |\n|---|---|---|---|\n| Handle | Entry point. | | `handle`[^h] |\n\n[^h]: api/src/app.py#L1\n")
     set_body(ws, "conventions.md", "## Commands\n\n| Purpose | Command | Status |\n|---|---|---|\n\n## Rules\n\n| Area | Rule | Enforced by |\n|---|---|---|\n")
-    set_body(ws, "workflows/request.md", "## Trigger to outcome\n\nThe worker runs jobs.[^run]\n\n[^run]: worker/jobs/run.py#L1-L2\n")
+    set_body(ws, "workflows/request.md", ("## Flow\n\nThe worker runs jobs.[^run]\n\n## Making changes\n\n"
+              "| Change | Start at | Also change | Verify |\n|---|---|---|---|\n"
+              "| Job result | `run`[^run] | - | manual run |\n\n[^run]: worker/jobs/run.py#L1-L2\n"))
     errors = [i for i in _validate.validate(ws) if i.severity == "error"]
     assert errors == []
     result = _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)
@@ -519,18 +521,18 @@ def test_pointer_ignores_a_hand_edited_conventions_page(tmp_path):
     assert "curl" not in block and "pytest" not in block
 
 
-CHANGE_IMPACT = """## Boundaries and dependencies
+CHANGE_GUIDE = """## Structure
 
 Billing has no dependencies.
 
-## Change impact
+## Cross-module changes
 
-| Change | Also change or check |
-|---|---|
-| `MAX` retry cap | `tests/test_run.py`[^cap] |
-| Anything in `src/billing/**` | The billing page. |
-| `run.py` layout | The glossary. |
-| `BillingRun.post` | Callers. |
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Retry cap | `MAX`[^cap] | `tests/test_run.py` | `pytest -q` |
+| Anything in `src/billing/**` | the module | The billing page. | review |
+| `run.py` layout | `run.py` | The glossary. | review |
+| Posting | `BillingRun.post` | Callers. | `tests/test_run.py` |
 
 ## Not covered
 
@@ -542,30 +544,31 @@ Billing has no dependencies.
 """
 
 
-def test_impact_files_lists_change_impact_rows_and_canon(tmp_path):
+def test_impact_files_lists_change_guide_rows_and_canon(tmp_path):
     _, ws = complete(tmp_path, {"src/billing/other.py": "y = 2\n"})
-    set_body(ws, "architecture.md", CHANGE_IMPACT)
+    set_body(ws, "architecture.md", CHANGE_GUIDE)
     files = _impact.impact_files(ws, ["src/billing/retry.py", "src/billing/run.py",
                                       "src/billing/other.py", "tests/test_run.py", "src/billing"])["files"]
 
     def changes(path):
-        return [row["change"] for row in files[path]["change_impact"]]
+        return [row["change"] for row in files[path]["change_guide"]]
 
-    # cited locator, glob and (for retry.py) the identifier MAX found in the file
-    assert changes("src/billing/retry.py") == ["MAX retry cap", "Anything in src/billing/**"]
-    # glob, file name and identifiers found in the file (BillingRun, post)
+    # cited locator, glob and (for run.py) file name and identifiers found in the
+    # file (BillingRun, post) in the Change or Start at cell; the billing page's
+    # own row cites run.py
+    assert changes("src/billing/retry.py") == ["Retry cap", "Anything in src/billing/**"]
     assert changes("src/billing/run.py") == [
-        "Anything in src/billing/**", "run.py layout", "BillingRun.post"]
+        "Anything in src/billing/**", "run.py layout", "Posting", "Change posting"]
     assert changes("src/billing/other.py") == ["Anything in src/billing/**"]
-    # an Also cell mentioning the path does not make the row about changing it
+    # Also change and Verify cells mentioning the path do not make the row about changing it
     assert changes("tests/test_run.py") == []
     assert files["tests/test_run.py"]["note"] == "not covered: Test code."
-    assert changes("src/billing") == ["MAX retry cap", "Anything in src/billing/**"]
-    row = files["src/billing/retry.py"]["change_impact"][0]
-    assert row == {"page": "architecture.md", "line": row["line"], "change": "MAX retry cap",
-                   "also": "tests/test_run.py"}
+    assert changes("src/billing") == ["Retry cap", "Anything in src/billing/**", "Change posting"]
+    row = files["src/billing/retry.py"]["change_guide"][0]
+    assert row == {"page": "architecture.md", "line": row["line"], "change": "Retry cap",
+                   "start": "MAX", "also": "tests/test_run.py", "verify": "pytest -q"}
     lines = (ws.wiki / "architecture.md").read_text(encoding="utf-8").split("\n")
-    assert lines[row["line"] - 1].startswith("| `MAX` retry cap |")
+    assert lines[row["line"] - 1].startswith("| Retry cap |")
     assert files["src/billing/retry.py"]["canon"] == ["glossary.md", "conventions.md"]
 
 
