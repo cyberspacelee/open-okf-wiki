@@ -403,27 +403,21 @@ def test_pointer_write_goes_through_a_symlink(tmp_path, capsys, monkeypatch):
 # --- 7. constants, tests and page templates are no term sources ----------------------------
 
 
-def test_acronym_candidates_skip_constants_tests_and_templates(tmp_path):
+def test_templates_and_tests_are_no_term_sources(tmp_path):
     import _scan
 
     root = git_repo(tmp_path / "r", {
-        "src/app/config.py": "LANGS = ('en', 'zh')\nCONFIG: dict = {}\n\ndef f():\n    return LANGS, CONFIG\n",
-        "src/app/use.py": "# Read the LANGS and CONFIG values; the SLA is one hour.\nSLA_NOTE = 1\n",
-        "src/app/sla.py": "# The SLA applies per tenant.\n",
-        "src/app/evals.py": "def run(EVALS=3):\n    return EVALS\n",
-        "docs/intro.md": "The EVALS suite and the SLA.\n",
-        "tests/test_x.py": "# The QPS budget is checked here.\n",
-        "tests/test_y.py": "# QPS again.\n",
-        "assets/templates/en/glossary.md": "**Billing run**: a pass.\nThe RPO target.\n",
-        "assets/templates/en/architecture.md": "The RPO again.\n",
+        "src/app/config.py": "class LedgerEntry:\n    pass\n",
+        "docs/intro.md": "**Dunning**: payment reminders.\n",
+        "tests/test_x.py": "**Fixture Term**: not a term.\n",
+        "assets/templates/en/glossary.md": "**Billing run**: a pass.\n",
         "templates/README.md": "# Template\n",
     })
     ws = _config.init(root, create_canon=False)
     report = _scan.scan(ws)
-    acronyms = {t["term"] for t in report["terms"] if t["kind"] == "acronym"}
-    assert "SLA" in acronyms
-    assert not acronyms & {"LANGS", "CONFIG", "EVALS", "QPS", "RPO"}
-    assert "Billing run" not in {t["term"] for t in report["terms"]}
+    names = {t["term"] for t in report["terms"]}
+    assert "Dunning" in names
+    assert not names & {"Billing run", "Fixture Term"}
     assert report["docs"] == ["docs/intro.md"]
 
 
@@ -521,18 +515,18 @@ def test_test_files_do_not_count_toward_term_minimums(tmp_path):
     import _scan
 
     root = git_repo(tmp_path / "r", {
-        "src/app/a.py": "# The SLA applies per tenant.\nclass BillingRun:\n    pass\n",
-        "tests/test_a.py": "# SLA checked.\nfrom src.app.a import BillingRun\n",
-        "tests/test_b.py": "# SLA again. BillingRun\n",
-        "lib/c_test.py": "# SLA BillingRun\n",
-        "src/app/b.py": "# The KPI budget.\n",
-        "docs/kpi.md": "The KPI is tracked.\n",
+        "src/app/a.py": "class BillingRun:\n    pass\n",
+        "tests/test_a.py": "from src.app.a import BillingRun\n",
+        "tests/test_b.py": "# BillingRun\n",
+        "lib/c_test.py": "# BillingRun\n",
+        "src/app/b.py": "class LedgerEntry:\n    pass\n",
+        "lib/use.py": "LedgerEntry()\n",
+        "docs/ledger.md": "A LedgerEntry is posted.\n",
     })
     ws = _config.init(root, create_canon=False)
     terms = {t["term"]: t for t in _scan.scan(ws)["terms"]}
-    assert "SLA" not in terms  # one non-test file; tests do not make up the minimum of two
     assert "BillingRun" not in terms  # used only in src outside tests
-    assert terms["KPI"]["count"] == 2
+    assert terms["LedgerEntry"]["count"] == 3
 
 
 def test_verify_twice_by_the_same_actor_is_a_no_op(tmp_path):

@@ -322,7 +322,15 @@ Invoices are immutable once posted; corrections are new credit items.[^posted]
      `source`、`cmd`）按子目录拆成模块，除非它有自己的 manifest、下面有声明的模块或有 `main` 子目录
      （`src/main`、`src/test` 仍是一个模块）；顶层测试根（`tests`、`test`、`spec`、`specs`、`__tests__`、
      `e2e`、`testing`）不算模块，既不需要 scope 也不需要 Not covered 行；
-     只聚合子模块、自身没有代码的父模块不算模块；
+     只聚合子模块、自身没有代码的父模块不算模块；单个构建内部再按包拆分：JVM `src/main/java/<基础包>`
+     或 Python 包下有两个以上、各含至少 3 个生产代码文件的子包时，每个子包是一个模块，单体因此显出领域包；
+   - 触发点（triggers）：工作进入生产代码的位置，按文件汇总 kind——`http`（Spring MVC、JAX-RS、FastAPI/Flask、
+     Django urls、DRF、NestJS、Express、Go、ASP.NET）、`rpc`（Dubbo、gRPC）、`listener`（Kafka、RabbitMQ、JMS、
+     RocketMQ、SQS）、`job`（`@Scheduled`、XXL-Job、Quartz、Celery、APScheduler、Airflow）、`event`、`cli`、
+     `startup`；Feign 等出站客户端接口不算；
+   - 模块依赖（deps）：由 import 解析出的模块间边，带次数、首个 locator、互相依赖标记；central 列出被两个以上
+     其他模块引用的文件；
+   - 共享资源（resources）：两个以上模块都提到的消息 topic 与数据库表，是 import 看不到的耦合；
    - 入口点：声明的脚本、JVM `main`、带 `if __name__ == "__main__":` 的 Python 文件、Dockerfile、API spec 等；
    - 语言和文件数；
    - 命令：package.json scripts、Makefile、justfile、Taskfile、tox/nox、各构建工具的惯用命令，以及带 PEP 723
@@ -332,15 +340,19 @@ Invoices are immutable once posted; corrections are new credit items.[^posted]
    - 测试目录和测试命名模式；
    - 已有文档：README、CONTRIBUTING、CONTEXT、GLOSSARY、ARCHITECTURE、docs、ADR、AGENTS/CLAUDE.md、PR 模板；
      `templates/` 或 `assets/` 目录下的文件是页面骨架，不算文档；
-   - 术语候选：文档中加粗的定义、跨文件出现的缩写（在任何地方被赋值的全大写词是常量，不算）、enum 类状态类型
-     （附前几个成员）、出现在多个模块的 CamelCase 类型名，每项带首次出现的 locator，各类公平分配，最多 50 个；
+   - 术语候选：文档中加粗的定义、enum 类状态类型（附前几个成员）、出现在多个模块的 CamelCase 类型名，
+     每项带首次出现的 locator，各类公平分配，最多 50 个；全大写缩写噪声大，不作候选；
      测试文件与 `templates/`、`assets/` 下的 Markdown 不提供候选；
-   - co-change 文件对：来自最近 500 个提交，support ≥ 3 且 confidence ≥ 0.6，取前 30。
+   - co-change 文件对：来自最近 500 个提交，support ≥ 3 且 confidence ≥ 0.6，取前 30；
+   - 每个被截断的列表在 `truncated` 里给出一句提示：显示了多少、其余去哪里找。
 3. **Agent 在 scan 结果基础上阅读：** README、CONTRIBUTING、构建和 CI 文件、入口点，以及 scan 列出的已有文档。
-4. **大仓按区域并行派 2–4 个 scout。**
-   - 每个 scout 可以自己运行 `okf scan`，并为本区域的模块或 workflow 执行 `okf new`，把简报写进这些桩页面；
-   - canon 候选（术语、规范、命令、全局不变量）通过 handoff 返回；
-   - coordinator 收到一个 handoff 就立即合并进 canon 桩的 todo 简报。
+4. **两轮派发，大仓每轮 2–4 个 agent。**
+   - 第一轮 scout 按区域（一组模块）：为本区域的模块执行 `okf new`，把简报写进桩页面；canon 候选
+     （术语、规范、命令、全局不变量）通过 handoff 返回，coordinator 收到即合并进 canon 桩的 todo 简报；
+   - 第二轮 tracer 按触发点分组（同一模块同一 kind 的触发文件，或两个模块共享的 topic）：从入口追到结果，
+     记录跨过的模块边界、碰到的 topic/表、途中的 guard、事务与重试，建 workflow 桩，scope 包含触发文件和
+     流程经过的文件；不值得成页的触发点作为 Not covered 候选。workflow 天然跨模块，按区域切分的 scout
+     会把它们漏在区域之间，所以单独一轮。
 5. **6 类发现各有落点：**
 
    | 类别 | 落点 |
@@ -352,20 +364,25 @@ Invoices are immutable once posted; corrections are new credit items.[^posted]
    | 不变量与风险 | 所属 module 或 workflow 的简报；跨模块的写进 architecture 简报 |
    | open questions | 所在页面的简报 |
 
-**退出条件：** 页面已存在。
+**退出条件：** 每页 canon 与每个桩都有简报；每个扫描到的模块有 scope 或 Not covered 候选；每个触发文件
+在某个 workflow 桩的 scope 内或是 Not covered 候选。status 在 canon 或桩缺简报、或存在触发点却没有
+Workflow 页时停在 `discover`。
 
 ### 阶段 2 — Structure：确定页面集合
 
 - **Module 与 Workflow 页只在通过 Grep Test 时保留。** 需要的补建，不值得的删掉。页数由知识边界决定，不设目标。
-- **不值得建页的模块** 写进 Architecture 的 Not covered 表，并附理由。
+- **不值得建页的模块与触发文件** 写进 Architecture 的 Not covered 表，并附理由；一行 glob 可覆盖一组触发文件。
 - **每页的 `description` 和 `scope` 在此定稿。**
-- **退出条件：** `okf validate` 的覆盖规则（I6）和 scope 规则通过。
+- **退出条件：** `okf validate` 的覆盖规则（I6，含 `trigger-coverage`）和 scope 规则通过。
 
 ### 阶段 3 — Research：先写 canon
 
 - **写作顺序：** Glossary、Conventions、Architecture 在所有其他页面之前写完。
   由 coordinator（或它派出的一个 owner）负责，这三页同一时间只有一个写者。
-- **验证每条候选：** 在源码中核实；核实不了的丢掉，不进入知识层。
+- **先扫后对账（`references/research.md`）：** 简报是 scout 的压缩笔记，条目只是线索（lead）。
+  写作者先独立扫描（sweep）本页负责的源码——guard、事务、锁、重试、跨边界调用、触发点、共享资源——
+  再打开简报逐条标记 confirmed / dropped / moved；扫描中发现、简报没提到的是新发现。核实不了的丢掉。
+- **依据 scan 事实：** 依赖方向以 `deps` 为准（`mutual` 边要解释或标出），规范的实例数在全仓计数。
 - **Glossary：** 为每个概念选定 canonical 名称，把其他叫法填进 `Avoid`。
 - **Conventions：** 规则按 §5.3 的证据门槛核实；在安全的前提下运行 build、test、lint 命令，
   如实填写 Status。
@@ -379,13 +396,14 @@ Invoices are immutable once posted; corrections are new credit items.[^posted]
 - **分工：** 每页派一个 writer。writer 的输入只有：本页路径、Glossary、Conventions、Architecture
   （变更影响"只有一个归宿"需要它）、`references/pages.md`。
   简报已经在页面的 todo 块里。
-- **调研：** writer 在本页 scope 内直接读源码、做调研，自己写 footnote。
+- **调研：** writer 按 `references/research.md` 先扫 scope 再对账简报，自己写 footnote。
 - **写作约束：**
   - 章节从菜单中选择；
   - 使用 canonical 术语；
   - 写完删除 todo 块；
   - 需要新术语时在 handoff 中提出，由 coordinator 合并进 Glossary。
-- **Handoff：** 页面路径、新术语提议、仍未解决的 open question 数量。
+- **Handoff：** 页面路径、`线索 confirmed / dropped / moved` 与新发现的计数、新术语提议、open question 数量。
+  scope 内有触发点、guard 或跨模块调用却报告零新发现的页面，coordinator 派第二次扫描。
 - **退出条件：** 没有 todo 块，且 `validate` 没有 error。warning 交给 review 裁决。
 
 ### 阶段 5 — Review & Stamp：审查，然后盖章
@@ -511,11 +529,11 @@ hub 的 source 目录内也能运行，相对路径从当前目录算起（sourc
 4. 源码在页面基线之后变了，且 update 能落笔 → `update`（next action：`okf update --json`）。两种情况：
    - 某个 draft 页的 `revision` 与 HEAD 的源码内容不同；
    - 没有 draft 页，且 update 的计划（`_impact.plan`）会把 stale 页面、未映射模块或已删除的 Not covered
-     路径写进某页。status 因而不会连续两次给出不产生任何改动的 `update`。
-5. canon 简报全空且发现还没产出桩简报 → `discover`：至少有一页 canon，每页现存 canon 都有 todo 块且全为空；
-   并且没有 Module/Workflow 页，或其中至少一页只有空 todo 块。next action 为 `okf scan`，有桩时列出
-   仍缺简报的桩。任一 canon 页有简报，或每个桩都有简报，即结束发现阶段。
-6. 覆盖、scope 或 not-covered 规则失败 → `structure`
+     路径、未认领的触发文件写进某页。status 因而不会连续两次给出不产生任何改动的 `update`。
+5. 发现未完成 → `discover`：至少有一页 canon，并且某页 canon 或某个 Module/Workflow 页只有空 todo 块，
+   或存在 `trigger-coverage` 问题而没有任何 Workflow 页。没有桩且 canon 简报全空时 next action 为
+   `okf scan`；否则列出仍缺简报的页面，没有 Workflow 页时再给出未认领触发文件的数量。
+6. 覆盖、触发点覆盖、scope 或 not-covered 规则失败 → `structure`
 7. canon 页有 todo 块或 error → `research`
 8. 其他页面有 todo 块或 error → `write`
 9. 存在 draft 页面，且 `_review.json` 缺失、无效、过期或为 changes_requested → `review`
@@ -542,6 +560,7 @@ warning 排序。`pending` 就是 todo 块：阻塞 stamp，但不让 validate �
 | `required-citation` | error | 术语、命令、规则、不变量、变更影响表的每行都有 footnote | I2 |
 | `table-values` | error | 命令表的 Status、规则表的 Area 和 Enforced by 取值合法 | I2 |
 | `coverage` | error | 每个扫描到的模块，其拥有的文件（嵌套模块的文件归嵌套模块）至少有一个落在某页 scope 内，或模块出现在 Not covered 表中且有 reason | I6 |
+| `trigger-coverage` | error | 每个触发文件（scan `triggers`）落在某个 Workflow 页的 scope 内，或被带理由的 Not covered 行（路径、目录或 glob）排除 | I6 |
 | `scope` | error | 每个 glob 至少匹配一个 tracked 文件 | I5 |
 | `unreviewed-edit` | error | 标为 stable 的页面，`content_sha256`（正文加受保护的 frontmatter）与 `stamp.content_sha256` 不一致 → 应置为 draft | I4 |
 | `section` | error | 缺少该类型的必需标题（§5.2，en 或 zh） | — |
@@ -639,7 +658,8 @@ Change 单元格点名该路径）反查页面，不需要 diff，对每个路�
 |---|---|---|
 | `references/discovery.md` | 6 类知识的发现信号、判定标准，以及简报的写法（见下） | ~120 |
 | `references/pages.md` | 页面类型、章节菜单、写与不写、footnote 与 locator 规则、canon 表格式、好例和坏例各一 | ~180 |
-| `references/review.md` | 审查清单、issue kinds、抽样要求、路由测试、复审规则 | ~80 |
+| `references/research.md` | 写作者的先扫后对账协议：风险信号与检索式、线索标记、handoff 计数 | ~80 |
+| `references/review.md` | 审查清单、issue kinds、抽样要求、路由测试、复审规则、按 scan 事实查遗漏 | ~95 |
 | `references/extensions.md` | 多仓 hub、OpenGauss capture | ~70 |
 | `assets/templates/{en,zh}/{architecture,glossary,conventions,module,workflow}.md` | `okf new` 使用的桩模板，用注释列出可选章节 | 每个 ~20 |
 
@@ -673,8 +693,9 @@ Change 单元格点名该路径）反查页面，不需要 diff，对每个路�
   - TODO/FIXME/HACK/NOTE 注释；
   - 回滚与重试逻辑。
 - **架构与 workflow：**
-  - 从入口点顺着调用跨越一次模块边界；
-  - import 的方向；
+  - scan 的 triggers：从每个触发点顺着调用跨越模块边界，直到结果；
+  - scan 的 resources：一个模块写、另一个模块读的 topic 或表；
+  - scan 的 deps 与 central：import 的方向与被广泛依赖的文件；
   - 模块的公共面；
   - 后台任务和调度器。
 
@@ -715,6 +736,7 @@ Change 单元格点名该路径）反查页面，不需要 diff，对每个路�
 | T2 路由召回（`eval_routing.py`） | 取知识层提交之后的 N 个真实 commit，把 commit message 当作任务，Agent 只看 index 挑 3 页，检查 commit 触及的文件是否落在这 3 页的 scope 内 | 确定性判分 |
 | T2 引用支撑率（`eval_citations.py`） | 抽样 footnote，把 claim 和被引行交给盲评 judge | LLM judge + 人工抽检校准 |
 | T2 术语与规范（`eval_canon.py`） | 每个 fixture 有人工整理的术语和规范清单，计算召回；verified 命令实际运行；抽查规则是否有依据 | 半自动 |
+| T2 知识召回（`eval_recall.py`） | 专家编写的答案键列出必须覆盖的 workflow（触发文件与途经文件）、不变量 locator、术语和模块边界，计算各类与总体召回并列出每个遗漏；衡量的是"漏了什么"，validate 只衡量"写的是否有据" | 答案键人工，打分自动 |
 | T2 更新召回（`eval_update.py`） | 在 fixture 中植入语义变更，检查它们是否都进入 impact 报告 | 确定性判分 |
 | T3 效用 A/B（可选、高成本） | 同一批任务分别在有、无 AGENTS 指针加知识层的条件下运行，比较成功率、token 和耗时 | 任务测试 |
 

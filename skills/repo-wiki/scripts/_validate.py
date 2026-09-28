@@ -106,6 +106,11 @@ class Facts:
                 found[path] = owner
         return found
 
+    @cached_property
+    def triggers(self) -> list[_scan.Trigger]:
+        """Every trigger at HEAD (framework routes, listeners, jobs, commands)."""
+        return _scan.triggers(self.ws, self.head, self.listings)
+
     def current(self, source: _config.Source, rev) -> bool:
         """True when ``rev`` has the same source content as HEAD, ignoring wiki-only commits."""
         head = self.head[source.name]
@@ -195,6 +200,27 @@ def module_exclusions(facts: Facts, pages: list[_page.Page]) -> dict[str, str]:
                 found[module.path] = reason
                 break
     return found
+
+
+def unclaimed_triggers(facts: Facts, pages: list[_page.Page]) -> list[tuple[str, list[str]]]:
+    """(trigger file, its trigger kinds) for every trigger file that no Workflow page
+    scope matches and no Not covered row (path or glob, with a reason) excludes."""
+    kinds: dict[str, set[str]] = {}
+    for trigger in facts.triggers:
+        kinds.setdefault(trigger.path, set()).add(trigger.kind)
+    if not kinds:
+        return []
+    claimed: set[str] = set()
+    for page in pages:
+        if page.type == "Workflow" and not page.error and not page.is_generated:
+            for glob in scope_globs(page):
+                claimed.update(facts.matches(glob))
+    rows = [path for _, _, path, reason in not_covered_rows(pages) if path and reason]
+    return [
+        (path, sorted(found, key=_scan.TRIGGER_KINDS.index))
+        for path, found in sorted(kinds.items())
+        if path not in claimed and not any(_config.glob_match(row, path) for row in rows)
+    ]
 
 
 def cited_locators(page: _page.Page) -> list[tuple[str, _config.Locator, int]]:
@@ -839,6 +865,15 @@ def _coverage_issues(facts, pages) -> list[Issue]:
             _issue(
                 arch, None, "coverage", f"module {module.path} is in no page scope",
                 f"Add {module.path}/** to a page scope, or add a Not covered row with a reason.",
+            )
+        )
+    for path, kinds in unclaimed_triggers(facts, pages):
+        issues.append(
+            _issue(
+                arch, None, "trigger-coverage",
+                f"trigger file {path} ({', '.join(kinds)}) is in no Workflow page scope",
+                f"Trace the flow {path} starts into a Workflow page and add the file to its scope, "
+                "or add a Not covered row (path or glob) saying why no workflow page is needed.",
             )
         )
     for page, row, path, _ in not_covered_rows(pages):

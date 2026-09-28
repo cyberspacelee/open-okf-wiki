@@ -47,6 +47,16 @@ FIXTURE = {
         "        return None\n"
         "    return attempt + 1\n"
     ),
+    "src/billing/tasks.py": (
+        "from celery import shared_task\n"
+        "\n"
+        "from billing.run import BillingRun\n"
+        "\n"
+        "\n"
+        "@shared_task\n"
+        "def nightly_billing(invoice):\n"
+        "    return BillingRun().post(invoice)\n"
+    ),
     "src/payments/__init__.py": "",
     "src/payments/client.py": (
         "class Client:\n"
@@ -129,6 +139,13 @@ Why 3 attempts: rationale not recorded.
 [^retry-cap]: src/billing/retry.py#L1-L7
 """
 
+WORKFLOW = """## Trigger to outcome
+
+The `nightly_billing` Celery task posts one invoice through `BillingRun.post`.[^task]
+
+[^task]: src/billing/tasks.py#L6-L8
+"""
+
 
 class Failure(Exception):
     pass
@@ -182,6 +199,13 @@ def set_body(page: Path, body: str) -> None:
     page.write_text(f"{head}\n---\n\n{body}", encoding="utf-8", newline="\n")
 
 
+def brief(page: Path, text: str) -> None:
+    """Write a discovery brief into the page's empty todo block."""
+    body = page.read_text(encoding="utf-8")
+    page.write_text(body.replace("<!-- okf:todo\n-->", f"<!-- okf:todo\n{text}\n-->", 1),
+                    encoding="utf-8", newline="\n")
+
+
 def approve(repo: Path, reviewer: str = "repo-wiki-reviewer/e2e") -> None:
     subject = okf(repo, "review", "prepare", "--json")
     report = {"subject_digest": subject["subject_digest"], "reviewer": reviewer, "verdict": "approved", "issues": []}
@@ -220,14 +244,28 @@ def run(base: Path) -> None:
     expect(all(c["kind"] in ("build", "test", "lint", "format", "typecheck", "other")
                for c in scan["commands"]), f"scan command kinds {scan['commands']}")
     expect(scan["sources"][0]["shallow"] is False, f"scan sources {scan['sources']}")
-    expect(set(scan["truncated"]) == {"entry_points", "terms", "commands", "docs", "ci", "configs"},
-           f"scan truncated keys {scan['truncated']}")
+    expect(scan["truncated"] == {}, f"scan truncated {scan['truncated']}")
+    expect([(t["path"], t["kinds"]) for t in scan["triggers"]] == [("src/billing/tasks.py", ["job"])],
+           f"scan triggers {scan['triggers']}")
+    expect(any(d["from"] == "src/billing" and d["to"] == "src/payments" for d in scan["deps"]),
+           f"scan deps {scan['deps']}")
 
     okf(repo, "new", "modules/billing.md", "--type", "Module", "--description",
         "Read before changing invoice posting or charge retries.", "--scope", "src/billing/**", "--json")
     status = phase(repo, "discover")  # a stub without a brief while the canon briefs are empty
     expect("modules/billing.md" in status["next_actions"][0], f"discover actions {status['next_actions']}")
     set_body(wiki / "modules/billing.md", "<!-- okf:todo\nInvariant: posted invoice never reposted src/billing/run.py#L7-L10\n-->\n\n## Responsibility and boundaries\n")
+    status = phase(repo, "discover")  # every canon page needs its brief
+    expect("architecture.md" in status["next_actions"][0], f"discover actions {status['next_actions']}")
+    brief(wiki / "architecture.md", "Boundary: billing -> payments via Client src/billing/run.py#L1")
+    brief(wiki / "glossary.md", "Term: Billing run src/billing/run.py#L4-L5")
+    brief(wiki / "conventions.md", "Command: make test Makefile#L1-L2")
+    status = phase(repo, "discover")  # the Celery task starts a flow no workflow page traces yet
+    expect("1 trigger files" in status["next_actions"][0] and status["issues"][0]["code"] == "trigger-coverage",
+           f"discover actions {json.dumps(status, indent=2)}")
+    okf(repo, "new", "workflows/nightly-billing.md", "--type", "Workflow", "--description",
+        "Read before changing the nightly billing task.", "--scope", "src/billing/tasks.py", "--json")
+    brief(wiki / "workflows/nightly-billing.md", "Trace: nightly_billing -> BillingRun.post src/billing/tasks.py#L6-L8")
     status = phase(repo, "structure")  # src/payments and third_party are in no scope yet
     expect(status["issues"][0]["code"] == "coverage", f"structure issues {status['issues']}")
     set_body(wiki / "architecture.md", ARCHITECTURE)
@@ -238,13 +276,14 @@ def run(base: Path) -> None:
     validation = okf(repo, "validate", "--json")
     expect(any(i["code"] == "alias" for i in validation["issues"]), "alias drift not reported")
     set_body(wiki / "modules/billing.md", BILLING)
+    set_body(wiki / "workflows/nightly-billing.md", WORKFLOW)
     validation = okf(repo, "validate", "--json")
     expect(validation["errors"] == 0 and validation["pending"] == 0, f"validate: {json.dumps(validation, indent=2)}")
 
     status = phase(repo, "review")
     expect(any("--unreviewed" in a for a in status["next_actions"]), "no unreviewed fallback offered")
     subject = okf(repo, "review", "prepare", "--json")
-    expect(len(subject["pages"]) == 4, f"review subject pages {subject['pages']}")
+    expect(len(subject["pages"]) == 5, f"review subject pages {subject['pages']}")
     report = {
         "subject_digest": subject["subject_digest"], "reviewer": "repo-wiki-reviewer/e2e",
         "verdict": "changes_requested",
@@ -265,7 +304,7 @@ def run(base: Path) -> None:
     approve(repo)
     phase(repo, "stamp")
     stamped = okf(repo, "stamp", "--by", "repo-wiki/e2e", "--json")
-    expect(len(stamped["stamped"]) == 4 and stamped["verified_by"] == "repo-wiki-reviewer/e2e", f"stamp: {stamped}")
+    expect(len(stamped["stamped"]) == 5 and stamped["verified_by"] == "repo-wiki-reviewer/e2e", f"stamp: {stamped}")
     expect(isinstance(stamped["warnings"], list) and stamped["index_changed"] is True, f"stamp: {stamped}")
     expect(not (wiki / "_review.json").exists(), "_review.json survived stamp")
     index = (wiki / "index.md").read_text(encoding="utf-8")
@@ -307,6 +346,7 @@ def run(base: Path) -> None:
         "src/billing/run.py": "# billing entry\n\n" + FIXTURE["src/billing/run.py"],
         "src/billing/retry.py": FIXTURE["src/billing/retry.py"].replace("3", "5"),
         "worker/jobs.py": "def nightly():\n    pass\n",
+        "src/billing/api.py": "@app.post('/invoices')\ndef create():\n    pass\n",
     })
     report = okf(repo, "impact", "--json")
     by_page = {p["page"]: p["reasons"] for p in report["pages"]}
@@ -315,6 +355,8 @@ def run(base: Path) -> None:
     moved = [r for r in by_page["modules/billing.md"] if r["kind"] == "cited-moved" and r["label"] == "posted"]
     expect(moved and moved[0]["suggested"] == "src/billing/run.py#L9-L12", f"moved suggestion {moved}")
     expect(report["unmapped_modules"] == ["worker"], f"unmapped {report['unmapped_modules']}")
+    expect(report["unclaimed_triggers"] == [{"path": "src/billing/api.py", "kinds": ["http"]}],
+           f"unclaimed triggers {report['unclaimed_triggers']}")
     phase(repo, "update")
 
     update = okf(repo, "update", "--json")
@@ -322,6 +364,8 @@ def run(base: Path) -> None:
     billing = (wiki / "modules/billing.md").read_text(encoding="utf-8")
     expect("status: draft" in billing and "suggested src/billing/run.py#L9-L12" in billing, billing)
     expect(" (since " in billing, f"reason lines lack their base revision:\n{billing}")
+    arch = (wiki / "architecture.md").read_text(encoding="utf-8")
+    expect("unclaimed-trigger src/billing/api.py (http)" in arch, f"architecture todo:\n{arch}")
     phase(repo, "structure")  # worker is unmapped
 
     # HEAD moves under the drafts: status asks for update, update rebases.
@@ -331,7 +375,8 @@ def run(base: Path) -> None:
     phase(repo, "structure")
 
     arch = (wiki / "architecture.md").read_text(encoding="utf-8")
-    arch = arch.replace("| `tests/` |", "| `worker/` | Scheduled jobs, documented later. |\n| `tests/` |")
+    arch = arch.replace("| `tests/` |", "| `worker/` | Scheduled jobs, documented later. |\n"
+                        "| `src/billing/api.py` | One route onto `BillingRun.post`; no flow of its own. |\n| `tests/` |")
     arch = arch.split("<!-- okf:todo", 1)[0] + arch.split("-->\n", 1)[1].lstrip("\n")
     (wiki / "architecture.md").write_text(arch, encoding="utf-8")
     body = BILLING.replace("At most 3", "At most 5").replace("Why 3", "Why 5").replace(

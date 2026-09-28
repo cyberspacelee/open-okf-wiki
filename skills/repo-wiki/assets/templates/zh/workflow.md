@@ -3,7 +3,7 @@
 
 ## 从触发到结果
 
-<!-- 在此添加一张 mermaid sequenceDiagram 或 flowchart，从触发画到结果。 -->
+<!-- 在此添加一张 mermaid sequenceDiagram 或 flowchart，从触发画到结果。scope 包含触发文件和流程经过的文件。 -->
 
 <!-- 可选章节，仅在有可引用内容时添加：
 ## 顺序约束与不变量

@@ -11,8 +11,8 @@ Decisions: `docs/adr/`. To *run* the generator, read
 
 ```text
 skills/repo-wiki/SKILL.md              # the skill's SOP (runtime, not dev docs)
-skills/repo-wiki/references/           # discovery, pages, review, extensions (hub, OpenGauss)
-skills/repo-wiki/scripts/okf.py        # CLI; _scan/_page/_validate/_review/_stamp/_impact/_status, _db/_dbpages
+skills/repo-wiki/references/           # discovery, research, pages, review, extensions (hub, OpenGauss)
+skills/repo-wiki/scripts/okf.py        # CLI; _scan/_code/_page/_validate/_review/_stamp/_impact/_status, _db/_dbpages
 skills/repo-wiki/scripts/tests/        # pytest suite for the deterministic kernel
 skills/repo-wiki/assets/templates/     # page stubs (en, zh) used by okf init and okf new
 skills/repo-wiki/evals/                # tier-1 deterministic lifecycle e2e, fixtures
@@ -50,4 +50,5 @@ uv run skills/repo-wiki/evals/run_cli_e2e.py     # deterministic lifecycle e2e
 Both must pass before merging kernel or contract changes. CI
 (`.github/workflows/qa.yml`) runs them on Linux, macOS and Windows together
 with `eval_update.py --strict`, the `selftest` of `eval_routing.py`,
-`eval_citations.py` and `eval_canon.py`, and `uvx ruff check skills/repo-wiki`.
+`eval_citations.py`, `eval_canon.py` and `eval_recall.py`, and
+`uvx ruff check skills/repo-wiki`.

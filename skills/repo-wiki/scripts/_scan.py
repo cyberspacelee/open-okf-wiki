@@ -10,7 +10,6 @@ import re
 import shlex
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from functools import lru_cache
 from itertools import combinations
 from pathlib import PurePosixPath
 from typing import ClassVar
@@ -19,6 +18,7 @@ from xml.etree import ElementTree
 import tomllib
 import yaml
 
+import _code
 import _config
 import _files
 import _git
@@ -26,7 +26,8 @@ import _git
 MAX_BYTES = 1 << 20
 LIMITS = {
     "entry_points": 50, "commands": 80, "docs": 80, "terms": 50, "configs": 60,
-    "ci_files": 30, "ci_steps": 80,
+    "ci_files": 30, "ci_steps": 80, "triggers": 100, "deps": 60, "central": 20,
+    "resources": 40,
 }
 MAX_CO_CHANGE = 30
 MAX_TEST_DIRS = 20
@@ -216,32 +217,6 @@ INI_SECTIONS = (
 )
 PACKAGE_JSON_KEYS = {"eslintConfig": "lint", "prettier": "format", "jest": "test"}
 
-ACRONYM_STOP = {
-    "HTTP", "HTTPS", "JSON", "API", "APIS", "URL", "URLS", "URI", "SQL", "ID", "IDS",
-    "UUID", "TODO", "FIXME", "NOTE", "XXX", "HACK", "CI", "CD", "CLI", "UI", "UX", "OK",
-    "EOF", "UTF", "ASCII", "XML", "HTML", "CSS", "JS", "TS", "IO", "OS", "DB", "PR",
-    "MIT", "BSD", "GPL", "AS", "IS", "IT", "IF", "OR", "AND", "NOT", "NO", "YES", "TRUE",
-    "FALSE", "NULL", "NONE", "NIL", "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD",
-    "SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "CREATE", "TABLE", "INTO", "VALUES",
-    "INDEX", "KEY", "SET", "ON", "BY", "ORDER", "GROUP", "LIMIT", "JOIN", "DROP", "ALTER",
-    "README", "TLS", "SSL", "SSH", "TCP", "UDP", "IP", "DNS", "CPU", "GPU", "RAM", "PDF",
-    "PNG", "SVG", "CSV", "YAML", "YML", "TOML", "INI", "MD", "ENV", "PATH", "HOME", "USER",
-    "TMP", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "TRACE", "MAX", "MIN", "EN", "ZH",
-    "AI", "LLM", "SDK", "IDE", "VM", "PID", "TTY", "STDIN", "GNU", "UTC", "GMT", "ISO",
-    "RFC", "FAQ", "WIP", "TBD", "NB", "PS", "EG", "IE", "ETC", "VS", "AM", "PM", "US",
-    "UK", "EU", "THE", "A", "AN", "TO", "OF", "IN", "AT", "DO", "BE", "WE", "MY", "ME",
-    "GO", "UP", "SO", "LICENSE", "COPYING", "MAKE", "RUN", "CMD", "ARG", "ARGS", "COPY",
-    "ADD", "WORKDIR", "EXPOSE", "LABEL", "SHELL",
-    "LR", "RL", "TB", "TD", "BT",  # Mermaid flowchart directions
-    # Constant-style English words, not abbreviations.
-    "ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN",
-    "FIRST", "LAST", "NEXT", "PREV", "TYPE", "METHOD", "BLOCK", "VALUE", "NAME", "DATA",
-    "TEXT", "TIME", "DATE", "DAY", "DAYS", "WEEK", "MONTH", "YEAR", "HOUR", "START", "END",
-    "STOP", "OPEN", "CLOSE", "LEFT", "RIGHT", "TOP", "ALL", "ANY", "EMPTY", "FULL", "BASE",
-    "TEST", "MAIN", "STATE", "MODE", "KIND", "LEVEL", "SIZE", "COUNT", "LIST", "MAP",
-    "ITEM", "LINE", "FILE", "ROOT", "NEW", "OLD", "OFF", "OUT", "USE", "FOR", "WITH",
-    "BUT", "ARE", "WAS", "HAS", "CAN", "MAY", "MUST", "WILL", "SEE", "ALSO", "ONLY",
-}
 DEFINED_STOP = {
     "note", "notes", "warning", "important", "tip", "example", "examples", "caution",
     "danger", "info", "todo", "fixme", "deprecated", "default", "required", "optional",
@@ -253,7 +228,6 @@ DEFINED_STOP = {
 }
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_ACRONYM = re.compile(r"\b[A-Z]{2,6}\b")
 _CAPITALIZED = re.compile(r"\b[A-Z][A-Za-z0-9_]*")
 _CAMEL = re.compile(r"(?:[A-Z][a-z0-9]+){2,}")
 _BOLD_DEF = re.compile(
@@ -261,12 +235,6 @@ _BOLD_DEF = re.compile(
 )
 _LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+$")  # text before the bold opens a list item
 _CJK = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
-# Lines where an all-caps word is a placeholder, not a project abbreviation: argparse
-# metavars and help, usage text, and CLI synopses (a line with an --option).
-_USAGE_LINE = re.compile(
-    r"\b(?:metavar|add_argument|add_option|usage)\b|\bhelp\s*=|^\s*usage\s*:|(?:^|[\s\[`(|])--?[a-z][\w-]*",
-    re.IGNORECASE,
-)
 _TYPE_DEF = re.compile(
     r"^[ \t]*(?:(?:export|default|public|private|protected|internal|abstract|final|"
     r"sealed|data|static|open|partial|readonly|declare|case|pub(?:\([^)]*\))?)\s+)*"
@@ -412,11 +380,6 @@ def _dirs(files: list[str]) -> set[str]:
     return dirs
 
 
-@lru_cache(maxsize=4096)
-def _ACRONYM_AT(word: str) -> re.Pattern:
-    return re.compile(rf"\b{word}\b")
-
-
 def _line(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
 
@@ -499,9 +462,13 @@ def _source_modules(tree: _Tree, hub: bool) -> list[tuple[str, str | None]]:
     _drop_aggregators(found, code)
     if not found and (hub or any("/" not in path for path in code)):
         found["."] = None
-    return sorted(
-        (path, _attribution(tree.fileset, path, declared)) for path in found
-    )
+    split = _package_modules(tree.fileset, found, code)
+    attributed = {path: _attribution(tree.fileset, path, declared) for path in found}
+    for path, parent in split.items():
+        found[path] = None
+        attributed[path] = attributed[parent]  # a package shares its build's manifest
+    _drop_aggregators(found, code)
+    return sorted((path, attributed[path]) for path in found)
 
 
 # Top-level directories that only hold code (no build of their own): their child
@@ -526,6 +493,64 @@ def _top_modules(tree: _Tree, top: str, code: list[str]) -> list[str]:
     if any("/" not in path for path in below) or not modules:
         modules.append(top)  # code files directly in the code root
     return modules
+
+
+# A package directory becomes a module of its own when its build holds at least two
+# sibling packages with this many production code files each.
+PACKAGE_MIN_FILES = 3
+_JVM_LANG_DIRS = ("java", "kotlin", "scala", "groovy")
+
+
+def _package_modules(fileset: set[str], found: dict[str, str | None], code: list[str]) -> dict[str, str]:
+    """Package modules inside single builds -> the module they split.
+
+    A JVM source set (``src/main/java``) or a Python package is followed down while
+    it holds exactly one child package and no code of its own (``com/acme/shop``);
+    when that base then holds two or more child packages with ``PACKAGE_MIN_FILES``
+    production code files each, every such child is a module
+    (``src/main/java/com/acme/shop/order``, ``src/shop/billing``). Test code stays
+    with the enclosing module, and one level is split, never deeper.
+    """
+    owned: dict[str, list[str]] = defaultdict(list)
+    for path in code:
+        home = owner(path, found)
+        if home is not None and not is_test_path(path):
+            owned[home].append(path)
+    packages = {_parent(p) for p in fileset if _name(p) == "__init__.py"}
+    package_parents = {_parent(d) for d in packages}
+    split: dict[str, str] = {}
+    for module, files in owned.items():
+        prefix = "" if module == "." else module + "/"
+        bases = []
+        for lang in _JVM_LANG_DIRS:
+            for source_set in ("src/main/", "main/" if module.rsplit("/", 1)[-1] == "src" else None):
+                if source_set and any(p.startswith(f"{prefix}{source_set}{lang}/") for p in files):
+                    bases.append((f"{prefix}{source_set}{lang}", False))
+        if module != "." and (module in packages or module in package_parents):
+            bases.append((module, True))
+        for base, python in bases:
+            for child in _split_children(fileset, base, files, python):
+                split[child] = module
+    return split
+
+
+def _split_children(fileset: set[str], base: str, files: list[str], python: bool) -> list[str]:
+    below = [p for p in files if p.startswith(base + "/")]
+    while True:
+        rest = [p[len(base) + 1:] for p in below]
+        children = {p.split("/", 1)[0] for p in rest if "/" in p}
+        if len(children) != 1 or any("/" not in p for p in rest):
+            break
+        base = f"{base}/{children.pop()}"
+        if python and f"{base}/__init__.py" not in fileset:
+            return []
+    counts = Counter(p[len(base) + 1:].split("/", 1)[0] for p in below if "/" in p[len(base) + 1:])
+    chosen = [
+        f"{base}/{child}" for child, count in sorted(counts.items())
+        if count >= PACKAGE_MIN_FILES and not child.startswith((".", "_")) and not _test_dir(child)
+        and (not python or f"{base}/{child}/__init__.py" in fileset)
+    ]
+    return chosen if len(chosen) >= 2 else []
 
 
 def _attribution(fileset: set[str], path: str, declared: dict[str, str]) -> str | None:
@@ -720,6 +745,9 @@ def scan(ws: _config.Workspace) -> dict:
     test_patterns: set[str] = set()
     docs: list[str] = []
     terms = _Terms()
+    imports = _code.Imports()
+    found_triggers: list[Trigger] = []
+    named: list[tuple[str, str, str, int]] = []  # (kind, name, file, line)
     co_change: list[dict] = []
     for source in ws.sources:
         clean, dirty = _git.is_clean(source.path, [] if ws.hub else [ws.wiki_rel])
@@ -737,14 +765,30 @@ def scan(ws: _config.Workspace) -> dict:
             test_dirs.update(dirs)
             test_patterns |= patterns
             docs += [tree.ws(path) for path in tree.files if _is_doc(path)]
+            found_triggers += _source_triggers(tree)
+            _register_packages(tree, imports)
             # The one pass that reads every hand-written code and doc blob.
-            for path, text in tree.texts([p for p in tree.files if _term_file(p)]):
-                if text is not None and not _is_generated(text):
+            for path, text in tree.texts([p for p in tree.files if _term_file(p) or _mapper_candidate(p)]):
+                if text is None or _is_generated(text):
+                    continue
+                if _term_file(path):
                     terms.add(tree, path, text)
                     entries += _main_entry(tree, path, text)
                     commands += _pep723_command(tree, path, text)
+                if is_test_path(path):
+                    continue
+                if _language(path):
+                    imports.add(tree.ws(path), text)
+                named += [(kind, name, tree.ws(path), line) for kind, name, line in _code.resources_in(path, text)]
             co_change += _co_change(tree)
 
+    module_paths = {m["path"] for m in mods}
+    trigger_list = _trigger_facts(found_triggers, module_paths)
+    per_module = Counter(t["module"] for t in trigger_list)
+    for module in mods:
+        module["triggers"] = per_module[module["path"]]
+    deps, central = _dependency_facts(imports, module_paths)
+    resources = _resource_facts(named, module_paths)
     best: dict[str, int] = {}
     for rank, path in entries:
         best[path] = min(rank, best.get(path, rank))
@@ -762,29 +806,188 @@ def scan(ws: _config.Workspace) -> dict:
         per_name[kind, _name(path)] += 1
         if per_name[kind, _name(path)] <= MAX_SAME_CONFIG:
             config_list.append((kind, path))
+
+    def shown(key: str, items: list) -> list:
+        return items[: LIMITS[key]]
+
+    hints = {
+        "triggers": (len(trigger_list) > LIMITS["triggers"],
+                     (f"{LIMITS['triggers']} of {len(trigger_list)} trigger files shown; okf validate --json "
+                     "lists every one no Workflow scope or Not covered row claims (trigger-coverage)")),
+        "deps": (len(deps) > LIMITS["deps"],
+                 (f"{LIMITS['deps']} of {len(deps)} module edges shown, most imports first; "
+                 "read a module's imports with rg -n '^(import|from) ' <module>")),
+        "central": (len(central) > LIMITS["central"],
+                    f"{LIMITS['central']} of {len(central)} shared files shown, most importing modules first"),
+        "resources": (len(resources) > LIMITS["resources"],
+                      (f"{LIMITS['resources']} of {len(resources)} shared topics and tables shown; "
+                      "rg -n '<name>' finds every use of one")),
+        "entry_points": (len(entry_list) > LIMITS["entry_points"],
+                         (f"{LIMITS['entry_points']} of {len(entry_list)} entry points shown, shallowest first; "
+                         "triggers lists the framework entry points")),
+        "terms": (terms_truncated, "more term candidates exist; read the glossary-like docs and enum types"),
+        "commands": (len(commands) > LIMITS["commands"],
+                     (f"{LIMITS['commands']} of {len(commands)} commands shown, shallowest first; "
+                     "read the build files of the module you need")),
+        "docs": (len(docs) > LIMITS["docs"],
+                 f"{LIMITS['docs']} of {len(docs)} docs shown, shallowest first; git ls-files '*.md' lists all"),
+        "ci": (ci_truncated, "more CI files or steps exist; read the CI directory"),
+        "configs": (len(config_list) > LIMITS["configs"] or len(config_list) < len(configs),
+                    "more lint, format and type configs exist (repeated per module); git ls-files lists them"),
+        "co_change": (len(co_change) > MAX_CO_CHANGE,
+                      f"{MAX_CO_CHANGE} of {len(co_change)} co-change pairs shown, strongest first"),
+    }
     return {
         "sources": sources,
         "modules": sorted(mods, key=lambda m: m["path"]),
-        "entry_points": entry_list[: LIMITS["entry_points"]],
-        "commands": commands[: LIMITS["commands"]],
+        "triggers": shown("triggers", trigger_list),
+        "deps": shown("deps", deps),
+        "central": shown("central", central),
+        "resources": shown("resources", resources),
+        "entry_points": shown("entry_points", entry_list),
+        "commands": shown("commands", commands),
         "ci": ci,
         "configs": [
             {"kind": kind, "path": path}
             for kind, path in sorted(config_list[: LIMITS["configs"]])
         ],
         "tests": {"dirs": ranked_dirs, "patterns": sorted(test_patterns)},
-        "docs": docs[: LIMITS["docs"]],
+        "docs": shown("docs", docs),
         "terms": term_list,
         "co_change": co_change[:MAX_CO_CHANGE],
-        "truncated": {
-            "entry_points": len(entry_list) > LIMITS["entry_points"],
-            "terms": terms_truncated,
-            "commands": len(commands) > LIMITS["commands"],
-            "docs": len(docs) > LIMITS["docs"],
-            "ci": ci_truncated,
-            "configs": len(config_list) > LIMITS["configs"] or len(config_list) < len(configs),
-        },
+        "truncated": {key: hint for key, (hit, hint) in hints.items() if hit},
     }
+
+
+# --- triggers, dependencies and shared resources ----------------------------------------------
+
+
+TRIGGER_KINDS = _code.TRIGGER_KINDS
+
+
+@dataclass(frozen=True)
+class Trigger:
+    path: str  # workspace-relative file
+    line: int
+    kind: str  # one of _code.TRIGGER_KINDS
+
+
+def triggers(
+    ws: _config.Workspace,
+    heads: dict[str, str] | None = None,
+    listings: dict[str, list[str]] | None = None,
+) -> list[Trigger]:
+    """Every trigger at HEAD of every source: where requests, messages, schedules,
+    events and commands enter production code (test and generated files excluded)."""
+    found: list[Trigger] = []
+    for source in ws.sources:
+        with _git.BlobReader(source.path) as blobs:
+            tree = _Tree(
+                ws, source, blobs,
+                (heads or {}).get(source.name), (listings or {}).get(source.name),
+            )
+            found += _source_triggers(tree)
+    return sorted(found, key=lambda t: (t.path, t.line, t.kind))
+
+
+def _source_triggers(tree: _Tree) -> list[Trigger]:
+    hits = _git.grep_files(tree.source.path, tree.head, _code.TRIGGER_TOKENS)
+    wanted = [
+        path for path in tree.files
+        if path in hits and _suffix(path) in _code.TRIGGER_SUFFIXES
+        and not is_test_path(path) and not GENERATED_TOKEN.search(path)
+    ]
+    found = []
+    for rel, text in tree.texts(wanted):
+        if text is not None and not _is_generated(text):
+            found += [Trigger(tree.ws(rel), line, kind) for line, kind in _code.triggers_in(rel, text)]
+    return found
+
+
+def _trigger_facts(found: list[Trigger], module_paths: set[str]) -> list[dict]:
+    """One entry per trigger file: its module, kinds, trigger count and first line."""
+    by_file: dict[str, list[Trigger]] = defaultdict(list)
+    for trigger in found:
+        by_file[trigger.path].append(trigger)
+    facts = []
+    for path, items in by_file.items():
+        items.sort(key=lambda t: t.line)
+        facts.append({
+            "path": path,
+            "module": owner(path, module_paths),
+            "kinds": sorted({t.kind for t in items}, key=TRIGGER_KINDS.index),
+            "count": len(items),
+            "locator": _config.Locator(path, items[0].line, items[0].line).text(),
+        })
+    return sorted(facts, key=lambda f: (f["module"] or "", f["path"]))
+
+
+def _register_packages(tree: _Tree, imports: _code.Imports) -> None:
+    """Source root, workspace package names and Go module paths, for import resolution."""
+    imports.root(tree.source.prefix)
+    for rel in tree.files:
+        name = _name(rel)
+        if name == "package.json" and not is_test_path(rel) and not GENERATED_TOKEN.search(rel):
+            package = _dict(_load("json", tree.text(rel))).get("name")
+            if isinstance(package, str) and package:
+                imports.package(package, tree.ws(rel))
+        elif name == "go.mod" and not re.search(r"(^|/)(testdata|vendor|third_party)/", rel):
+            found = re.search(r"^module\s+(\S+)", tree.text(rel) or "", re.MULTILINE)
+            if found:
+                imports.go_module(_unquote(found[1]), tree.ws(_parent(rel)))
+
+
+def _mapper_candidate(rel: str) -> bool:
+    """An XML file that may be a MyBatis mapper (its SQL names tables)."""
+    return _suffix(rel) == ".xml" and not is_test_path(rel) and not GENERATED_TOKEN.search(rel)
+
+
+def _dependency_facts(imports: _code.Imports, module_paths: set[str]) -> tuple[list[dict], list[dict]]:
+    """Module edges (importing module -> imported module) and the files most modules import."""
+    edges: dict[tuple[str, str], set[tuple[str, int]]] = defaultdict(set)
+    importers: dict[str, set[str]] = defaultdict(set)
+    statements: Counter = Counter()
+    for path, line, target in imports.edges():
+        source, dest = owner(path, module_paths), owner(target, module_paths)
+        if source is None or dest is None or source == dest:
+            continue
+        edges[source, dest].add((path, line))
+        importers[target].add(source)
+        statements[target] += 1
+    deps = []
+    for (source, dest), sites in edges.items():
+        path, line = min(sites)
+        deps.append({
+            "from": source, "to": dest, "count": len(sites),
+            "locator": _config.Locator(path, line, line).text(),
+            "mutual": (dest, source) in edges,
+        })
+    deps.sort(key=lambda d: (-d["count"], d["from"], d["to"]))
+    central = [
+        {"path": target, "module": owner(target, module_paths), "modules": len(users),
+         "imports": statements[target]}
+        for target, users in importers.items() if len(users) >= 2
+    ]
+    central.sort(key=lambda c: (-c["modules"], -c["imports"], c["path"]))
+    return deps, central
+
+
+def _resource_facts(named: list[tuple[str, str, str, int]], module_paths: set[str]) -> list[dict]:
+    """Topics and tables named in two or more modules, with the first site per module."""
+    sites: dict[tuple[str, str], dict[str, tuple[str, int]]] = defaultdict(dict)
+    for kind, name, path, line in sorted(named, key=lambda n: (n[2], n[3])):
+        module = owner(path, module_paths)
+        if module is not None:
+            sites[kind, name].setdefault(module, (path, line))
+    out = []
+    for (kind, name), by_module in sites.items():
+        if len(by_module) < 2:
+            continue
+        out.append({
+            "kind": kind, "name": name, "modules": sorted(by_module),
+            "locators": [_config.Locator(p, n, n).text() for _, (p, n) in sorted(by_module.items())][:6],
+        })
+    return sorted(out, key=lambda r: (-len(r["modules"]), r["kind"], r["name"]))
 
 
 def _bound_ci(files: list[dict]) -> tuple[list[dict], bool]:
@@ -1826,52 +2029,38 @@ class _Terms:
     """Term candidates across all sources; files must be added in a fixed order.
 
     Kinds: ``defined`` (bold definitions in docs), ``state`` (enum-like types, with
-    their first members), ``camel`` (type names used across top-level
-    directories) and ``acronym``. Each kind gets a fair share of the limit so one
-    prolific kind cannot crowd out the others.
+    their first members) and ``camel`` (type names used across top-level
+    directories). Each kind gets a fair share of the limit so one prolific kind
+    cannot crowd out the others.
     """
 
-    RANK: ClassVar[dict[str, int]] = {"defined": 0, "state": 1, "camel": 2, "acronym": 3}
+    RANK: ClassVar[dict[str, int]] = {"defined": 0, "state": 1, "camel": 2}
     MAX_MEMBERS = 8
 
     def __init__(self):
         self.df: Counter = Counter()  # capitalized token -> number of files containing it
         self.tops: dict[str, set[str]] = defaultdict(set)  # camel token -> top-level dirs
-        self.acronyms: dict[str, str] = {}  # acronym -> first locator outside usage lines
         # lower term -> (rank, term, locator); rank = (not a glossary file, not a
         # definition-list entry), so the best definition site wins
         self.defined: dict[str, tuple[tuple[bool, bool], str, str]] = {}
         self.cjk_docs: list[str] = []  # docs with CJK text, for substring counts
         self.states: dict[str, tuple[str, list[str]]] = {}  # enum -> (locator, members)
         self.camels: dict[str, str] = {}
-        self.members: set[str] = set()  # every enum member; they are not acronyms
-        self.assigned: set[str] = set()  # all-caps assignment targets anywhere; not acronyms
-        self.analyzed = 0  # files added
         self.doc_words: list[frozenset[str]] = []  # lowercased words of each doc
 
     def add(self, tree: _Tree, rel: str, text: str) -> None:
         suffix = _suffix(rel)
         if suffix in _TERM_DOCS and _skeleton(rel):
             return  # a page template (assets/templates/en/glossary.md) is not a term source
-        # A word assigned anywhere (LANGS = ..., CONFIG: dict = ...) is a constant,
-        # not an abbreviation, in every file, tests included.
-        self.assigned.update(m[1] or m[2] for m in _ASSIGNED.finditer(text))
         if is_test_path(rel):
             # Test code and fixtures define no project terms and do not count toward
-            # any kind's minimum: file counts, top-level spread and the boilerplate share.
+            # any kind's minimum (file counts, top-level spread).
             return
         tokens = set(_CAPITALIZED.findall(text))
         self.df.update(tokens)
-        self.analyzed += 1
         top = tree.ws(rel.split("/", 1)[0] if "/" in rel else ".")
         for token in tokens:
-            if token.isupper():
-                if (2 <= len(token) <= 6 and token.isalpha() and token not in self.acronyms
-                        and token not in ACRONYM_STOP):
-                    at = _real_use(text, token)
-                    if at is not None:
-                        self.acronyms[token] = tree.loc(rel, _line(text, at))
-            elif _CAMEL.fullmatch(token):
+            if _CAMEL.fullmatch(token):
                 self.tops[token].add(top)
         if suffix in _TERM_DOCS:
             self.doc_words.append(frozenset(_WORD.findall(text.lower())))
@@ -1909,7 +2098,6 @@ class _Terms:
                 self.camels[name] = tree.loc(rel, _line(text, match.start(1)))
         for name, pos, members in _enums(text, suffix):
             members = [m for m in dict.fromkeys(members) if len(m) >= 2 and not m.startswith("_")]
-            self.members.update(members)
             if len(members) >= 2 and name not in self.states:
                 self.states[name] = (tree.loc(rel, _line(text, pos)), members[: self.MAX_MEMBERS])
 
@@ -1922,10 +2110,6 @@ class _Terms:
         if not words:
             return 0
         return sum(1 for doc in self.doc_words if all(word in doc for word in words))
-
-    def _boilerplate(self, word: str) -> bool:
-        """In most files (license headers: "AS IS BASIS, WITHOUT ... ANY KIND")."""
-        return self.analyzed >= 20 and self.df[word] * 2 > self.analyzed
 
     def result(self, limit: int) -> tuple[list[dict], bool]:
         """(at most ``limit`` candidates ordered by kind then count, truncated)."""
@@ -1943,12 +2127,6 @@ class _Terms:
             {"term": name, "kind": "camel", "count": self.df[name], "locator": loc}
             for name, loc in self.camels.items()
             if self.df[name] >= 3 and len(self.tops[name]) >= 2
-        ]
-        by_kind["acronym"] = [
-            {"term": word, "kind": "acronym", "count": self.df[word], "locator": loc}
-            for word, loc in self.acronyms.items()
-            if self.df[word] >= 2 and word not in self.members and word not in self.assigned
-            and not self._boilerplate(word)
         ]
         seen: set[str] = set()
         for kind in self.RANK:
@@ -1985,33 +2163,6 @@ def _defined_after(text: str, end: int) -> bool:
         return False
     following = text[line_end + 1:].split("\n", 1)[0].strip()
     return bool(following) and not following.startswith(("#", "**", "|", "```"))
-
-
-# After an all-caps word: a path segment or file extension (DIR/out, AGENTS.md) or an
-# assignment (ACTOR = ...); before it: a path or attribute (x/DIR, mod.ACTOR).
-_NOT_PROSE_AFTER = re.compile(r"/|\.[a-z]|[ \t]*=(?!=)")
-# An all-caps assignment target: ``LANGS = ...``, ``f(CONFIG=1)``, ``final int MAX =``,
-# or a Python annotated assignment at the start of a line (``CONFIG: dict = {}``).
-_ASSIGNED = re.compile(
-    r"(?<![\w.])([A-Z][A-Z0-9_]*)[ \t]*=(?!=)|^[ \t]*([A-Z][A-Z0-9_]*)[ \t]*:[^=\n]*=(?!=)",
-    re.MULTILINE,
-)
-
-
-def _real_use(text: str, word: str) -> int | None:
-    """Offset of the first occurrence of an all-caps word used as an abbreviation:
-    not on a usage line (argparse, usage text, CLI synopsis), not a placeholder
-    path or file name, not a code constant."""
-    for found in _ACRONYM_AT(word).finditer(text):
-        if found.start() and text[found.start() - 1] in "/.$<{":
-            continue
-        if _NOT_PROSE_AFTER.match(text, found.end()):
-            continue
-        start = text.rfind("\n", 0, found.start()) + 1
-        end = text.find("\n", found.end())
-        if not _USAGE_LINE.search(text[start: len(text) if end < 0 else end]):
-            return found.start()
-    return None
 
 
 def _enums(text: str, suffix: str) -> list[tuple[str, int, list[str]]]:

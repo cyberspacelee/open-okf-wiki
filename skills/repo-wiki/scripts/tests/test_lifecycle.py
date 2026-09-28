@@ -235,6 +235,13 @@ def test_update_refuses_dirty_sources(tmp_path):
         _impact.update(ws)
 
 
+def _brief_canon(ws, text="Brief: from discovery"):
+    for path in _page.CANON.values():
+        page = ws.wiki / path
+        page.write_text(page.read_text(encoding="utf-8").replace(
+            "<!-- okf:todo\n-->", f"<!-- okf:todo\n{text}\n-->", 1), encoding="utf-8")
+
+
 def test_status_phases(tmp_path):
     import _config
     from helpers import git_repo
@@ -250,6 +257,10 @@ def test_status_phases(tmp_path):
     status = _status.status(root)
     assert status["phase"] == "discover" and "modules/a.md" in status["next_actions"][0]
     set_body(ws, "modules/a.md", "<!-- okf:todo\nBoundary: a owns x\n-->\n\n## Responsibility and boundaries\n")
+    # Every canon page needs its brief too.
+    status = _status.status(root)
+    assert status["phase"] == "discover" and "glossary.md" in status["next_actions"][0]
+    _brief_canon(ws)
     status = _status.status(root)
     assert status["phase"] == "structure" and status["issues"][0]["code"] == "coverage"
     # The issue list is never a bare count: it holds what the counts count.
@@ -648,9 +659,48 @@ def test_status_discover_until_briefs_exist(tmp_path):
     # One stub still has no brief and the canon briefs are empty.
     assert status["phase"] == "discover" and "modules/b.md" in status["next_actions"][0]
     assert "modules/a.md" not in status["next_actions"][0]
-    # A canon brief ends discovery even while a stub is empty.
-    set_body(ws, "glossary.md", "<!-- okf:todo\nTerm: x\n-->\n\n" + _page.template("en", "Glossary").split("-->\n", 1)[1])
+    # Canon briefs alone do not end discovery while a stub is empty.
+    _brief_canon(ws)
+    status = _status.status(root)
+    assert status["phase"] == "discover" and "modules/b.md" in status["next_actions"][0]
+    assert "glossary.md" not in status["next_actions"][0]
+    set_body(ws, "modules/b.md", "<!-- okf:todo\nBrief\n-->\n\n## Responsibility and boundaries\n")
     assert _status.status(root)["phase"] != "discover"
+
+
+def test_status_discover_until_triggers_are_traced(tmp_path):
+    import _config
+    from helpers import git_repo
+
+    root = git_repo(tmp_path / "r", {
+        "src/api/routes.py": "@router.post('/orders')\ndef create():\n    pass\n",
+        "src/api/admin.py": "@router.get('/admin')\ndef admin():\n    pass\n",
+        "src/core/tasks.py": "@shared_task\ndef retry():\n    pass\n",
+    })
+    _config.init(root)
+    commit(root, {}, "wiki")
+    ws = _config.load(root)
+    _brief_canon(ws)
+    _page.new_page(ws, "modules/api.md", "Module", "Read before api.", ["src/**"])
+    set_body(ws, "modules/api.md", "<!-- okf:todo\nBrief\n-->\n\n## Responsibility and boundaries\n")
+    status = _status.status(root)
+    # Triggers exist and no Workflow page traces any of them.
+    assert status["phase"] == "discover" and "3 trigger files" in status["next_actions"][0]
+    assert {i["code"] for i in status["issues"][:3]} == {"trigger-coverage"}
+    _page.new_page(ws, "workflows/order.md", "Workflow", "Read before order creation.",
+                   ["src/api/routes.py", "src/core/tasks.py"])
+    set_body(ws, "workflows/order.md", "<!-- okf:todo\nTrace\n-->\n\n## Trigger to outcome\n")
+    status = _status.status(root)
+    assert status["phase"] == "structure"
+    [issue] = [i for i in status["issues"] if i["code"] == "trigger-coverage"]
+    assert "src/api/admin.py (http)" in issue["message"]
+    # A Not covered row (a glob works) claims the rest.
+    arch = ws.wiki / "architecture.md"
+    arch.write_text(arch.read_text(encoding="utf-8").replace(
+        "|---|---|", "|---|---|\n| `src/api/admin*.py` | Admin CRUD, no cross-module flow. |", 1),
+        encoding="utf-8")
+    issues = _validate.validate(ws)
+    assert not [i for i in issues if i.code == "trigger-coverage"]
 
 
 def test_status_done_says_nothing_to_do_when_the_wiki_is_committed(tmp_path):

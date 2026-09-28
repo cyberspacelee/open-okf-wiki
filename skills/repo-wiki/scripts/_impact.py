@@ -163,6 +163,9 @@ def impact(
         "head": facts.head,
         "pages": report_pages,
         "unmapped_modules": [m.path for m in facts.modules if not covered[m.path] and m.path not in excluded],
+        "unclaimed_triggers": [
+            {"path": path, "kinds": kinds} for path, kinds in _validate.unclaimed_triggers(facts, pages)
+        ],
         "missing_scope": [
             {"page": p.path, "glob": g}
             for p in pages
@@ -391,6 +394,11 @@ def plan(ws: _config.Workspace, report: dict, pages: list[_page.Page]) -> tuple[
     arch = _page.CANON["Architecture"]
     for module in report["unmapped_modules"]:
         extra.setdefault(arch, []).append(f"unmapped-module {module}: add it to a page scope or a Not covered row")
+    for item in report["unclaimed_triggers"]:
+        extra.setdefault(arch, []).append(
+            f"unclaimed-trigger {item['path']} ({', '.join(item['kinds'])}): trace it into a Workflow "
+            "page scope or add a Not covered row"
+        )
     for path in report["deleted_not_covered"]:
         extra.setdefault(arch, []).append(f"not-covered-deleted {path}: remove the Not covered row")
     for item in report["missing_scope"]:

@@ -23,9 +23,17 @@ _Avoid_: registered Source, Files Source
 
 **Module**:
 A unit found by `okf scan`: a manifest-declared module or a top-level code
-directory, with a code root such as `src/` split per child directory and
-top-level test roots left out; the grain of coverage.
+directory, with a code root such as `src/` split per child directory, the
+domain packages of a single build split further, and top-level test roots left
+out; the grain of coverage.
 _Avoid_: Source Area, Domain
+
+**Trigger**:
+A place where work enters production code: a route, RPC service, message
+listener, scheduled job, event listener, command or startup hook, found by
+`okf scan`. Every trigger file sits in a Workflow Page's Scope or a Not covered
+row.
+_Avoid_: entry point (a process entry such as `main`), endpoint
 
 **Page**:
 One OKF concept document of type Architecture, Glossary, Conventions, Module or

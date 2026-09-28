@@ -28,7 +28,7 @@ AGENTS.md, with user approval).
 | `init` | `okf init [--wiki DIR] [--lang en\|zh]`; it creates `repo-wiki.yaml` and the glossary, conventions and architecture stubs, or writes nothing (a repository needs a first commit) |
 | `blocked` | fix the config error (a wrong `--wiki` names the configured wiki), or ask the user to commit or stash the dirty source files it names |
 | `update` | `okf update --json`: source changed since a page's revision; redrafts the affected pages with the changes in todo blocks |
-| `discover` | stage 1; it lasts until a canon page has a brief or every module and workflow stub has one; next actions name the stubs still missing a brief |
+| `discover` | stage 1; it lasts until every canon page and every module and workflow stub has a brief, and a Workflow page exists whenever scan found triggers; next actions name what is missing |
 | `structure` | stage 2 |
 | `research` | stage 3; a missing or broken canon page comes first: run the `okf new` command the action names, or fix its frontmatter |
 | `write` | stage 4 |
@@ -50,44 +50,66 @@ table formats and examples: [pages](references/pages.md).
 
 ## 1. Discover
 Run `okf scan --json`. Read README, CONTRIBUTING, docs and ADRs, build and CI
-files and entry points. Create a stub per candidate module or workflow:
+files and entry points. Scan's `triggers` (routes, listeners, jobs, commands),
+`deps` (module imports), `central` (files many modules import) and `resources`
+(topics and tables shared across modules) are the map: they say where work
+enters the code and which modules touch each other. Create a stub per candidate
+module or workflow:
 
     okf new modules/billing.md --type Module --description "Read before changing invoice generation or retries." --scope "src/billing/**"
 
-Write each finding as a brief into the todo block of the page it belongs to. For a
-large repo, dispatch 2-4 scouts by area: each creates stubs for its area and
-writes their briefs, and returns canon candidates, which you merge into the canon
-briefs as each handoff arrives. Signals and handoff format:
-[discovery](references/discovery.md).
+Write each finding as a brief into the todo block of the page it belongs to.
+Discovery runs in two passes; for a large repo dispatch each pass to 2-4 agents:
+
+1. **Scouts, by area** (a group of modules): each creates the module stubs of
+   its area, writes their briefs and returns canon candidates, which you merge
+   into the canon briefs as each handoff arrives.
+2. **Tracers, by trigger group** (trigger files that share a module and kind,
+   or a topic from `resources`): each follows its triggers from entry to outcome
+   across module boundaries and creates the workflow stubs, scoped to the
+   trigger files and the files the flow runs through.
+
+Done when every scanned module has a stub scope or a Not covered candidate,
+every trigger file sits in a workflow stub's scope or a Not covered candidate
+in the architecture brief, and `okf status` leaves `discover`. Signals, tracer
+rules and handoff format: [discovery](references/discovery.md).
 
 ## 2. Structure
 Keep module pages only for real boundaries, and workflow pages only for flows an
 agent would debug or extend; delete stubs that fail the Grep Test. Finalize each
 page's `description` (when to read it) and `scope` globs. List scanned modules
-not worth a page in architecture's Not covered table with a reason. Done when
-`okf validate` reports no coverage, scope or not-covered errors.
+not worth a page, and trigger files that start no flow worth a page (plain
+CRUD, health checks), in architecture's Not covered table with a reason; a glob
+row covers a group. Done when `okf validate` reports no `coverage`,
+`trigger-coverage`, `scope` or `not-covered` error.
 
 ## 3. Research: canon first
 Write glossary, conventions and architecture before any other page; in a large
 repository give each canon page its own writer, but decide canonical names and
-Not covered rows yourself. Verify every candidate in source; drop what you
-cannot ground.
+Not covered rows yourself. Every writer, canon or not, follows
+[research](references/research.md): a sweep of the source before reading the
+brief, then the brief's leads reconciled against it.
 - Glossary: project-specific terms only; one canonical name; aliases in `Avoid`.
-- Conventions: a rule needs a config file or two code instances. Run build, test
-  and lint when safe and record `verified`, `not-run` or `failed`.
-- Architecture: boundaries, dependency direction, recorded rationale,
-  cross-module invariants and change impact (scan `co_change`).
+- Conventions: a rule needs a config file or two code instances, counted over
+  the whole repository. Run build, test and lint when safe and record
+  `verified`, `not-run` or `failed`.
+- Architecture: boundaries and dependency direction from scan `deps` (a
+  `mutual` edge is a cycle to explain or flag), recorded rationale, cross-module
+  invariants, shared `resources`, and change impact (scan `co_change`).
 
 Keep the required headings `okf new` wrote. Done when the three pages have no
 todo block and `okf validate` shows no error on them.
 
 ## 4. Write
 Dispatch one writer per remaining page, in parallel. Give each writer the page
-path, glossary, conventions, architecture and [pages](references/pages.md).
-Writers research only their scope, use canonical terms, delete the todo block,
-and return the page path, proposed new terms and the open-question count. Merge
-accepted terms into the glossary yourself. Done when no page has a todo block
-and `okf validate` shows no error; warnings go to review.
+path, glossary, conventions, architecture, [research](references/research.md)
+and [pages](references/pages.md). Writers sweep their scope, reconcile the
+brief, use canonical terms, delete the todo block, and return the page path,
+the counts `leads confirmed / dropped / new findings`, proposed new terms and
+the open-question count. A writer that reports no new finding on a scope with
+triggers, guards or cross-module calls gets a second sweep. Merge accepted
+terms into the glossary yourself. Done when no page has a todo block and
+`okf validate` shows no error; warnings go to review.
 
 ## 5. Review and stamp
 Run `okf review prepare --json`. Dispatch a fresh reviewer that wrote none of
@@ -109,7 +131,8 @@ With an existing wiki, `okf impact --json` shows which pages are stale and why;
 suggested locator for moved lines. Reasons whose page is missing or unparsable
 come back under `unplaced`; restore that page as `okf status` says, then update again.
 Redo stages 3-5 for those pages only; revisit stage 2 only for unmapped or
-deleted modules.
+deleted modules, and trace each `unclaimed-trigger` (a new route, listener or
+job) into a Workflow page scope or give it a Not covered row.
 While coding: `okf impact --files <paths> --json` gives, per path, `read` (pages
 to read before editing), `update` (pages citing it), `change_impact` rows to
 check, the `canon` pages and a `note` (e.g. `no page covers this path`). It also

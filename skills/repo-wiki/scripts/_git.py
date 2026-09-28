@@ -264,6 +264,18 @@ def diff_name_status(
     return changes
 
 
+def grep_files(repo: Path, rev: str, tokens: tuple[str, ...]) -> set[str]:
+    """Paths at ``rev`` whose text contains at least one of the fixed strings."""
+    args = ["grep", "-z", "-l", "-I", "-F", "--no-color"]
+    for token in tokens:
+        args += ["-e", token]
+    result = _run(repo, *args, _rev(rev), "--", check=False)
+    if result.returncode not in (0, 1):  # 1: no file matched
+        raise GitError(f"git grep failed in {repo}", _err(result.stderr))
+    prefix = f"{rev}:"
+    return {p.removeprefix(prefix) for p in _paths(result.stdout)}
+
+
 def log_name_only(repo: Path, max_commits: int) -> list[list[str]]:
     """Changed paths per commit reachable from HEAD, newest first."""
     out = _run(

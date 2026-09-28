@@ -22,7 +22,8 @@ only). No pydantic. Standard library otherwise. All git access goes through
 | `_git.py` | every git subprocess call | — |
 | `_config.py` | `Workspace`, `Source`, config load/init, hub-source detection, locator parse, path resolve, compiled globs | `_git`, yaml |
 | `_page.py` | `Page` model, page discovery, canon table parsing, templates, `new_page`, `mark_draft`, frontmatter writing | `_config`, `_frontmatter`, `_markdown` |
-| `_scan.py` | deterministic repository facts, `modules()` | `_config`, `_git` |
+| `_code.py` | code structure over blob text: trigger rules, import resolution (`Imports`), named resources (topics, tables) | — |
+| `_scan.py` | deterministic repository facts, `modules()`, `triggers()` | `_code`, `_config`, `_git` |
 | `_validate.py` | every rule in design §7.3, `Issue`, `Facts` (HEAD facts shared with status, stamp and impact) | all above |
 | `_review.py` | subject digest, `_review.json` schema and checks | `_page`, `_config` |
 | `_stamp.py` | stamp, index render, `verify`, `pointer` | `_page`, `_review`, `_validate`, `_scan` |
@@ -133,6 +134,7 @@ class BlobReader:                         # context manager over `git cat-file -
     def read_many(self, rev: str, paths: list[str])         # yields (path, bytes | None) in order; requests pipelined by a writer thread
 def diff_name_status(repo: Path, old: str, new: str, pathspecs: list[str]) -> list[tuple[str, str, str | None]]
     # (status letter A/M/D/R/T, path, new_path for R) with -M and :(glob) pathspecs; empty pathspec list → whole tree
+def grep_files(repo: Path, rev: str, tokens: tuple[str, ...]) -> set[str]    # paths at rev containing any fixed string (git grep -l -I -F); narrows trigger reading
 def log_name_only(repo: Path, max_commits: int) -> list[list[str]]            # per commit file lists, newest first
 def check_ignore(repo: Path, path: str) -> bool
 ```
@@ -303,6 +305,10 @@ Rule codes, severities and semantics are exactly design §7.3, plus:
   rendered index.
 - `not-covered` (error): a Not covered row whose path matches no tracked file,
   or with an empty reason.
+- `trigger-coverage` (error, on `architecture.md`): a trigger file (see Scan)
+  that no Workflow page scope matches and no Not covered row with a reason
+  matches (`glob_match`, so a row may be a path, a directory or a glob). One
+  issue per file, naming its trigger kinds.
 - `unreviewed-edit` (error): a stable page whose `content_sha256` differs from
   `stamp.content_sha256` (body, stamped frontmatter or `stamp.reviewed_by`
   edited after stamp), or whose `verified` list is not the one stamp and
@@ -317,8 +323,9 @@ the recorded revision anyway). Blobs are read with one `BlobReader` per source.
 
 `Facts(ws)` holds the HEAD facts of one command and is shared by validate,
 status, stamp and impact: HEADs, the tracked listing of each source (one
-`ls-tree` per source, also handed to `_scan.modules`), modules, each file's
-owning module, glob matches (`glob_filter`, cached per glob), `rev_exists` and
+`ls-tree` per source, also handed to `_scan.modules` and `_scan.triggers`),
+modules, each file's owning module, the triggers (one `git grep -F` per source
+over `_code.TRIGGER_TOKENS`, then only the matching files are read), glob matches (`glob_filter`, cached per glob), `rev_exists` and
 `current` per (source, revision), and `changes(source, rev)`: one whole-tree
 `git diff --name-status -M rev HEAD` per distinct revision, wiki paths dropped
 in a single repository. Git calls therefore grow with sources and distinct
@@ -326,13 +333,17 @@ revisions, never with pages, citations or files × globs.
 
 Coverage is by ownership: a file belongs to its deepest module, and a module is
 covered when a page scope matches at least one file it owns. A scope inside a
-nested module covers that module, not its parent.
+nested module covers that module, not its parent. Trigger coverage is by file:
+`_validate.unclaimed_triggers(facts, pages)` lists `(path, kinds)` for every
+trigger file outside all Workflow scopes and Not covered rows; validate, status
+and impact share it.
 
 ## Scan
 
 ```python
 def scan(ws) -> dict        # the JSON document below; deterministic for a given HEAD
 def modules(ws, heads=None, listings=None) -> list[Module]   # Module(path: str, source: str, manifest: str | None)
+def triggers(ws, heads=None, listings=None) -> list[Trigger] # Trigger(path: str, line: int, kind: str), sorted by path, line, kind
 def owner(path: str, modules) -> str | None     # deepest module directory containing path ("." when that is a module)
 def is_test_path(rel: str) -> bool              # the test-path rule, on a source-relative path
 ```
@@ -340,7 +351,12 @@ def is_test_path(rel: str) -> bool              # the test-path rule, on a sourc
 ```json
 {
   "sources": [{"name": ".", "head": "<sha>", "clean": true, "dirty": [], "shallow": false}],
-  "modules": [{"path": "src/billing", "source": ".", "manifest": "pyproject.toml", "files": 12, "languages": {"Python": 12}}],
+  "modules": [{"path": "src/billing", "source": ".", "manifest": "pyproject.toml", "files": 12, "languages": {"Python": 12}, "triggers": 2}],
+  "triggers": [{"path": "src/billing/api.py", "module": "src/billing", "kinds": ["http"], "count": 3, "locator": "src/billing/api.py#L12"}],
+  "deps": [{"from": "src/billing", "to": "src/payments", "count": 4, "locator": "src/billing/run.py#L1", "mutual": false}],
+  "central": [{"path": "src/core/money.py", "module": "src/core", "modules": 3, "imports": 9}],
+  "resources": [{"kind": "topic", "name": "invoice-posted", "modules": ["src/billing", "src/ledger"],
+                 "locators": ["src/billing/post.py#L30", "src/ledger/consumer.py#L8"]}],
   "entry_points": ["src/app/main.py", "tools/sync.py"],
   "commands": [{"name": "test", "command": "uv run pytest -q", "kind": "test", "locator": "Makefile#L4", "cwd": "."},
                {"name": "verify", "command": "./mvnw -q verify", "kind": "build", "locator": "pom.xml#L41", "cwd": "."},
@@ -354,7 +370,7 @@ def is_test_path(rel: str) -> bool              # the test-path rule, on a sourc
   "terms": [{"term": "BillingRun", "kind": "camel", "count": 7, "locator": "src/billing/run.py#L12"},
             {"term": "InvoiceState", "kind": "state", "count": 9, "locator": "src/billing/state.py#L3", "members": ["DRAFT", "POSTED"]}],
   "co_change": [{"a": "src/a.py", "b": "tests/test_a.py", "support": 5, "confidence": 0.83}],
-  "truncated": {"entry_points": false, "terms": false, "commands": false, "docs": false, "ci": false, "configs": false}
+  "truncated": {"commands": "80 of 97 commands shown, shallowest first; read the build files of the module you need"}
 }
 ```
 
@@ -396,9 +412,21 @@ file and no manifest module, with two refinements:
   root with a `main` child (the Maven/Gradle source sets `src/main`,
   `src/test`) stays one module.
 
+Package modules: inside every module found so far, a base is followed down
+while it holds exactly one child directory and no code of its own: each JVM
+source set `src/main/{java,kotlin,scala,groovy}` (or `main/<lang>` when the
+module is itself a `src` directory), and the module directory when it is a
+Python package or holds Python packages (`__init__.py`; the descent stops at a
+directory without one). When that base then holds two or more child
+directories (not hidden, `_`-prefixed or test-named, and for Python each a
+package) with at least `PACKAGE_MIN_FILES` (3) production code files each, every
+such child becomes a module (`src/main/java/com/acme/shop/order`,
+`src/shop/billing`) with the manifest of the module it split; test code and the
+remaining files stay with that module. One level is split, never deeper.
+
 A declared module that contains another module and
 owns no code file itself (a Maven packaging parent) is dropped; its children
-stay. `manifest` names the nearest manifest that owns the module: its own
+stay (checked again after the package split). `manifest` names the nearest manifest that owns the module: its own
 manifest file (`MANIFESTS` in its directory), else the manifest that declared
 it, else, for a code root or a directory in one, the nearest parent manifest
 when that parent declares no modules (a single build such as a Maven
@@ -457,16 +485,14 @@ test roots of code files (test-support directories are not listed);
 `tests.patterns` are the file-name conventions of the test-path rule seen on
 code files, plus `Test*` for a `TestFoo` file inside a test root; `.sql` and
 shell files give no test pattern.
-Terms are read in one pipelined pass over code and doc blobs; test files
-(the test-path rule) add no candidate of any kind and do not count toward any
-kind's minimum (file counts, top-level directories, the analyzed-file total);
-only their assignment targets still mark a word as a constant:
+Terms are read in one pipelined pass over code and doc blobs;
+test files (the test-path rule) add no candidate of any kind and do not count
+toward any kind's minimum (file counts, top-level directories):
 `defined`, `state`
-(an enum-like type with its first 8 `members`; members are not terms), `camel`
-(defined type names in 3+ files and 2+ top-level directories) and `acronym`
-(not an enum member, not in more than half the analyzed files, which drops
-license-header words); each kind gets a quarter of the limit before the rest is
-filled in kind order.
+(an enum-like type with its first 8 `members`; members are not terms) and
+`camel` (defined type names in 3+ files and 2+ top-level directories); each
+kind gets a third of the limit before the rest is filled in kind order.
+All-caps abbreviations are not candidates.
 
 - `defined`: a bold term followed by `:`, `：`, a dash or ` is ` (or `**Term:**`)
   in a Markdown/reST doc. Bold that opens a bulleted or numbered list item
@@ -478,19 +504,61 @@ filled in kind order.
   Defined terms rank by the same order, then by count. `count` is the number
   of docs containing every word of the term; a term with CJK characters counts
   its substring occurrences across the docs instead.
-- `acronym`: an all-caps word of 2-6 letters (not in the stop list, which
-  includes Mermaid directions such as `LR`) counts only where it is used as an
-  abbreviation: not on a usage line (argparse `metavar`/`help=`/`add_argument`,
-  `usage` text, a CLI synopsis line holding an `--option`), not a placeholder
-  path or file name (`DIR/out`, `AGENTS.md`, `x/DIR`), not an attribute or an
-  assignment target (`mod.ACTOR`, `ACTOR = ...`). A word with no such use is
-  dropped; the locator is its first such use. A word that is an assignment
-  target anywhere (`LANGS = ...`, `f(EVALS=3)`, `CONFIG: dict = {}` at the
-  start of a line) is a constant and dropped everywhere.
+
+Triggers (`_code.triggers_in`, rules in `_code.TRIGGER_RULES`) are found in
+production code only (not test paths, generated paths or generated files), on
+text whose comments are blanked (and string literals too in Java, Kotlin,
+Scala, Groovy and C#; docstrings in Python):
+
+| kind | JVM | Python | JS/TS | Go, C# |
+|---|---|---|---|---|
+| `http` | `@RestController`, `@Controller`, `@*Mapping`, JAX-RS `@Path(` | `@x.get/post/put/delete/patch/route/api_route/websocket(`, DRF/Flask view classes, `path(`/`re_path(`/`url(` in `urls.py` | NestJS `@Controller(`/`@Get(`..., `app/router/server/api.get('/…'` | `http.HandleFunc(`, `.GET("/…"`; `[ApiController]`, `[HttpGet]`, `: ControllerBase` |
+| `rpc` | `@DubboService`, `@GrpcService`, `extends …ImplBase` | `add_*Servicer_to_server(` | | |
+| `listener` | `@KafkaListener`, `@RabbitListener`, `@RabbitHandler`, `@JmsListener`, `@SqsListener`, `@StreamListener`, `@RocketMQMessageListener`, `@PulsarListener`, `implements RocketMQListener` | `@x.agent/subscriber/consumer/subscribe(` | `@EventPattern(`, `@MessagePattern(`, `@Processor(` | |
+| `job` | `@Scheduled`, `@Schedules`, `@XxlJob`, `extends QuartzJobBean`, `implements Job/StatefulJob/SimpleJob/DataflowJob` | `@task`, `@shared_task`, `@periodic_task`, `@scheduled_job`, `@dag`, `@flow` (optionally qualified), `DAG(` | `@Cron(`, `@Interval(`, `@Timeout(` | `.AddFunc(`; `: BackgroundService`, `: IHostedService` |
+| `event` | `@EventListener`, `@TransactionalEventListener` | `@receiver(` | `@OnEvent(` | |
+| `cli` | | `class Command(BaseCommand)`, `@x.command(`/`@x.group(` | | |
+| `startup` | `implements CommandLineRunner/ApplicationRunner` | | | |
+
+A JVM file with `@FeignClient` or `@RegisterRestClient` declares outbound calls:
+its `http` hits are dropped. `triggers` in the scan lists one entry per file
+(`kinds` in the order above, `count` of trigger lines, `locator` of the first),
+sorted by module then path; `modules[].triggers` counts trigger files per
+module.
+
+`deps` and `central` come from `_code.Imports` over every production code file
+of every source (hub sources resolve into each other): Java/Kotlin/Scala/Groovy
+`import` (a class by `package` plus file stem; static imports by their class;
+`pkg.*` to one file of the package), Python `import`/`from` (absolute names
+resolved from each source root, its `src`, and the parent of every top-level
+package; relative imports by path), JS/TS relative specifiers (with extension
+and `index` probing) and workspace package names (`package.json` `name`, to
+that manifest), Go import paths under a `go.mod` `module`. An edge is counted
+once per import statement between different owning modules; `locator` is the
+first statement (by path, line); `mutual` marks module pairs importing each
+other. Sorted by count descending, then from, to. `central` lists imported
+files with importers in two or more other modules, by importer modules, then
+import statements.
+
+`resources` (`_code.resources_in`) names `topic`s from listener annotation
+attributes (`topics`, `topic`, `queues`, `destination`, `value`,
+`topicPattern`), `KafkaConsumer(`/`.subscribe(` and send-style calls with a
+literal first argument (`send`, `sendDefault`, `send_and_wait`,
+`convertAndSend`, `syncSend`, `asyncSend`, `sendOneWay`, `produce`, `publish`),
+and `table`s from `@Table(name=…)`, `@TableName(…)`, `__tablename__`,
+`db_table`, `.sql` files, MyBatis mapper XML (`<mapper`) and string literals
+that start with a SQL verb (`from`/`join`/`into`/`update`/`table` targets,
+schema and quotes stripped, lowercased, SQL words dropped). Only names found in
+two or more modules are listed, with the first site per module, most modules
+first.
 
 Limits: entry points 50, commands 80, docs 80, terms 50, configs 60 (at most 3
 paths per kind and file name, shallowest first), CI 30 files and 80 steps,
-co-change 30; `truncated` says which limit was hit. Co-change: last 500 commits
+co-change 30, triggers 100, deps 60, central 20, resources 40. `truncated` has
+one entry per list that hit its limit: a hint naming how many were shown and
+where the rest are (for triggers, `okf validate --json`, whose
+`trigger-coverage` issues list every unclaimed file); it is `{}` when nothing
+was cut. Co-change: last 500 commits
 per source, commits touching more than 50 files skipped, lock files and wiki
 files skipped, pairs of two build manifests skipped (version bumps), only files
 existing at HEAD, `support >= 3` and max directional confidence `>= 0.6`.
@@ -593,7 +661,8 @@ def update(ws) -> dict      # {"drafted", "rebased", "unplaced", "impact"}
 {"head": {".": "<sha>"},
  "pages": [{"page": "modules/billing.md", "status": "stable", "revision": {".": "<sha>"},
             "reasons": [{"kind": "cited-moved", "path": "src/b.py", "locator": "src/b.py#L3-L5", "suggested": "src/b.py#L7-L9", "since": "<sha12>"}]}],
- "unmapped_modules": ["src/new"], "missing_scope": [{"page": "…", "glob": "…"}], "deleted_not_covered": ["old/"]}
+ "unmapped_modules": ["src/new"], "unclaimed_triggers": [{"path": "src/new/api.py", "kinds": ["http"]}],
+ "missing_scope": [{"page": "…", "glob": "…"}], "deleted_not_covered": ["old/"]}
 ```
 
 Reason kinds: `cited-context` (cited lines identical at the same place, file
@@ -620,7 +689,8 @@ ending with ` (since <sha12>)`, the base the change was diffed from (so
 recheck every claim` and the catalog reasons have no suffix. A reason equal to
 a whole `- ` line already in the todo block is not repeated (the suffix is
 part of the line; substrings do not count). It adds
-`unmapped-module` and `not-covered-deleted` lines to the Architecture page and
+`unmapped-module`, `unclaimed-trigger <path> (<kinds>)` and
+`not-covered-deleted` lines to the Architecture page and
 `scope-empty` lines to the page owning the glob, and rebases the revision of any
 other draft whose revision is no longer current. `plan(ws, report, pages)`
 computes the new lines per page (the pages update would redraft) and the
@@ -699,7 +769,7 @@ fix the frontmatter by hand, or set the type) → `update` (a draft page's
 revision has different source content than HEAD, or no page is a draft and
 `_impact.plan` would redraft a page for stale pages, unmapped modules, deleted
 Not covered paths or empty scope globs) →
-`discover` → `structure` (coverage, scope or not-covered errors)
+`discover` → `structure` (coverage, trigger-coverage, scope or not-covered errors)
 → `research` (canon page with todo or error) → `write` (other page with todo or
 error; a `section` error counts like any other page error) → `review` (drafts;
 review missing, stale, invalid or changes requested;
@@ -707,15 +777,14 @@ next actions also offer `okf stamp --unreviewed`, except while `_review.json`
 holds a `changes_requested` verdict, current or stale) → `stamp` (drafts; review
 approved) → `done`.
 
-`discover` holds while the canon briefs are empty and discovery has not
-produced a stub brief: at least one canon page exists and every existing
-canon page has a todo block, all of them empty (whitespace only, the
-template's block), and either
-there is no Module or Workflow page or at least one of them has only empty
-todo blocks (a stub created without a brief). Its next action is `okf scan
---json, then stage 1 (Discover)` without stubs, else it names the stubs still
-missing a brief (up to 10). A brief in any canon page, or a brief in every
-stub, ends discovery.
+`discover` holds while discovery is incomplete: at least one canon page exists
+and either a canon page or a Module/Workflow page has only empty todo blocks
+(whitespace only, the template's block; a page without a todo block is not
+empty), or `trigger-coverage` issues exist and there is no Workflow page. Its
+next action is `okf scan --json, then stage 1 (Discover)` while there is no
+Module or Workflow page and every canon brief is empty; otherwise it names the
+pages still missing a brief (up to 10) and, when no Workflow page traces a
+trigger, the number of unclaimed trigger files, whose issues come first.
 
 `done` next actions: `okf stamp --by repo-wiki/<model> (rewrites index.md)` when
 `index.md` is stale; else `review and commit the wiki (<n> changed files): git
@@ -787,7 +856,8 @@ repositories, never mocks of git. CI (`.github/workflows/qa.yml`) runs the
 AGENTS.md Verify commands (`uv run --with pytest --with PyYAML --with
 "psycopg[binary]" -m pytest tests -q` from `skills/repo-wiki/scripts`, and
 `uv run skills/repo-wiki/evals/run_cli_e2e.py`), then `eval_update.py --strict`,
-the `selftest` of `eval_routing.py`, `eval_citations.py` and `eval_canon.py`, and
+the `selftest` of `eval_routing.py`, `eval_citations.py`, `eval_canon.py` and
+`eval_recall.py`, and
 `uvx ruff check skills/repo-wiki`, on Linux, macOS and Windows,
 so code must use `pathlib`, posix-normalized relative paths, `newline="\n"`
 writes and no shell features.

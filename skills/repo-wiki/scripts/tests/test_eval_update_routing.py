@@ -81,3 +81,10 @@ def test_routing_cli_round_trip(tmp_path):
     assert "routing@3: 5 task(s)" in text.stdout
     bad = _script("eval_routing.py", "score", "--tasks", str(answers), "--answers", str(answers), cwd=repo)
     assert bad.returncode == 2 and "tasks subcommand" in bad.stderr
+
+
+def test_recall_selftest(tmp_path):
+    import eval_recall
+
+    result = eval_recall.selftest(tmp_path)
+    assert result["summary"]["overall"] == {"hits": 5, "total": 9, "recall": 0.556}

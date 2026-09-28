@@ -3,7 +3,7 @@
 
 ## Trigger to outcome
 
-<!-- Add one mermaid sequenceDiagram or flowchart from trigger to outcome. -->
+<!-- Add one mermaid sequenceDiagram or flowchart from trigger to outcome. The scope holds the trigger files and the files the flow runs through. -->
 
 <!-- Optional sections, only when there is grounded content:
 ## Ordering constraints and invariants

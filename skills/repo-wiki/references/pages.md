@@ -45,7 +45,7 @@ the template wrote it (en or zh).
 | `Glossary` | always, one page | a glossary table | ambiguities and context boundaries |
 | `Conventions` | always, one page | Commands (命令) with its table; Rules (规则) with its table | extension recipes (steps to add a new X) |
 | `Module` | a module with a real boundary, invariant or extension point | Responsibility and boundaries (职责与边界) | why; invariants table; extension points; failure modes; change guide (change impact table); gotchas; related tests |
-| `Workflow` | a cross-module flow an agent would debug or extend | Trigger to outcome (从触发到结果) | ordering constraints and invariants; failure and recovery; where to change |
+| `Workflow` | a cross-module flow an agent would debug or extend, started by one or more scan `triggers` | Trigger to outcome (从触发到结果) | ordering constraints and invariants; failure and recovery; where to change |
 
 A diagram is recommended for Architecture's boundaries and a Workflow's
 trigger to outcome, not required.
@@ -62,7 +62,7 @@ Author-owned keys:
 | `title` | short noun phrase |
 | `description` | when to read this page, e.g. "Read before changing invoice generation, proration or billing retries." It is copied into `index.md` and is the routing entry point |
 | `tags` | optional list of strings |
-| `scope` | source globs this page answers for; required for Module and Workflow. `**` spans directories; a plain directory path covers everything below it. Scopes may overlap |
+| `scope` | source globs this page answers for; required for Module and Workflow. `**` spans directories; a plain directory path covers everything below it. Scopes may overlap. A Workflow scope names its trigger files and the files the flow runs through; that claims the triggers (`trigger-coverage`) and routes `okf impact --files` on them to the page |
 
 Kernel-owned keys; leave them as the kernel wrote them: `status`, `revision`
 (set by `okf new` and `okf update`), and after stamp `sources`, `generated`,
@@ -177,7 +177,12 @@ Allowed values (same tokens in zh pages):
   instance count written in the Rule cell.
 - Change impact has one home: cross-module rows in Architecture, rows local to
   one module in that module's Change guide. Each row cites the co-change
-  evidence (scan `co_change`, a test, or the code that couples the two).
+  evidence (scan `co_change`, a test, or the code that couples the two). A
+  topic or table two modules share (scan `resources`) is change impact too:
+  changing its shape means checking the other side.
+- A Not covered row names a module, a file or a glob and gives a reason; it
+  excludes modules from `coverage` and trigger files from `trigger-coverage`
+  (`src/**/web/Health*.java | Health probes; no flow.`).
 
 ## Links, todo blocks, diagrams
 

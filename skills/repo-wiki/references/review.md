@@ -43,6 +43,17 @@ never run `okf stamp`, `okf update` or `okf new`.
 4. **Missing.** Name high-value knowledge the page's scope holds but the page
    lacks: an invariant with a guard in scope, a cross-module step, a co-change
    pair, an extension recipe, a term used across modules. Cite where you saw it.
+   Check recall against `okf scan --json`, not only against the pages:
+   - pick at least three trigger files in Workflow scopes and follow each one;
+     a boundary crossed, a topic or table touched, or a guard on the way that
+     the workflow page does not state is `missing`;
+   - read the Not covered rows that exclude trigger files; a row whose trigger
+     starts a cross-module flow is `missing` on architecture.md;
+   - every `deps` edge between covered modules, and every `mutual` edge, must
+     agree with Architecture's dependency direction; a contradiction is
+     `unsupported`, an absent strong edge is `missing`;
+   - a `resources` topic or table shared by modules must appear in a workflow
+     or in change impact.
 5. **Warnings.** For each `alias` warning, decide: drift (`terminology` issue)
    or a legitimate quote (dismiss). For `uncited-why`, apply item 2. For
    `parrot`, apply item 3. A dismissed warning needs no issue.

@@ -321,11 +321,10 @@ def test_terms_each_kind(tmp_path):
     assert terms["InvoiceLine"] == {"term": "InvoiceLine", "kind": "camel", "count": 3,
                                     "locator": "billing/invoice.py#L1"}
     assert "OnlyHere" not in terms
-    assert terms["SLA"]["kind"] == "acronym" and terms["SLA"]["count"] == 2
-    assert terms["KYC"]["locator"] == "README.md#L1"  # first file in path order
-    assert "JSON" not in terms and "HTTP" not in terms
+    # All-caps words are not candidates: abbreviations come from docs and code review.
+    assert "SLA" not in terms and "KYC" not in terms
     kinds = [t["kind"] for t in report["terms"]]
-    order = ["defined", "state", "camel", "acronym"]
+    order = ["defined", "state", "camel"]
     assert kinds == sorted(kinds, key=order.index)
 
 
@@ -376,8 +375,8 @@ def test_determinism_and_truncation(tmp_path):
     first = _scan.scan(ws)
     assert first == _scan.scan(ws)
     assert json.dumps(first, sort_keys=False) == json.dumps(_scan.scan(ws), sort_keys=False)
-    assert first["truncated"] == {"entry_points": True, "terms": True, "commands": True, "docs": True,
-                                  "ci": False, "configs": False}
+    assert set(first["truncated"]) == {"entry_points", "terms", "commands", "docs"}
+    assert first["truncated"]["commands"].startswith("80 of 85 commands shown")
     assert len(first["entry_points"]) == 50
     assert len(first["commands"]) == 80
     assert len(first["docs"]) == 80
@@ -388,8 +387,7 @@ def test_determinism_and_truncation(tmp_path):
 def test_no_truncation(tmp_path):
     repo = git_repo(tmp_path / "r", {"src/a.py": "\n"})
     report = _scan.scan(wiki_ws(repo))
-    assert report["truncated"] == {"entry_points": False, "terms": False, "commands": False,
-                                   "docs": False, "ci": False, "configs": False}
+    assert report["truncated"] == {}
     assert report["co_change"] == [] and report["ci"] == []
 
 
@@ -470,8 +468,8 @@ def test_terms_share_the_limit_across_kinds(tmp_path):
     repo = git_repo(tmp_path / "r", files)
     report = _scan.scan(wiki_ws(repo))
     kinds = {t["kind"] for t in report["terms"]}
-    assert kinds == {"defined", "state", "camel", "acronym"}
-    assert len(report["terms"]) == 50 and report["truncated"]["terms"] is True
+    assert kinds == {"defined", "state", "camel"}
+    assert len(report["terms"]) == 50 and "terms" in report["truncated"]
     assert "ALPHA" not in _terms(report)
 
 
@@ -522,7 +520,7 @@ def test_ci_and_configs_are_bounded(tmp_path):
     assert {"kind": "typecheck", "path": "tsconfig.json"} in report["configs"]  # shallowest first
     spotbugs = [c for c in report["configs"] if c["path"].endswith("spotbugs-exclude.xml")]
     assert len(spotbugs) == _scan.MAX_SAME_CONFIG  # a per-module copy is listed a few times only
-    assert report["truncated"]["ci"] is True and report["truncated"]["configs"] is True
+    assert "ci" in report["truncated"] and "configs" in report["truncated"]
 
 
 def test_jvm_entry_points_test_dirs_and_build_configs(tmp_path):
@@ -566,20 +564,6 @@ def test_shallow_clone_is_reported(tmp_path):
         subprocess.run(["git", "-C", str(clone), "config", key, value], check=True)
     ws = wiki_ws(clone)
     assert _scan.scan(ws)["sources"][0]["shallow"] is True
-
-
-def test_license_header_words_are_not_acronyms(tmp_path):
-    header = "// Licensed on an AS IS BASIS, WITHOUT WARRANTIES OF ANY KIND.\n"
-    files = {f"src/m{i:02d}/F{i}.java": header + f"class F{i} {{}}\n" for i in range(24)}
-    files["src/m00/Ledger.java"] = header + "// The GL posting.\nclass Ledger {}\n"
-    files["src/m01/Use.java"] = header + "// GL again.\nclass Use {}\n"
-    repo = git_repo(tmp_path / "r", files)
-    terms = _terms(_scan.scan(wiki_ws(repo)))
-    assert "GL" in terms
-    assert not {"BASIS", "ANY", "KIND"} & set(terms)
-
-
-# --- build-tool commands --------------------------------------------------------
 
 
 def _runs(report):
@@ -813,7 +797,7 @@ def test_build_commands_are_deterministic_and_bounded(tmp_path):
     report = _scan.scan(ws)
     assert report == _scan.scan(ws)
     assert len(report["commands"]) == _scan.LIMITS["commands"]
-    assert report["truncated"]["commands"] is True
+    assert "commands" in report["truncated"]
     assert report["commands"][0]["locator"] == "Makefile#L1"  # shallowest first
     assert len({(c["command"], c["locator"]) for c in report["commands"]}) == len(report["commands"])
 
@@ -946,29 +930,6 @@ def test_generated_marker_must_be_a_header_comment(tmp_path):
     assert "Page" in terms and "Machine" not in terms
 
 
-def test_acronyms_in_usage_lines_or_placeholders_are_dropped(tmp_path):
-    repo = git_repo(tmp_path / "r", {
-        "cli.py": (
-            "import argparse\n\nACTOR = 1\n"
-            "p = argparse.ArgumentParser()\n"
-            "p.add_argument('--out', metavar='DIR', help='write FILE here')\n"
-            "print(p.ACTOR)\n"
-        ),
-        "README.md": (
-            "Run `tool init [--wiki DIR]` first.\n\n"
-            "usage: tool pack FILE\n\n"
-            "    -> DIR/judge/packets.jsonl\n\n"
-            "See AGENTS.md and the SLA.\n\n"
-            "```mermaid\nflowchart LR\n  a --> b\n```\n"
-        ),
-        "docs/sla.md": "The SLA covers AGENTS.md readers.\n\nflowchart LR\n",
-    })
-    terms = _terms(_scan.scan(wiki_ws(repo)))
-    assert terms["SLA"]["locator"] == "README.md#L7"
-    for dropped in ("DIR", "FILE", "ACTOR", "AGENTS", "LR"):
-        assert dropped not in terms
-
-
 def test_python_main_entry_points_and_pep723_scripts(tmp_path):
     script = "#!/usr/bin/env -S uv run --script\n# /// script\n# dependencies = []\n# ///\nprint(1)\n"
     repo = git_repo(tmp_path / "r", {
@@ -1064,3 +1025,95 @@ def test_test_paths_are_no_entry_points_and_no_term_sources(tmp_path):
     # InvoiceLine is used in one other top-level directory only through a test file.
     assert "InvoiceLine" not in _terms(report)
     assert report["tests"] == {"dirs": ["src/test"], "patterns": ["*Test.java", "Test*.java", "test_*.py"]}
+
+
+# --- package modules, triggers, dependencies, shared resources ---------------------------------
+
+_J = "src/main/java/com/acme/shop"
+
+
+def _java_shop() -> dict[str, str]:
+    files = {"pom.xml": "<project><artifactId>shop</artifactId></project>\n",
+             f"{_J}/ShopApplication.java": "package com.acme.shop;\nclass ShopApplication {}\n",
+             "src/test/java/com/acme/shop/order/OrderTest.java": "package com.acme.shop.order;\n@RestController\nclass T {}\n"}
+    for package, names in (("order", ("OrderController", "OrderService", "OrderRepo")),
+                           ("payment", ("PaymentService", "PaymentJob", "InventoryClient")),
+                           ("common", ("Money", "Ids")), ("util", ())):
+        for name in names:
+            files[f"{_J}/{package}/{name}.java"] = f"package com.acme.shop.{package};\nclass {name} {{}}\n"
+    files[f"{_J}/order/OrderController.java"] = (
+        "package com.acme.shop.order;\nimport com.acme.shop.payment.PaymentService;\n"
+        "import com.acme.shop.common.Money;\n"
+        '@RestController\nclass OrderController {\n  void f() { kafka.send("order-created", x); }\n}\n'
+    )
+    files[f"{_J}/payment/PaymentService.java"] = (
+        "package com.acme.shop.payment;\nimport com.acme.shop.order.OrderRepo;\nimport com.acme.shop.common.Money;\n"
+        '@KafkaListener(topics = "order-created")\nclass PaymentService {}\n'
+    )
+    files[f"{_J}/payment/PaymentJob.java"] = "package com.acme.shop.payment;\nclass PaymentJob { @Scheduled void run() {} }\n"
+    files[f"{_J}/payment/InventoryClient.java"] = (
+        'package com.acme.shop.payment;\n@FeignClient("inv")\ninterface InventoryClient { @GetMapping("/x") String x(); }\n'
+    )
+    files[f"{_J}/order/OrderRepo.java"] = 'package com.acme.shop.order;\n@Table(name = "t_order")\nclass OrderRepo {}\n'
+    files["src/main/resources/mapper/PaymentMapper.xml"] = (
+        '<mapper namespace="p">\n<select id="a">select * from t_order</select>\n</mapper>\n'
+    )
+    return files
+
+
+def test_single_build_packages_become_modules(tmp_path):
+    repo = git_repo(tmp_path / "r", _java_shop())
+    modules = {m.path: m.manifest for m in _scan.modules(wiki_ws(repo))}
+    # order and payment have 3 production files each; common has 2 and stays with src.
+    assert modules == {"src": "pom.xml", f"{_J}/order": "pom.xml", f"{_J}/payment": "pom.xml"}
+
+
+def test_python_packages_split_only_with_two_qualifying_siblings(tmp_path):
+    files = {"src/shop/__init__.py": "", "src/shop/cli.py": "x\n"}
+    for package in ("orders", "billing"):
+        files.update({f"src/shop/{package}/{n}.py": "x\n" for n in ("__init__", "a", "b")})
+    files.update({"src/shop/plain/a.py": "x\n", "src/shop/plain/b.py": "x\n", "src/shop/plain/c.py": "x\n"})
+    repo = git_repo(tmp_path / "r", files)
+    paths = [m.path for m in _scan.modules(wiki_ws(repo))]
+    # plain/ has no __init__.py: not a package, it stays with src/shop.
+    assert paths == ["src/shop", "src/shop/billing", "src/shop/orders"]
+    lone = git_repo(tmp_path / "l", {"src/shop/__init__.py": "", **{f"src/shop/only/{n}.py": "x\n"
+                                                                  for n in ("__init__", "a", "b")}})
+    assert [m.path for m in _scan.modules(wiki_ws(lone))] == ["src/shop"]
+
+
+def test_scan_reports_triggers_deps_and_shared_resources(tmp_path):
+    ws = wiki_ws(git_repo(tmp_path / "r", _java_shop()))
+    report = _scan.scan(ws)
+    order, payment = f"{_J}/order", f"{_J}/payment"
+    assert report["triggers"] == [
+        {"path": f"{order}/OrderController.java", "module": order, "kinds": ["http"], "count": 1,
+         "locator": f"{order}/OrderController.java#L4"},
+        {"path": f"{payment}/PaymentJob.java", "module": payment, "kinds": ["job"], "count": 1,
+         "locator": f"{payment}/PaymentJob.java#L2"},
+        {"path": f"{payment}/PaymentService.java", "module": payment, "kinds": ["listener"], "count": 1,
+         "locator": f"{payment}/PaymentService.java#L4"},
+    ]
+    assert {m["path"]: m["triggers"] for m in report["modules"]} == {"src": 0, order: 1, payment: 2}
+    assert [(d["from"], d["to"], d["count"], d["mutual"]) for d in report["deps"]] == [
+        (order, "src", 1, False), (order, payment, 1, True),
+        (payment, "src", 1, False), (payment, order, 1, True),
+    ]
+    assert report["deps"][1]["locator"] == f"{order}/OrderController.java#L2"
+    assert report["central"] == [
+        {"path": f"{_J}/common/Money.java", "module": "src", "modules": 2, "imports": 2},
+    ]
+    assert report["resources"] == [
+        {"kind": "table", "name": "t_order", "modules": ["src", order],
+         "locators": ["src/main/resources/mapper/PaymentMapper.xml#L2", f"{order}/OrderRepo.java#L2"]},
+        {"kind": "topic", "name": "order-created", "modules": [order, payment],
+         "locators": [f"{order}/OrderController.java#L6", f"{payment}/PaymentService.java#L4"]},
+    ]
+    assert _scan.triggers(ws)[0] == _scan.Trigger(f"{order}/OrderController.java", 4, "http")
+
+
+def test_trigger_truncation_names_the_full_list(tmp_path):
+    files = {f"svc/h{i:03d}.py": "@app.get('/x')\ndef h():\n    pass\n" for i in range(105)}
+    report = _scan.scan(wiki_ws(git_repo(tmp_path / "r", files)))
+    assert len(report["triggers"]) == _scan.LIMITS["triggers"]
+    assert report["truncated"]["triggers"].startswith("100 of 105 trigger files shown; okf validate --json")

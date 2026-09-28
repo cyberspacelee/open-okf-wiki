@@ -101,7 +101,8 @@ def stamp_baseline(ws: _config.Workspace, repo: Path) -> None:
         raise Failure(f"baseline stamp blocked: {json.dumps(result['blocked'], indent=2)}")
     commit(repo, "wiki v1")
     report = _impact.impact(ws)
-    if report["pages"] or report["unmapped_modules"] or report["deleted_not_covered"] or report["missing_scope"]:
+    if (report["pages"] or report["unmapped_modules"] or report["unclaimed_triggers"]
+            or report["deleted_not_covered"] or report["missing_scope"]):
         raise Failure(f"baseline is not clean: {json.dumps(report, indent=2)}")
 
 
@@ -648,6 +649,8 @@ def _check_update(ws: _config.Workspace, report: dict, problems: list[str]) -> b
     want: dict[str, list[str]] = {item["page"]: [_impact.describe(r) for r in item["reasons"]] for item in report["pages"]}
     for module in report["unmapped_modules"]:
         want.setdefault(arch, []).append(f"unmapped-module {module}")
+    for item in report["unclaimed_triggers"]:
+        want.setdefault(arch, []).append(f"unclaimed-trigger {item['path']}")
     for path in report["deleted_not_covered"]:
         want.setdefault(arch, []).append(f"not-covered-deleted {path}")
     for item in report["missing_scope"]:

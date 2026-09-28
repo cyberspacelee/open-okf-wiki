@@ -11,7 +11,7 @@ import _review
 import _validate
 
 MAX_ISSUES = 20
-STRUCTURE_CODES = ("coverage", "scope", "not-covered")
+STRUCTURE_CODES = ("coverage", "trigger-coverage", "scope", "not-covered")
 
 
 def status(root: Path, wiki: str | None = None) -> dict:
@@ -76,19 +76,32 @@ def status(root: Path, wiki: str | None = None) -> dict:
     body_pages = [p for p in author if p.type in ("Module", "Workflow")]
     canon = [p for p in author if p.path in canon_paths]
     stubs = [p.path for p in body_pages if empty_brief(p)]
-    if canon and all(empty_brief(p) for p in canon) and (not body_pages or stubs):
-        if not body_pages:
+    empty_canon = [p.path for p in canon if empty_brief(p)]
+    open_triggers = [i for i in issues if i.code == "trigger-coverage"]
+    untraced = bool(open_triggers) and not any(p.type == "Workflow" for p in body_pages)
+    if canon and (empty_canon or stubs or untraced):
+        if not body_pages and len(empty_canon) == len(canon):
             return done("discover", ["okf scan --json, then stage 1 (Discover)"], [])
-        shown = ", ".join(stubs[:10]) + (" ..." if len(stubs) > 10 else "")
-        return done(
-            "discover",
-            [f"stage 1 (Discover): write briefs into the todo blocks of the canon pages and of {shown}"],
-            [],
-        )
+        actions = []
+        if empty_canon or stubs:
+            missing = empty_canon + stubs
+            shown = ", ".join(missing[:10]) + (" ..." if len(missing) > 10 else "")
+            actions.append(f"stage 1 (Discover): write briefs into the todo blocks of {shown}")
+        if untraced:
+            actions.append(
+                f"stage 1 (Discover): trace the {len(open_triggers)} trigger files no Workflow page "
+                "claims (okf validate --json, code trigger-coverage) into Workflow stubs"
+            )
+        return done("discover", actions, open_triggers if untraced else [])
 
     structure = [i for i in errors if i.code in STRUCTURE_CODES]
     if structure:
-        return done("structure", ["fix the coverage and scope issues below (stage 2)"], structure)
+        return done(
+            "structure",
+            [("stage 2 (Structure): fix the issues below; put each unclaimed trigger file in a "
+              "Workflow page scope (trace it first) or a Not covered row with a reason")],
+            structure,
+        )
 
     canon_open = [i for i in blocking if i.page in canon_paths or i.code in ("canon-missing", "canon-table")]
     if canon_open:

@@ -33,6 +33,8 @@ jobs:
         run: uv run skills/repo-wiki/evals/eval_citations.py selftest
       - name: Canon selftest
         run: uv run skills/repo-wiki/evals/eval_canon.py selftest
+      - name: Recall selftest
+        run: uv run skills/repo-wiki/evals/eval_recall.py selftest
       - name: Lint
         run: uvx ruff check skills/repo-wiki
       - name: PowerShell JSON pipeline
