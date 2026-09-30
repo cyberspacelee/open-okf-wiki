@@ -10,6 +10,7 @@ agent at the places to read, it does not replace reading them.
 import posixpath
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 
 JVM = (".java", ".kt", ".scala", ".groovy")
 PY = (".py",)
@@ -412,3 +413,435 @@ def _parent(path: str) -> str:
 
 def _line(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
+
+
+# --- contract sites -----------------------------------------------------------------------------
+#
+# A contract site is one place where code provides or consumes an interface another
+# repository may use: an HTTP route or client call, an RPC service or stub, a topic
+# it publishes or listens to, a table it writes or reads. ``_scan`` matches sites
+# across the sources of a hub into contracts.
+
+
+@dataclass(frozen=True)
+class Site:
+    kind: str  # http | rpc | topic | table | library
+    key: str  # "POST /orders/{}", "InventoryService", "order-created", "t_order", "com.acme:api"
+    role: str  # provider | consumer
+    line: int
+    hint: str = ""  # an HTTP client's declared service (Feign name, URL host)
+
+
+CONTRACT_KINDS = ("http", "rpc", "topic", "table", "library")
+HTTP_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS")
+ANY = "ANY"
+
+_PARAM = re.compile(r"\$\{[^}]*\}|\{[^}]*\}|<[^>]*>|:[A-Za-z_]\w*|%[sd]|\(\?P<\w+>[^)]*\)")
+
+
+def normalize_http_path(raw: str, route: bool = False) -> str | None:
+    """A route or URL as a comparable path: host and query dropped, parameters as
+    ``{}``, lowercase, no trailing slash. None when nothing path-like is left (a
+    client URL must start with a host, a slash or a leading placeholder)."""
+    text = raw.strip().strip("^$")
+    text = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/]*", "", text)  # scheme and host
+    text = text.split("?", 1)[0].split("#", 1)[0]
+    lead = re.match(r"^(?:\$\{[^}]*\}|\{[^}]*\}|%s)+", text)  # a base-URL placeholder
+    if lead:
+        text = text[lead.end():]
+    if not text.startswith("/"):
+        if not route or not text or not re.match(r"[\w{<:$(]", text):
+            return None
+        text = "/" + text
+    text = _PARAM.sub("{}", text)
+    text = re.sub(r"/{2,}", "/", text).rstrip("/") or "/"
+    if not re.search(r"[A-Za-z]", text):
+        return None  # only parameters: nothing to match on
+    return text.lower()
+
+
+def normalize_contract_id(text: str) -> str:
+    """A contract id (or a glob over ids) in canonical form: whitespace collapsed,
+    the kind lowercase, an HTTP method uppercase and its path normalized."""
+    parts = str(text).split()
+    if not parts:
+        return ""
+    parts[0] = parts[0].lower()
+    if parts[0] == "http" and len(parts) == 3:
+        method = parts[1].upper()
+        path = parts[2]
+        if not any(ch in path for ch in "*?["):
+            path = normalize_http_path(path, route=True) or path
+        else:
+            path = _PARAM.sub("{}", path).lower()
+        return f"http {method} {path}"
+    return " ".join(parts)
+
+
+def contract_id(kind: str, key: str) -> str:
+    return f"{kind} {key}"
+
+
+_JVM_TYPE_DECL = re.compile(r"\b(?:class|interface|enum|record)\s+\w+")
+_SPRING_MAPPING = re.compile(r"@(Get|Post|Put|Delete|Patch|Request)Mapping\b(?:\s*\(([^)]*)\))?")
+_JAXRS_PATH = re.compile(r"@Path\s*\(\s*(?:value\s*=\s*)?\"([^\"]*)\"\s*\)")
+_JAXRS_METHOD = re.compile(r"@(GET|POST|PUT|DELETE|PATCH|HEAD)\b")
+_FEIGN = re.compile(r"@FeignClient\b(?:\s*\(([^)]*)\))?")
+_REST_CLIENT = re.compile(r"@RegisterRestClient\b(?:\s*\(([^)]*)\))?")
+_ANNOTATION_STRING = re.compile(r"(?:\b(value|path|name|url|configKey|baseUri)\s*=\s*)?\{?\s*\"([^\"]*)\"")
+_REST_TEMPLATE = re.compile(
+    r"\.\s*(getForObject|getForEntity|postForObject|postForEntity|postForLocation|put|delete"
+    r"|patchForObject|exchange)\s*\(\s*\"([^\"]+)\"([^;]*)"
+)
+_WEB_CLIENT = re.compile(r"\.\s*(get|post|put|delete|patch)\s*\(\s*\)\s*\.\s*uri\s*\(\s*\"([^\"]+)\"")
+_DUBBO_SERVICE = re.compile(r"@DubboService\b")
+_IMPLEMENTS_LIST = re.compile(r"\bclass\s+\w+[^{]*?\bimplements\s+([\w.<>,\s]+?)\s*\{")
+_DUBBO_REFERENCE = re.compile(
+    r"@DubboReference\b(?:\s*\([^)]*\))?\s*(?:@\w+(?:\s*\([^)]*\))?\s*)*"
+    r"(?:(?:private|protected|public|final|static)\s+)*([\w.]+)(?:<[^>]*>)?\s+\w+\s*[;=]"
+)
+_GRPC_IMPL = re.compile(r"\bextends\s+(?:[\w.]+\.)?(\w+)Grpc\s*\.\s*\w+ImplBase\b")
+_GRPC_STUB = re.compile(r"\b(\w+)Grpc\s*\.\s*(?:new\w*Stub\s*\(|\w+Stub\b)")
+_PY_ROUTE = re.compile(
+    r"^[ \t]*@([\w.]+)\.(get|post|put|delete|patch|api_route|route|websocket)\s*\(\s*[rf]?[\"']([^\"'\n]*)[\"']"
+    r"([^\n]*)", re.MULTILINE,
+)
+_PY_PREFIX = re.compile(r"\b(\w+)\s*=\s*(?:[\w.]*\.)?(?:APIRouter|Blueprint)\s*\(([^)]*)\)", re.DOTALL)
+_PY_DJANGO = re.compile(r"(?<![\w.])(re_path|path|url)\s*\(\s*r?[\"']([^\"'\n]*)[\"']")
+_PY_CLIENT = re.compile(r"(?<![@\w.])([\w.]+)\s*\.\s*(get|post|put|delete|patch)\s*\(\s*f?[\"']([^\"'\n]+)[\"']")
+_PY_SERVICER = re.compile(r"\badd_(\w+)Servicer_to_server\s*\(")
+_PY_STUB = re.compile(r"pb2_grpc\s*\.\s*(\w+)Stub\s*\(")
+_JS_SERVER = re.compile(
+    r"\b(?:app|router|server)\s*\.\s*(get|post|put|delete|patch|all)\s*\(\s*['\"`](/[^'\"`]*)['\"`]"
+)
+_NEST_CONTROLLER = re.compile(r"@Controller\s*\(\s*(?:['\"`]([^'\"`]*)['\"`])?")
+_NEST_METHOD = re.compile(r"@(Get|Post|Put|Delete|Patch|All)\s*\(\s*(?:['\"`]([^'\"`]*)['\"`])?\s*\)")
+_JS_FETCH = re.compile(r"\bfetch\s*\(\s*['\"`]([^'\"`]+)['\"`]\s*(?:,\s*\{([^}]*)\})?")
+_JS_CLIENT = re.compile(
+    r"\b(?:axios|http|api|client|request|ky|\$http|this\s*\.\s*\$?http|this\s*\.\s*api)\s*\.\s*"
+    r"(get|post|put|delete|patch)\s*(?:<[^>()]*>)?\s*\(\s*['\"`]([^'\"`]+)['\"`]"
+)
+_GO_HANDLE = re.compile(r"\bHandle(?:Func)?\s*\(\s*\"([^\"]+)\"")
+_GO_ROUTER = re.compile(r"\.\s*(GET|POST|PUT|DELETE|PATCH|Any|Get|Post|Put|Delete|Patch)\s*\(\s*\"(/[^\"]*)\"")
+_GO_CLIENT = re.compile(r"\bhttp\s*\.\s*(Get|Post|Head)\s*\(\s*\"([^\"]+)\"")
+_GO_REQUEST = re.compile(
+    r"\bhttp\s*\.\s*NewRequest(?:WithContext)?\s*\(\s*(?:\w+\s*,\s*)?(?:http\s*\.\s*Method(\w+)|\"(\w+)\")"
+    r"\s*,\s*\"([^\"]+)\""
+)
+_GO_REGISTER = re.compile(r"\.\s*Register(\w+)Server\s*\(")
+_GO_NEW_CLIENT = re.compile(r"\.\s*New(\w+)Client\s*\(")
+_CS_ROUTE = re.compile(r"\[\s*Route\s*\(\s*\"([^\"]*)\"\s*\)\s*\]")
+_CS_METHOD = re.compile(r"\[\s*Http(Get|Post|Put|Delete|Patch)\s*(?:\(\s*\"([^\"]*)\"\s*\))?\s*\]")
+_CS_CLASS = re.compile(r"\bclass\s+(\w+?)(?:Controller)?\b")
+_CS_CLIENT = re.compile(
+    r"\.\s*(Get|Post|Put|Delete|Patch)(?:Async|FromJsonAsync|AsJsonAsync|StringAsync)\s*(?:<[^>()]*>)?"
+    r"\s*\(\s*\$?\"([^\"]+)\""
+)
+_SEND_ARGS = re.compile(
+    r"\.\s*(?:send|sendDefault|send_and_wait|convertAndSend|syncSend|asyncSend|sendOneWay|produce|publish)"
+    r"\s*\(\s*(?:topic\s*=\s*)?[\"']([^\"'\n]{2,120})[\"']"
+)
+
+
+def contract_sites(path: str, text: str) -> list[Site]:
+    """Every contract site one production file holds, sorted by line."""
+    suffix = _suffix(path)
+    if suffix == ".sql" or (suffix == ".xml" and "<mapper" in text):
+        return sorted(_table_sites(text, 0, text), key=lambda s: (s.line, s.kind, s.key, s.role))
+    if suffix not in JVM + PY + JS + GO + CS:
+        return []
+    code = _with_strings(path, text)
+    found: set[Site] = set()
+    if suffix in JVM:
+        found |= _jvm_http(code) | _jvm_rpc(code)
+    elif suffix in PY:
+        found |= _py_http(path, code) | _py_rpc(code)
+    elif suffix in JS:
+        found |= _js_http(code)
+    elif suffix in GO:
+        found |= _go_http(code) | _go_rpc(code)
+    elif suffix in CS:
+        found |= _cs_http(code)
+    found |= _topic_sites(code)
+    found |= _table_sites(text, 0, text, entities=True)
+    return sorted(found, key=lambda s: (s.line, s.kind, s.key, s.role))
+
+
+def _with_strings(path: str, text: str) -> str:
+    """Comments blanked, string literals kept (routes and URLs are strings)."""
+    if _suffix(path) in PY:
+        return re.sub(r"#[^\n]*", lambda m: " " * len(m[0]), _PY_DOCSTRING.sub(_blank, text))
+    return _C_COMMENTS.sub(_keep_strings, text)
+
+
+_PY_DOCSTRING = re.compile(r"^[ \t]*(?:\"\"\".*?\"\"\"|'''.*?''')", re.DOTALL | re.MULTILINE)
+
+
+def _http(method: str, raw: str, line: int, role: str, route: bool, hint: str = "") -> Site | None:
+    path = normalize_http_path(raw, route=route)
+    if path is None:
+        return None
+    method = method.upper()
+    method = method if method in HTTP_METHODS else ANY
+    return Site("http", f"{method} {path}", role, line, hint)
+
+
+def _join(prefix: str, sub: str) -> str:
+    return "/".join(part.strip("/") for part in (prefix, sub) if part.strip("/")) or "/"
+
+
+def _annotation_path(args: str | None) -> str:
+    """The path of a mapping annotation: ``value =``/``path =`` or the first positional string."""
+    if not args:
+        return ""
+    named = re.search(r"\b(?:value|path)\s*=\s*\{?\s*\"([^\"]*)\"", args)
+    if named:
+        return named[1]
+    first = re.match(r"\s*\{?\s*\"([^\"]*)\"", args)
+    return first[1] if first else ""
+
+
+def _jvm_http(code: str) -> set[Site]:
+    decl = _JVM_TYPE_DECL.search(code)
+    head = decl.start() if decl else len(code)
+    feign = _FEIGN.search(code) or _REST_CLIENT.search(code)
+    role = "consumer" if feign else "provider"
+    hint = ""
+    prefix = ""
+    if feign and feign[1]:
+        args = feign[1]
+        named = {k or "value": v for k, v in _ANNOTATION_STRING.findall(args)}
+        hint = named.get("name") or named.get("value") or named.get("configKey") or ""
+        url = named.get("url") or named.get("baseUri") or ""
+        if not hint and url:
+            hint = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", url).split("/", 1)[0].split(":", 1)[0]
+        prefix = named.get("path", "")
+    for match in _SPRING_MAPPING.finditer(code, 0, head):
+        if match[1] == "Request":
+            prefix = _join(prefix, _annotation_path(match[2]))
+    for match in _JAXRS_PATH.finditer(code, 0, head):
+        prefix = _join(prefix, match[1])
+    found: set[Site] = set()
+    for match in _SPRING_MAPPING.finditer(code, head):
+        kind, args = match[1], match[2]
+        if kind == "Request":
+            verb = re.search(r"RequestMethod\s*\.\s*(\w+)", args or "")
+            method = verb[1] if verb else ANY
+        else:
+            method = kind
+        site = _http(method, _join(prefix, _annotation_path(args)), _line(code, match.start()), role, True, hint)
+        if site:
+            found.add(site)
+    bare = _C_NOISE.sub(_blank, code)  # boundaries are searched outside strings
+    for match in _JAXRS_METHOD.finditer(code, head):
+        sub = _JAXRS_PATH.search(_member_window(code, bare, head, match))
+        site = _http(match[1], _join(prefix, sub[1] if sub else ""), _line(code, match.start()), role, True, hint)
+        if site:
+            found.add(site)
+    for match in _REST_TEMPLATE.finditer(code):
+        call, url, rest = match[1], match[2], match[3]
+        if call == "exchange":
+            verb = re.search(r"HttpMethod\s*\.\s*(\w+)", rest)
+            method = verb[1] if verb else ANY
+        else:
+            method = re.match(r"[a-z]+", call)[0]
+        site = _http(method, url, _line(code, match.start()), "consumer", False)
+        if site:
+            found.add(site)
+    for match in _WEB_CLIENT.finditer(code):
+        site = _http(match[1], match[2], _line(code, match.start()), "consumer", False)
+        if site:
+            found.add(site)
+    return found
+
+
+_MEMBER_END = re.compile(r"\)\s*(?:throws[^{;]*)?[{;]")
+
+
+def _member_window(code: str, bare: str, head: int, match: re.Match) -> str:
+    """The annotations and signature of the member an annotation belongs to: from the
+    previous statement or block boundary to the end of the member's signature
+    (``bare`` is ``code`` with strings blanked, so a ``{`` in a route is no boundary)."""
+    start = max(bare.rfind(ch, head, match.start()) for ch in ";{}") + 1
+    end = _MEMBER_END.search(bare, match.end())
+    return code[start: end.start() if end else len(code)]
+
+
+def _jvm_rpc(code: str) -> set[Site]:
+    found: set[Site] = set()
+    if _DUBBO_SERVICE.search(code):
+        for match in _IMPLEMENTS_LIST.finditer(code):
+            for name in match[1].split(","):
+                name = re.sub(r"<.*", "", name).strip().rsplit(".", 1)[-1]
+                if name:
+                    found.add(Site("rpc", name, "provider", _line(code, match.start())))
+    for match in _DUBBO_REFERENCE.finditer(code):
+        found.add(Site("rpc", match[1].rsplit(".", 1)[-1], "consumer", _line(code, match.start())))
+    for match in _GRPC_IMPL.finditer(code):
+        found.add(Site("rpc", match[1], "provider", _line(code, match.start())))
+    for match in _GRPC_STUB.finditer(code):
+        found.add(Site("rpc", match[1], "consumer", _line(code, match.start())))
+    return found
+
+
+def _py_http(path: str, code: str) -> set[Site]:
+    prefixes = {}
+    for match in _PY_PREFIX.finditer(code):
+        found = re.search(r"\b(?:prefix|url_prefix)\s*=\s*[rf]?[\"']([^\"']*)[\"']", match[2])
+        if found:
+            prefixes[match[1]] = found[1]
+    out: set[Site] = set()
+    for match in _PY_ROUTE.finditer(code):
+        owner, verb, route, rest = match[1], match[2], match[3], match[4]
+        prefix = prefixes.get(owner.rsplit(".", 1)[-1], "")
+        if verb in ("route", "api_route"):
+            listed = re.search(r"\bmethods\s*=\s*[\[(]([^\])]*)[\])]", rest)
+            methods = re.findall(r"[\"'](\w+)[\"']", listed[1]) if listed else ["GET"]
+        elif verb == "websocket":
+            methods = [ANY]
+        else:
+            methods = [verb]
+        for method in methods:
+            site = _http(method, _join(prefix, route), _line(code, match.start()), "provider", True)
+            if site:
+                out.add(site)
+    if path.rsplit("/", 1)[-1] == "urls.py":
+        for match in _PY_DJANGO.finditer(code):
+            site = _http(ANY, match[2], _line(code, match.start()), "provider", True)
+            if site:
+                out.add(site)
+    for match in _PY_CLIENT.finditer(code):
+        receiver, method, url = match[1], match[2], match[3]
+        if receiver.rsplit(".", 1)[-1] in ("app", "router", "blueprint", "bp", "api"):
+            continue
+        if not re.match(r"(?:https?://|/|\{|%s)", url):
+            continue  # a dict or cache key, not a URL
+        site = _http(method, url, _line(code, match.start()), "consumer", False)
+        if site:
+            out.add(site)
+    return out
+
+
+def _py_rpc(code: str) -> set[Site]:
+    found = {Site("rpc", m[1], "provider", _line(code, m.start())) for m in _PY_SERVICER.finditer(code)}
+    found |= {Site("rpc", m[1], "consumer", _line(code, m.start())) for m in _PY_STUB.finditer(code)}
+    return found
+
+
+def _js_http(code: str) -> set[Site]:
+    out: set[Site] = set()
+    for match in _JS_SERVER.finditer(code):
+        method = ANY if match[1] == "all" else match[1]
+        site = _http(method, match[2], _line(code, match.start()), "provider", True)
+        if site:
+            out.add(site)
+    controller = _NEST_CONTROLLER.search(code)
+    if controller:
+        prefix = controller[1] or ""
+        for match in _NEST_METHOD.finditer(code, controller.end()):
+            method = ANY if match[1] == "All" else match[1]
+            site = _http(method, _join(prefix, match[2] or ""), _line(code, match.start()), "provider", True)
+            if site:
+                out.add(site)
+    for match in _JS_FETCH.finditer(code):
+        verb = re.search(r"\bmethod\s*:\s*['\"`](\w+)['\"`]", match[2] or "")
+        site = _http(verb[1] if verb else "GET", match[1], _line(code, match.start()), "consumer", False)
+        if site:
+            out.add(site)
+    for match in _JS_CLIENT.finditer(code):
+        site = _http(match[1], match[2], _line(code, match.start()), "consumer", False)
+        if site:
+            out.add(site)
+    return out
+
+
+def _go_http(code: str) -> set[Site]:
+    out: set[Site] = set()
+    for match in _GO_HANDLE.finditer(code):
+        pattern = match[1].strip()
+        method, _, route = pattern.rpartition(" ")
+        site = _http(method or ANY, route, _line(code, match.start()), "provider", True)
+        if site:
+            out.add(site)
+    for match in _GO_ROUTER.finditer(code):
+        method = ANY if match[1] == "Any" else match[1]
+        site = _http(method, match[2], _line(code, match.start()), "provider", True)
+        if site:
+            out.add(site)
+    for match in _GO_CLIENT.finditer(code):
+        site = _http(match[1], match[2], _line(code, match.start()), "consumer", False)
+        if site:
+            out.add(site)
+    for match in _GO_REQUEST.finditer(code):
+        site = _http(match[1] or match[2], match[3], _line(code, match.start()), "consumer", False)
+        if site:
+            out.add(site)
+    return out
+
+
+def _go_rpc(code: str) -> set[Site]:
+    found = {Site("rpc", m[1], "provider", _line(code, m.start())) for m in _GO_REGISTER.finditer(code)}
+    found |= {Site("rpc", m[1], "consumer", _line(code, m.start())) for m in _GO_NEW_CLIENT.finditer(code)}
+    return found
+
+
+def _cs_http(code: str) -> set[Site]:
+    out: set[Site] = set()
+    decl = _CS_CLASS.search(code)
+    head = decl.start() if decl else len(code)
+    prefix = ""
+    for match in _CS_ROUTE.finditer(code, 0, head):
+        prefix = match[1]
+    if decl:
+        prefix = re.sub(r"\[controller\]", decl[1], prefix, flags=re.IGNORECASE)
+    bare = _C_NOISE.sub(_blank, code)
+    for match in _CS_METHOD.finditer(code, head):
+        route = _CS_ROUTE.search(_member_window(code, bare, head, match))
+        sub = match[2] or (route[1] if route else "")
+        site = _http(match[1], _join(prefix, sub), _line(code, match.start()), "provider", True)
+        if site:
+            out.add(site)
+    for match in _CS_CLIENT.finditer(code):
+        site = _http(match[1], match[2], _line(code, match.start()), "consumer", False)
+        if site:
+            out.add(site)
+    return out
+
+
+def _topic_sites(code: str) -> set[Site]:
+    found: set[Site] = set()
+    for match in _LISTENER_ARGS.finditer(code):
+        for key in _LISTENER_KEYS.finditer(match[1]):
+            for name in re.findall(r"\"([^\"]+)\"", key[1]):
+                found.add(Site("topic", name, "consumer", _line(code, match.start())))
+    for match in _PY_CONSUMER.finditer(code):
+        name = next(g for g in match.groups() if g)
+        found.add(Site("topic", name, "consumer", _line(code, match.start())))
+    for match in _SEND_ARGS.finditer(code):
+        found.add(Site("topic", match[1], "provider", _line(code, match.start())))
+    return found
+
+
+def _table_sites(sql: str, offset: int, text: str, entities: bool = False) -> set[Site]:
+    """Tables a text writes (provider: insert, update, delete, DDL, an entity mapping)
+    or only reads (consumer: select, join). In code only SQL string literals count."""
+    found: set[Site] = set()
+    if entities:
+        for match in _TABLE_DECL.finditer(text):
+            name = next(g for g in match.groups() if g)
+            found.add(Site("table", _table_name(name), "provider", _line(text, match.start())))
+        for match in _STRING.finditer(text):
+            body = next((g for g in match.groups() if g is not None), "")
+            if _SQL_START.match(body):
+                start = match.start() + (3 if match[0][:3] in ('"""', "'''") else 1)
+                found |= _table_sites(body, start, text)
+        return found
+    for match in _SQL_TABLE.finditer(sql):
+        name = _table_name(match[1])
+        if not name or name in _SQL_WORDS or name.startswith(("#", "$")) or len(name) <= 1:
+            continue
+        keyword = match[0].split()[0].lower()
+        before = sql[max(0, match.start() - 12): match.start()].lower()
+        writes = keyword in ("into", "update", "table") or (keyword == "from" and re.search(r"\bdelete\s*$", before))
+        found.add(Site("table", name, "provider" if writes else "consumer", _line(text, offset + match.start(1))))
+    return found

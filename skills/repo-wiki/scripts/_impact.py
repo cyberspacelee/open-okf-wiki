@@ -41,6 +41,7 @@ def _page_reasons(ws, facts, page, readers, by_path) -> list[dict]:
     reasons: list[dict] = []
     revision = page.revision
     cited = _validate.cited_locators(page)
+    claimed = _validate.claimed_contracts(ws, facts, page)
     for source in ws.sources:
         rev = revision.get(source.name)
         head = facts.head[source.name]
@@ -60,7 +61,11 @@ def _page_reasons(ws, facts, page, readers, by_path) -> list[dict]:
                 continue
             if owner.name == source.name:
                 own_cited.append((label, locator, rel))
-        if not globs and not own_cited:
+        own_sites = [
+            (contract.id, site.path) for contract in claimed for site in contract.sites
+            if site.source == source.name
+        ]
+        if not globs and not own_cited and not own_sites:
             continue
         changes = facts.changes(source, rev)
         renamed = {old: new for letter, old, new in changes if letter == "R"}
@@ -80,6 +85,12 @@ def _page_reasons(ws, facts, page, readers, by_path) -> list[dict]:
                 ws_path = source.prefix + path
                 if any(_config.glob_match(g, ws_path) for g in globs):
                     reasons.append({"kind": kind, "path": ws_path, "since": since})
+        # A claimed contract changes when a site file of either side changes, even in a
+        # source the page's scope does not reach.
+        touched = {source.prefix + old for _, old, _ in changes} | {source.prefix + new for _, _, new in changes if new}
+        for contract_id, path in own_sites:
+            if path in touched:
+                reasons.append({"kind": "contract-changed", "contract": contract_id, "path": path, "since": since})
     for other in linked_generated(page, by_path):
         recorded = (page.meta.get("catalogs") or {}).get(other.path)
         if page.status == "stable" and recorded is not None and recorded != other.meta.get("catalog_sha256"):
@@ -174,7 +185,11 @@ def impact(
             if isinstance(g, str) and not facts.matches(g)
         ],
         "deleted_not_covered": [
-            path for _, _, path, _ in _validate.not_covered_rows(pages) if path and not facts.matches(path)
+            {"page": page.path, "path": path}
+            for page, _, path, _ in _validate.not_covered_rows(pages) if path and not facts.matches(path)
+        ],
+        "unclaimed_contracts": [
+            {"id": c.id, "sources": c.sources} for c in _validate.unclaimed_contracts(ws, facts, pages)
         ],
     }
 
@@ -193,8 +208,8 @@ def impact_files(ws: _config.Workspace, paths: list[str]) -> dict:
     facts = _validate.Facts(ws)
     rows = _change_guide_rows(pages)
     not_covered = [(path, reason) for _, _, path, reason in _validate.not_covered_rows(pages) if path]
-    canon = [path for path in (_page.CANON["Glossary"], _page.CANON["Conventions"]) if (ws.wiki / path).is_file()]
     texts = _HeadTexts(ws, facts)
+    contract_rows = {"contracts": _contract_rows(pages)} if ws.hub else {}
 
     def matches_below(glob: str, below: str) -> bool:
         # A tracked file under the directory matches the glob (src/*.py for src).
@@ -244,16 +259,75 @@ def impact_files(ws: _config.Workspace, paths: list[str]) -> dict:
                 notes.append(f"not covered: {excluded or 'no reason given'}")
             elif not read and not update and not guide_rows:
                 notes.append("no page covers this path")
-            result[path] = {
+            entry = {
                 "read": read,
                 "update": update,
                 "change_guide": guide_rows,
-                "canon": canon,
+                "canon": _canon_for(ws, path),
                 "note": "; ".join(notes) or None,
             }
+            if ws.hub:
+                entry["contracts"] = _contracts_at(ws, facts, pages, path, contract_rows)
+            result[path] = entry
     finally:
         texts.close()
     return {"files": result}
+
+
+def _canon_for(ws, path: str) -> list[str]:
+    """The canon pages to read before naming or changing code at ``path``: the glossary
+    and conventions, plus the conventions and overview of the path's source in a hub."""
+    wanted = ["glossary.md", "conventions.md"]
+    source = path.split("/", 1)[0]
+    if ws.hub and any(s.name == source for s in ws.sources):
+        wanted += [f"{_page.SOURCES_DIR}/{source}/conventions.md", f"{_page.SOURCES_DIR}/{source}/overview.md"]
+    return [p for p in wanted if (ws.wiki / p).is_file()]
+
+
+def _contracts_at(ws, facts, pages, path: str, rows: dict) -> list[dict]:
+    """The contracts ``path`` (a file, or a directory) is a site of: its role, the sites
+    on the other side, the pages that claim the contract and its Contracts rows.
+    ``rows`` carries the Contracts rows and caches each page's claims across paths."""
+    below = path + "/"
+    out = []
+    if "claims" not in rows:  # page -> claimed ids, once per impact_files call
+        rows["claims"] = {p.path: {c.id for c in _validate.claimed_contracts(ws, facts, p)} for p in pages}
+    claims = rows["claims"]
+    for contract in facts.contracts:
+        mine = [s for s in contract.sites if s.path == path or s.path.startswith(below)]
+        if not mine:
+            continue
+        roles = sorted({"provider" if s in contract.providers else "consumer" for s in mine})
+        other = [s for s in contract.sites if s not in mine and s.source not in {m.source for m in mine}]
+        out.append({
+            "id": contract.id,
+            "role": "/".join(roles),
+            "counterparts": [f"{s.source} {s.locator}" for s in other],
+            "pages": sorted(page for page, ids in claims.items() if contract.id in ids),
+            "change_order": [row for key, row in rows["contracts"].items() if _page.contract_match(key[0], contract.id)],
+            "external": contract.external,
+        })
+    return out
+
+
+def _contract_rows(pages) -> dict[tuple[str, int], dict]:
+    """(contract cell, line) -> the Contracts row of the system architecture page."""
+    found = {}
+    for page in pages:
+        if page.type != "Architecture":
+            continue
+        for table in _page.tables(page).get("contracts", []):
+            for row in table.rows:
+                cells = [_validate._plain(c) for c in row.cells] + [""] * 5
+                for part in re.split(r";|<br\s*/?>", cells[0]):
+                    part = part.strip()
+                    if part:
+                        found[(part, row.line)] = {
+                            "page": page.path, "line": row.line + page.body_offset, "contract": cells[0],
+                            "provider": cells[1], "consumers": cells[2], "change_order": cells[3],
+                            "verify": cells[4],
+                        }
+    return found
 
 
 def _resolve_hub_path(ws, facts, path: str) -> tuple[str, str | None]:
@@ -382,6 +456,8 @@ def describe(reason: dict) -> str:
         return text + since
     if kind == "revision-missing":
         return f"revision-missing {reason['source']} {reason['revision'][:12]}: recheck every claim"
+    if kind == "contract-changed":
+        return f"contract-changed {reason['contract']} {reason['path']}{since}"
     return f"{kind} {reason['path']}{since}"
 
 
@@ -394,16 +470,22 @@ def plan(ws: _config.Workspace, report: dict, pages: list[_page.Page]) -> tuple[
     """
     by_path = {p.path: p for p in pages if not p.error}
     extra: dict[str, list[str]] = {}
-    arch = _page.CANON["Architecture"]
     for module in report["unmapped_modules"]:
-        extra.setdefault(arch, []).append(f"unmapped-module {module}: add it to a page scope or a Not covered row")
+        extra.setdefault(_validate.coverage_page(ws, module), []).append(
+            f"unmapped-module {module}: add it to a page scope or a Not covered row"
+        )
     for item in report["unclaimed_triggers"]:
-        extra.setdefault(arch, []).append(
+        extra.setdefault(_validate.coverage_page(ws, item["path"]), []).append(
             f"unclaimed-trigger {item['path']} ({', '.join(item['kinds'])}): trace it into a Workflow "
             "page scope or add a Not covered row"
         )
-    for path in report["deleted_not_covered"]:
-        extra.setdefault(arch, []).append(f"not-covered-deleted {path}: remove the Not covered row")
+    for item in report.get("unclaimed_contracts", []):
+        extra.setdefault("architecture.md", []).append(
+            f"unclaimed-contract {item['id']} ({', '.join(item['sources'])}): claim it on a Flow page or "
+            "in contracts of architecture.md, or add a Not covered row"
+        )
+    for item in report["deleted_not_covered"]:
+        extra.setdefault(item["page"], []).append(f"not-covered-deleted {item['path']}: remove the Not covered row")
     for item in report["missing_scope"]:
         extra.setdefault(item["page"], []).append(f"scope-empty {item['glob']}: fix or remove the glob")
     reasons_by_page = {item["page"]: [describe(r) for r in item["reasons"]] for item in report["pages"]}

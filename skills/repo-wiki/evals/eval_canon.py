@@ -547,7 +547,7 @@ def fixture(base: Path) -> tuple[Path, Path]:
         _git_run(repo, "config", key, value)
     _commit(repo, _SELF_FILES, "init")
     ws = _config.init(repo)
-    _page.new_page(ws, "modules/billing.md", "Module", "Read before changing billing.", ["src/billing/**"])
+    _page.new_page(ws, "Module", "billing", "Read before changing billing.", ["src/billing/**"])
     for path, body in (
         ("architecture.md", _SELF_ARCH),
         ("glossary.md", _SELF_GLOSSARY),

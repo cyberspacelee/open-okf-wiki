@@ -130,7 +130,7 @@ def test_round_trip_from_hand_written_file(tmp_path):
 @pytest.mark.parametrize("lang", ["en", "zh"])
 def test_new_page(tmp_path, lang):
     repo, ws = _repo(tmp_path, lang)
-    page = _page.new_page(ws, "modules/billing-run.md", "Module", "Read before X.",
+    page = _page.new_page(ws, "Module", "billing-run", "Read before X.",
                           scope=("src/**",))
     expected_title = "Billing Run" if lang == "en" else "billing-run"
     assert page.meta == {
@@ -149,21 +149,26 @@ def test_new_page(tmp_path, lang):
     page.body = page.body.replace(_page.TEMPLATE_TODO, "Real content.[^a]")
     _page.write_page(page)
     assert not _page.load_page(ws, "modules/billing-run.md").is_untouched_stub
-    titled = _page.new_page(ws, "w.md", "Workflow", "d", title="Custom")
+    titled = _page.new_page(ws, "Workflow", "w", "d", title="Custom")
     assert titled.meta["title"] == "Custom" and titled.meta["scope"] == []
 
 
 def test_new_page_rejects_bad_input(tmp_path):
     _, ws = _repo(tmp_path)
-    for path in ("../x.md", "a/../b.md", "/abs.md", "index.md", "m/index.md",
-                 "_x.md", "m/_x.md", "x.txt", "a\\b.md", ""):
+    for name in ("../x", "a/b", "index", "log.md", "_x", "a\\b", "", "a b", "..", None):
         with pytest.raises(_page.PageError):
-            _page.new_page(ws, path, "Module", "d")
+            _page.new_page(ws, "Module", name, "d")
+    with pytest.raises(_page.PageError, match="description"):
+        _page.new_page(ws, "Module", "y")
+    with pytest.raises(_page.PageError, match="Flow page spans sources"):
+        _page.new_page(ws, "Flow", "y", "d")
+    with pytest.raises(_page.PageError, match="Overview"):
+        _page.new_page(ws, "Overview")
     with pytest.raises(_page.PageError):
-        _page.new_page(ws, "x.md", "Schema", "d")
-    _page.new_page(ws, "x.md", "Module", "d")
+        _page.new_page(ws, "Schema", "x", "d")
+    _page.new_page(ws, "Module", "x", "d")
     with pytest.raises(_page.PageError, match="already exists"):
-        _page.new_page(ws, "x.md", "Module", "d")
+        _page.new_page(ws, "Module", "x", "d")
 
 
 def test_new_page_rejects_scope_globs_without_tracked_files(tmp_path):
@@ -171,26 +176,27 @@ def test_new_page_rejects_scope_globs_without_tracked_files(tmp_path):
     (repo / "src/untracked.py").write_text("y = 1\n", encoding="utf-8")
     for glob in ("src/billing/**", "src/untracked.py", "docs/wiki/**", "lib"):
         with pytest.raises(_page.PageError, match="matches no tracked file"):
-            _page.new_page(ws, "m.md", "Module", "d", [glob])
-    assert not (ws.wiki / "m.md").exists()
-    assert _page.new_page(ws, "m.md", "Module", "d", ["src", "**/*.py"]).scope == ["src", "**/*.py"]
+            _page.new_page(ws, "Module", "m", "d", [glob])
+    assert not (ws.wiki / "modules/m.md").exists()
+    assert _page.new_page(ws, "Module", "m", "d", ["src", "**/*.py"]).scope == ["src", "**/*.py"]
 
 
 @pytest.mark.parametrize("lang", ["en", "zh"])
 def test_create_canon(tmp_path, lang):
     repo, ws = _repo(tmp_path, lang)
     pages = _page.create_canon(ws)
-    assert [p.path for p in pages] == ["architecture.md", "glossary.md", "conventions.md"]
+    assert [p.path for p in pages] == ["glossary.md", "conventions.md", "architecture.md"]
     head = _head(repo)
+    canon = _page.canon(ws)
     for page in pages:
-        assert page.type in _page.CANON and _page.CANON[page.type] == page.path
+        assert _page.ROLE_TYPES[canon[page.path][0]] == page.type
         assert page.meta["scope"] == [] and page.status == "draft"
         assert page.revision == {".": head}
         assert page.meta["title"] and page.meta["description"]
         assert page.is_untouched_stub
     titles = [p.meta["title"] for p in pages]
     assert titles == (
-        ["Architecture", "Glossary", "Conventions"] if lang == "en" else ["架构", "术语表", "开发规范"]
+        ["Glossary", "Conventions", "Architecture"] if lang == "en" else ["术语表", "开发规范", "架构"]
     )
     kinds = {p.type: set(_page.tables(p)) for p in pages}
     assert kinds == {
@@ -259,10 +265,10 @@ def test_mark_draft_merges_into_existing_block(tmp_path):
     assert loaded.body == "<!-- okf:todo\nBrief: check retry\n- new reason\n-->\n\nText.\n"
     assert len(loaded.todos) == 1
     # the empty template block
-    _page.new_page(ws, "n.md", "Module", "d")
-    stub = _page.load_page(ws, "n.md")
+    _page.new_page(ws, "Module", "n", "d")
+    stub = _page.load_page(ws, "modules/n.md")
     _page.mark_draft(ws, stub, ["r"])
-    assert _page.load_page(ws, "n.md").body.startswith("<!-- okf:todo\n- r\n-->\n")
+    assert _page.load_page(ws, "modules/n.md").body.startswith("<!-- okf:todo\n- r\n-->\n")
     # a single-line block
     page = _stamped(ws, "<!-- okf:todo brief -->\nText.\n")
     _page.mark_draft(ws, page, ["r1"])
@@ -379,11 +385,19 @@ def test_tables_zh(tmp_path):
 
 def test_templates_carry_the_change_guide_table_and_hints():
     for lang in ("en", "zh"):
-        for type in ("Module", "Workflow"):
-            structure = _markdown.extract(_page.template(lang, type))
+        for role, expected in (("module", ["change_guide"]), ("workflow", ["change_guide"]),
+                               ("flow", ["hops", "change_guide"])):
+            structure = _markdown.extract(_page.template(lang, role))
             kinds = [_page.table_kind(t.header) for t in structure.tables]
-            assert kinds == ["change_guide"], (lang, type, kinds)
+            assert kinds == expected, (lang, role, kinds)
             assert structure.hints and not any("okf:hint" in text for _, text in structure.hints)
+        for role, tables in _page.CANON_TABLES.items():
+            structure = _markdown.extract(_page.template(lang, role))
+            kinds = {_page.table_kind(t.header) for t in structure.tables}
+            assert set(tables) <= kinds, (lang, role, kinds)
+            titles = {" ".join(x.title.split()).casefold() for x in structure.sections}
+            for variants in _page.REQUIRED_SECTIONS.get(role, ()):
+                assert any(v.casefold() in titles for v in variants), (lang, role, variants)
 
 
 def test_sources_from_footnotes(tmp_path):
@@ -429,7 +443,7 @@ def test_form_feed_does_not_split_body_lines(tmp_path):
 @pytest.mark.skipif(os.name == "nt", reason="posix permissions")
 def test_write_keeps_file_permissions(tmp_path):
     _, ws = _repo(tmp_path)
-    page = _page.new_page(ws, "a.md", "Module", "d", ["src/**"])
+    page = _page.new_page(ws, "Module", "a", "d", ["src/**"])
     mask = os.umask(0)
     os.umask(mask)
     assert stat.S_IMODE(page.file.stat().st_mode) == 0o666 & ~mask  # not mkstemp's 0600

@@ -183,12 +183,12 @@ def test_linking_a_table_of_an_unbound_database_warns(tmp_path, monkeypatch, cap
     _run(hub, monkeypatch, capsys, "db", "capture", "--db", "order_db")
     ws = _config.load(hub)
     commit(hub, {}, "capture")
-    for path, scope in (("modules/billing.md", "billing/src/**"), ("modules/orders.md", "order-api/src/**")):
-        page = _page.new_page(ws, path, "Module", "d", [scope])
+    for name, scope in (("billing", "billing/src/**"), ("orders", "order-api/src/**")):
+        page = _page.new_page(ws, "Module", name, "d", [scope])
         page.body = "Writes [t_order](/databases/order_db/public/t_order.md).\n"
         _page.write_page(page)
     found = [(i.page, i.severity) for i in _validate.validate(ws) if i.code == "db-binding"]
-    assert found == [("modules/billing.md", "warning")]
+    assert found == [("sources/billing/modules/billing.md", "warning")]
 
 
 def test_status_asks_for_a_capture_while_discovering(tmp_path):

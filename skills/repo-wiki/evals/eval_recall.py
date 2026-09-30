@@ -12,7 +12,7 @@ leaves out, the failure a shallow discovery or a brief-only writer produces.
 
 Key (YAML), every section optional:
 
-  workflows:                 # a Workflow page scopes every trigger and reaches every `through` file
+  workflows:                 # a Workflow or Flow page scopes every trigger and reaches every `through` file
     - name: order checkout
       triggers: [src/order/web/OrderController.java]
       through: [src/payment/PaymentListener.java]
@@ -20,7 +20,7 @@ Key (YAML), every section optional:
     - name: order and outbox share one transaction
       locator: src/order/OrderService.java#L77-L95
   terms: [Settlement window]  # a glossary row names it (Term or Avoid)
-  boundaries:                # architecture.md cites a file in each module
+  boundaries:                # an Architecture or Overview page cites a file in each module
     - {from: src/order, to: src/payment}
 
 Subcommands (run from the repository or hub root, or pass --repo):
@@ -74,7 +74,7 @@ def score(ws: _config.Workspace, key: dict) -> dict:
         return any(path in facts.matches(glob) for glob in _validate.scope_globs(page))
 
     results: dict[str, list[dict]] = {section: [] for section in SECTIONS}
-    workflows = [p for p in pages if p.type == "Workflow"]
+    workflows = [p for p in pages if p.type in ("Workflow", "Flow")]
     for item in key["workflows"]:
         triggers, through = list(item.get("triggers") or []), list(item.get("through") or [])
         best = None
@@ -94,7 +94,8 @@ def score(ws: _config.Workspace, key: dict) -> dict:
     names = _glossary_names(pages)
     for term in key["terms"]:
         results["terms"].append({"name": term, "hit": term.strip().lower() in names})
-    arch = cited.get(_page.CANON["Architecture"], [])
+    # A boundary is drawn on the architecture page or, in a hub, on a source's overview.
+    arch = [loc for page in pages if page.type in ("Architecture", "Overview") for loc in cited.get(page.path, [])]
     for item in key["boundaries"]:
         sides = [item["from"], item["to"]]
         missing = [side for side in sides if not any(_under(loc.path, side) for loc in arch)]
@@ -171,7 +172,7 @@ def selftest(base: Path) -> dict:
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "init")
     ws = _config.init(repo, create_canon=False)
-    _page.new_page(ws, "workflows/checkout.md", "Workflow", "Read before changing checkout.",
+    _page.new_page(ws, "Workflow", "checkout", "Read before changing checkout.",
                    ["src/order/api.py", "src/order/service.py"])
     page = ws.wiki / "workflows/checkout.md"
     head, _, _ = page.read_text(encoding="utf-8").partition("\n---\n")

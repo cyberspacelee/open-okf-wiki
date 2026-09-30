@@ -11,7 +11,10 @@ import _review
 import _validate
 
 MAX_ISSUES = 20
-STRUCTURE_CODES = ("coverage", "trigger-coverage", "scope", "not-covered")
+STRUCTURE_CODES = ("coverage", "trigger-coverage", "link-coverage", "contract-claim", "scope", "not-covered", "page-path")
+DERIVED_CODES = ("index", "log", "map")
+RESEARCH_ROLES = ("glossary", "conventions", "system-conventions")  # stage 3: what every writer needs
+ASSEMBLE_ROLES = ("architecture", "system-architecture", "overview")  # stage 5: written from the pages below
 
 
 def status(root: Path, wiki: str | None = None) -> dict:
@@ -40,7 +43,10 @@ def status(root: Path, wiki: str | None = None) -> dict:
     issues = _validate.validate(ws, pages, facts=facts)
     author = [p for p in pages if not p.is_generated and not p.error]
     drafts = _review.drafts(pages)
-    canon_paths = set(_page.CANON.values())
+    canon = _page.canon(ws)
+    canon_paths = set(canon)
+    research_paths = {path for path, (role, _) in canon.items() if role in RESEARCH_ROLES}
+    assemble_paths = {path for path, (role, _) in canon.items() if role in ASSEMBLE_ROLES}
     counts = {
         "pages": len(pages),
         "draft": len(drafts),
@@ -73,18 +79,20 @@ def status(root: Path, wiki: str | None = None) -> dict:
 
     errors = [i for i in issues if i.severity == "error"]
     blocking = [i for i in issues if i.severity in ("error", "pending")]
-    body_pages = [p for p in author if p.type in ("Module", "Workflow")]
-    canon = [p for p in author if p.path in canon_paths]
+    body_pages = [p for p in author if p.type in ("Module", "Workflow", "Flow")]
+    canon_pages = [p for p in author if p.path in canon_paths]
     stubs = [p.path for p in body_pages if empty_brief(p)]
-    empty_canon = [p.path for p in canon if empty_brief(p)]
+    empty_canon = [p.path for p in canon_pages if empty_brief(p)]
     open_triggers = [i for i in issues if i.code == "trigger-coverage"]
-    untraced = bool(open_triggers) and not any(p.type == "Workflow" for p in body_pages)
+    untraced = bool(open_triggers) and not any(p.type in ("Workflow", "Flow") for p in body_pages)
+    open_contracts = [i for i in issues if i.code == "link-coverage"]
+    untraced_contracts = bool(open_contracts) and not any(p.type == "Flow" for p in body_pages)
     uncaptured = [db.name for db in ws.databases
                   if not any((p.meta.get("db") or {}).get("name") == db.name for p in pages if p.is_generated)]
     capture = (f"okf db tables, then okf db capture: databases {', '.join(uncaptured)} have no pages yet "
                "(references/extensions.md)")
-    if canon and (empty_canon or stubs or untraced):
-        if not body_pages and len(empty_canon) == len(canon):
+    if canon_pages and (empty_canon or stubs or untraced or untraced_contracts):
+        if not body_pages and len(empty_canon) == len(canon_pages):
             return done("discover", ["okf scan --json, then stage 1 (Discover)"] + ([capture] if uncaptured else []), [])
         actions = [capture] if uncaptured else []
         if empty_canon or stubs:
@@ -96,26 +104,43 @@ def status(root: Path, wiki: str | None = None) -> dict:
                 f"stage 1 (Discover): trace the {len(open_triggers)} trigger files no Workflow page "
                 "claims (okf validate --json, code trigger-coverage) into Workflow stubs"
             )
-        return done("discover", actions, open_triggers if untraced else [])
+        if untraced_contracts:
+            actions.append(
+                f"stage 1 (Discover): trace the {len(open_contracts)} contracts between sources no page "
+                "claims (okf links --json; okf validate --json, code link-coverage) into Flow stubs"
+            )
+        focus = (open_triggers if untraced else []) + (open_contracts if untraced_contracts else [])
+        return done("discover", actions, focus)
 
     structure = [i for i in errors if i.code in STRUCTURE_CODES]
     if structure:
         return done(
             "structure",
             [("stage 2 (Structure): fix the issues below; put each unclaimed trigger file in a "
-              "Workflow page scope (trace it first) or a Not covered row with a reason")],
+              "Workflow page scope (trace it first) or a Not covered row with a reason, and claim each "
+              "contract on a Flow page or architecture.md, or give it a Not covered row")],
             structure,
         )
 
-    canon_open = [i for i in blocking if i.page in canon_paths or i.code in ("canon-missing", "canon-table")]
-    if canon_open:
-        names = sorted({i.page for i in canon_open if i.page})
-        return done("research", [f"finish canon pages (stage 3): {', '.join(names)}"], canon_open)
+    blocking = [i for i in blocking if i.code not in DERIVED_CODES]
+    research_open = [i for i in blocking if i.page in research_paths]
+    if research_open:
+        names = sorted({i.page for i in research_open if i.page})
+        return done("research", [f"finish canon pages (stage 3): {', '.join(names)}"], research_open)
 
-    other_open = [i for i in blocking if i.code != "index"]
-    if other_open:
-        names = sorted({i.page for i in other_open if i.page})
-        return done("write", [f"finish pages (stage 4): {', '.join(names)}"], other_open)
+    write_open = [i for i in blocking if i.page not in assemble_paths]
+    if write_open:
+        names = sorted({i.page for i in write_open if i.page})
+        return done("write", [f"finish pages (stage 4): {', '.join(names)}"], write_open)
+
+    assemble_open = [i for i in blocking if i.page in assemble_paths]
+    if assemble_open:
+        names = sorted({i.page for i in assemble_open if i.page})
+        return done(
+            "assemble",
+            [f"assemble the overview and architecture pages from the pages below them (stage 5): {', '.join(names)}"],
+            assemble_open,
+        )
 
     if drafts:
         review_state, report = _review.state(ws, pages)
@@ -136,9 +161,9 @@ def status(root: Path, wiki: str | None = None) -> dict:
             actions.append("without an independent reviewer: okf stamp --unreviewed --by repo-wiki/<model>")
         return done("review", actions, [])
 
-    index = [i for i in issues if i.code == "index"]
-    if index:
-        return done("done", ["okf stamp --by repo-wiki/<model> (rewrites index.md)"], index)
+    derived = [i for i in issues if i.code in DERIVED_CODES]
+    if derived:
+        return done("done", ["okf stamp --by repo-wiki/<model> (rewrites the indexes, log.md and the System map)"], derived)
     changed = _git.changed(ws.root, ws.wiki_rel)
     if changed:
         return done("done", [f"review and commit the wiki ({len(changed)} changed files): git diff -- {shlex.quote(ws.wiki_rel)}"], [])
@@ -147,12 +172,12 @@ def status(root: Path, wiki: str | None = None) -> dict:
 
 def _canon_fix(ws, pages, path: str) -> str:
     """The exact command or edit that restores one canon page."""
-    type = next(t for t, p in _page.CANON.items() if p == path)
+    role, source = _page.canon(ws)[path]
+    type = _page.ROLE_TYPES[role]
     page = next((p for p in pages if p.path == path), None)
     if page is None:
-        title, description = _page.canon_text(ws.lang, type)
-        return (f"recreate the canon page: okf new {shlex.quote(path)} --type {type} "
-                f"--title {shlex.quote(title)} --description {shlex.quote(description)}")
+        where = f" --source {shlex.quote(source)}" if source else ""
+        return f"recreate the canon page: okf new --type {type}{where}"
     if page.error:
         return f"fix the frontmatter of {ws.wiki_rel}/{path} by hand ({page.error})"
     return f"set type: {type} in {ws.wiki_rel}/{path}; {path} is reserved for the {type} page"

@@ -16,7 +16,7 @@ FILES = {
 
 ARCH = """## Structure
 
-Billing has no dependencies.
+[Billing](/modules/billing.md) has no dependencies.
 
 ## Not covered
 
@@ -84,7 +84,7 @@ def complete(tmp_path, files=None):
     """Repository with canon pages and one module page, all drafts without todo blocks."""
     root, ws = repo(tmp_path, files)
     _page.create_canon(ws)
-    _page.new_page(ws, "modules/billing.md", "Module", "Read before changing billing.", ["src/billing/**"])
+    _page.new_page(ws, "Module", "billing", "Read before changing billing.", ["src/billing/**"])
     set_body(ws, "architecture.md", ARCH)
     set_body(ws, "glossary.md", GLOSSARY)
     set_body(ws, "conventions.md", CONVENTIONS)

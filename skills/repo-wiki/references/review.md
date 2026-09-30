@@ -4,7 +4,7 @@ You are a fresh, independent reviewer for one review round. You wrote none of
 these pages and carry no context from earlier rounds: you read only the pages,
 the sources and the previous round's review report. You judge
 whether each draft page is true to the source, honest about why, worth reading
-and reachable from `index.md`. You write only the review report
+and reachable from the indexes (`index.md`, and in a hub each `sources/<name>/index.md`). You write only the review report
 (`_review.json`): never edit a page,
 never run `okf stamp`, `okf update` or `okf new`.
 
@@ -20,7 +20,9 @@ never run `okf stamp`, `okf update` or `okf new`.
 - `okf validate --json`: its `alias`, `uncited-why` and `parrot` warnings are
   yours to adjudicate. Errors are the author's; an error still present means
   `changes_requested`.
-- The glossary, conventions and architecture pages, even when they are not drafts.
+- The glossary, conventions and architecture pages (in a hub also each
+  source's overview and conventions, and `system-map.md`), even when they are
+  not drafts.
 - The previous round's review report (`_review.json`), when present: an input
   artifact, not a ledger. Check that each of its issues is fixed and list again
   only the ones that are not; issues have no IDs or status.
@@ -28,7 +30,8 @@ never run `okf stamp`, `okf update` or `okf new`.
 ## Checklist
 
 1. **Table rows, all of them.** Open the cited lines for every glossary,
-   commands, rules, invariants and change guide row on a draft page. The row
+   commands, rules, invariants, change guide, contracts and call chain row on
+   a draft page. The row
    must say what those lines say: the term is defined there, the command is
    defined there, the rule's config or instance count holds, the invariant is
    enforced there and breaks as stated. A command marked `verified` must be a
@@ -36,14 +39,19 @@ never run `okf stamp`, `okf update` or `okf new`.
    that change begins, Verify names a test or command that exists and covers
    it, and Also change is complete: check it against `git log` for one past
    change of that kind and scan `co_change`; a file that moved with it every
-   time and is not listed is `missing`.
+   time and is not listed is `missing`. For a contracts or call chain row,
+   open both sides of the contract (`okf links --contract "<id>" --json`): the
+   provider and consumer must agree with what the row says (method and path,
+   topic, table, artifact), and the Change order must hold on both sides (an
+   added field the consumer really ignores, an old route still served); a row
+   that matches only one side is `unsupported`.
 2. **Invented why.** Every causal sentence (because, so that, to avoid, 因为,
    为了) must cite a record of the reason: code, comment, commit, doc or ADR.
    A plausible reason that the cited lines do not state is `invented-why`, even
    when it is probably right. "rationale not recorded" is always acceptable.
 3. **Parrot.** Flag signature lists, field lists, directory trees, restated
    comments and README restatement: anything one file answers at a glance.
-4. **Usable for a change.** For every Module and Workflow page, answer the
+4. **Usable for a change.** For every Module, Workflow and Flow page, answer the
    five questions of [pages](pages.md#what-a-page-answers) from the page
    alone. How it works that restates the responsibility instead of naming
    entry, path, data and wiring; a Making changes section without a place to
@@ -70,13 +78,18 @@ never run `okf stamp`, `okf update` or `okf new`.
      agree with Architecture's dependency direction; a contradiction is
      `unsupported`, an absent strong edge is `missing`;
    - a `resources` topic or table shared by modules must appear in a workflow
-     or in a change guide row.
+     or in a change guide row;
+   - in a hub, a contract must read the same on every page that mentions it:
+     the Flow page's call chain, the Contracts row and the module pages on
+     both sides; a contradiction is `unsupported`. Follow at least one Flow
+     page's call chain hop by hop through the code; a hop that goes through
+     a contract the page does not claim is `missing`.
 7. **Warnings.** For each `alias` warning, decide: drift (`terminology` issue)
    or a legitimate quote (dismiss). For `uncited-why`, apply item 2. For
    `parrot`, apply item 3. A dismissed warning needs no issue.
 8. **Routing test.** Take 3 development tasks for this repository, at least
    two from recent `git log` subjects (e.g. "add a retry to invoice posting").
-   For each, start at `index.md` and the draft pages' `description` lines,
+   For each, start at `index.md` (in a hub, then the source's index) and the draft pages' `description` lines,
    pick the pages you would read, and check they tell you where to start, what
    else to change, what must not break and how to verify. A wrong, vague or
    missing route is a `routing` issue on the page whose `description` or

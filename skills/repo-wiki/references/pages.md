@@ -66,14 +66,32 @@ other heading is yours.
 
 | type | when | required headings (en / zh) | often worth adding |
 |---|---|---|---|
-| `Architecture` | always, one page | Structure / 整体结构; Not covered / 未单独成页 with its table | design decisions (link ADRs); cross-module invariants; cross-module changes (change guide table) |
+| `Architecture` | always, one page | Structure / 整体结构; Not covered / 未单独成页 with its table; in a hub also Contracts / 跨仓契约 with its table | design decisions (link ADRs); cross-module (in a hub, cross-repository) invariants and changes (change guide table) |
+| `Overview` | hub: one per source | Structure / 整体结构; Not covered / 未单独成页 with its table | that source's cross-module invariants and changes |
 | `Glossary` | always, one page | a glossary table | commonly confused terms / 易混淆的术语 |
-| `Conventions` | always, one page | Commands / 常用命令 with its table; Rules / 开发规则 with its table | where new code goes; adding a new X (one section per extension seam) |
+| `Conventions` | one page; in a hub one for the system and one per source | Commands / 常用命令 with its table; Rules / 开发规则 with its table (the hub's system page: Rules only) | where new code goes; adding a new X (one section per extension seam) |
 | `Module` | a module with a real boundary, mechanism or extension seam | Responsibility / 模块职责; How it works / 工作原理; Making changes / 修改指南 with a change guide table | invariants; why it is built this way; error handling; adding a new X; compatibility; known pitfalls |
-| `Workflow` | a flow an agent would debug or extend, from a scan trigger or a public entry point | Flow / 执行流程; Making changes / 修改指南 with a change guide table | ordering and consistency; failure, retry and compensation; where to look when it breaks |
+| `Workflow` | a flow an agent would debug or extend, from a scan trigger or a public entry point, inside one source | Flow / 执行流程; Making changes / 修改指南 with a change guide table | ordering and consistency; failure, retry and compensation; where to look when it breaks |
+| `Flow` | hub: an end-to-end path that crosses sources through contracts | Call chain / 跨仓调用链 with its table and a mermaid `sequenceDiagram`; Making changes / 修改指南 with a change guide table | consistency across repositories; timeouts, retries, idempotency and compensation across the boundary; where to look when it breaks |
 
-A Module or Workflow page needs at least one change guide row
-(`change-guide`); an Architecture page may hold cross-module rows.
+A Module, Workflow or Flow page needs at least one change guide row
+(`change-guide`); an Architecture or Overview page may hold cross-module rows.
+
+**Where a page lives.** `okf new` derives the path from the type, the name
+and the scope, and `okf validate` reports any other path (`page-path`):
+
+| page | single repository | hub |
+|---|---|---|
+| Glossary, Architecture | `glossary.md`, `architecture.md` | same, for the system |
+| Conventions | `conventions.md` | `conventions.md` (cross-repository rules) and `sources/<s>/conventions.md` |
+| Overview | — | `sources/<s>/overview.md` |
+| Module, Workflow | `modules/<name>.md`, `workflows/<name>.md` | `sources/<s>/modules/<name>.md`, `sources/<s>/workflows/<name>.md`; every scope glob starts with `<s>` |
+| Flow | — | `flows/<name>.md`; the scope reaches two or more sources |
+
+Link the level above to the level below: the overview (or, in a single
+repository, the architecture page) links its module and workflow pages, the
+hub's architecture page links the overviews and the Flow pages. A Module,
+Workflow or Flow page no other page links to raises `orphan`.
 
 `Schema` and `Table` pages come only from `okf db capture`; never write them by hand.
 
@@ -143,7 +161,8 @@ Author-owned keys:
 | `title` | short noun phrase |
 | `description` | when to read this page, e.g. "Read before changing invoice generation, proration or billing retries." It is copied into `index.md` and is the routing entry point |
 | `tags` | optional list of strings |
-| `scope` | source globs this page answers for; required for Module and Workflow. `**` spans directories; a plain directory path covers everything below it. Scopes may overlap. A Workflow scope names its trigger files and the files the flow runs through; that claims the triggers (`trigger-coverage`) and routes `okf impact --files` on them to the page |
+| `scope` | source globs this page answers for; required for Module, Workflow and Flow, absent on canon pages. `**` spans directories; a plain directory path covers everything below it. Scopes may overlap. A Workflow or Flow scope names its trigger files and the files the flow runs through; that claims the triggers (`trigger-coverage`) and routes `okf impact --files` on them to the page |
+| `contracts` | hub only, on a Flow page or `architecture.md`: the contract ids (as `okf links --json` prints them) or id globs (`http * /orders/*`) the page describes. It claims them (`link-coverage`), each needs a row in the page's call chain or Contracts table (`contract-row`), and a change to any site of a claimed contract, on either side, stales the page (`contract-changed`) |
 
 Kernel-owned keys; leave them as the kernel wrote them: `status`, `revision`
 (set by `okf new` and `okf update`), and after stamp `sources`, `generated`,
@@ -211,6 +230,8 @@ The kernel recognizes tables by header row; use exactly one of these headers
 | invariants | Invariant, Enforced at, Breaks when | 关键约束, 由谁保证, 违反会怎样 |
 | change guide | Change, Start at, Also change, Verify | 修改场景, 从这里改, 同步修改, 如何验证 |
 | not covered | Path, Reason | 路径, 原因 |
+| contracts (hub `architecture.md`) | Contract, Provider, Consumers, Change order, Verify | 契约, 提供方, 消费方, 变更顺序, 如何验证 |
+| call chain (Flow) | Step, Source, Entry, Contract, Next | 步骤, 仓库, 入口, 契约, 下一步 |
 
 Allowed values (same tokens in zh pages):
 
@@ -224,6 +245,12 @@ Allowed values (same tokens in zh pages):
 - Rule `Enforced by`: `lint`, `typecheck`, `test`, `ci`, `review`, `convention`.
   It tells the agent whether a tool will catch a violation.
 - Change guide `Start at` and `Verify` must not be empty or `-`.
+- Contracts: `Provider` is a source name, `Consumers` a comma-separated list
+  of source names; `Contract`, `Change order` and `Verify` are not empty.
+- Call chain: `Source` is a source name and `Entry` is not empty; `Contract` is
+  `-` for a hop inside one source.
+- A `Contract` cell holds a contract id or id glob (several separated by `;`);
+  one that names no contract raises `contract-unknown`.
 
 ```markdown
 | Term | Meaning | Avoid | Where |
@@ -249,6 +276,15 @@ Allowed values (same tokens in zh pages):
 | Path | Reason |
 |---|---|
 | `third_party/` | Vendored upstream code; never modified here. |
+
+| Contract | Provider | Consumers | Change order | Verify |
+|---|---|---|---|---|
+| `library com.acme:common` | worker | api, web | Release common from worker first, then bump api and web; removing a field needs both consumers moved off it.[^common] | `mvn -q verify` in worker, then in api and web |
+
+| Step | Source | Entry | Contract | Next |
+|---|---|---|---|---|
+| 1 | api | `OrderController.create`[^create] | `http POST /reservations/{}` | worker holds the stock |
+| 2 | worker | `ReservationController.reserve`[^reserve] | - | the order is confirmed |
 ```
 
 - Glossary `Meaning` names, in words, the module or context that owns the
@@ -264,8 +300,19 @@ Allowed values (same tokens in zh pages):
   couples the files). A topic or table two modules share (scan `resources`)
   belongs in a row too: changing its shape means changing the other side.
 - A Not covered row names a module, a file or a glob and gives a reason; it
-  excludes modules from `coverage` and trigger files from `trigger-coverage`
-  (`src/**/web/Health*.java | Health probes; no flow.`).
+  excludes modules from `coverage`, trigger files from `trigger-coverage` and,
+  in a hub, contracts with a site file it matches from `link-coverage`
+  (`src/**/web/Health*.java | Health probes; no flow.`). In a hub a source's
+  rows live on its overview and start with the source name.
+- A Contracts row is the change guide of a contract: which side changes and
+  ships first, what compatibility the other side relies on (an added field
+  ignored, an old route kept for a release), and the check on each side. Cite
+  the provider and the consumer code. A contract a Flow page explains end to
+  end needs no Contracts row; claim it there.
+- A call chain row is one hop: the source, the entry it enters at, and the
+  contract that carries the call to the next hop. Stop at the entry and link
+  the source's workflow or module page for the inside; the mermaid
+  `sequenceDiagram` has the sources as participants, one arrow per cited hop.
 
 ## Links, todo blocks, hints, diagrams
 

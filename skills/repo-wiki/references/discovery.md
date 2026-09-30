@@ -12,10 +12,11 @@ verify or drop every candidate.
 |---|---|
 | `sources` | `clean: false` lists dirty tracked files; stop until they are committed or stashed. `shallow: true` means a shallow clone: `co_change` is empty or thin, so ask whether full history can be fetched |
 | `modules` | modules to cover: each needs a page scope or a Not covered row. Build-declared modules (Maven, Gradle, workspaces) plus top-level code directories; a top-level code root (`src`, `lib`, `app`, `pkg`, `internal`, `packages`, `source`, `cmd`) is split into one module per child directory holding code, unless it has its own manifest, declared modules below it or a `main` child (`src/main`, `src/test` stay one module); top-level test directories (`tests`, `test`, `spec`, `specs`, `__tests__`, `e2e`, `testing`, `*-tests`, `fixtures`, `testdata`, `__mocks__`) are not modules and need no scope or Not covered row; parents that only aggregate nested modules are left out, and a file belongs to its deepest module. Inside one build, packages split further: a JVM `src/main/java/<base package>` or a Python package with two or more child packages of at least 3 production files each makes each child a module (`src/main/java/com/acme/shop/order`), so a monolith shows its domain packages. `triggers` counts the trigger files each module holds |
-| `triggers` | where work enters production code, one entry per file with its `module`, `kinds` and first `locator`: `http` (Spring MVC, JAX-RS, FastAPI/Flask routes, Django `urls.py`, DRF views, NestJS, Express, Go handlers, ASP.NET), `rpc` (Dubbo, gRPC), `listener` (Kafka, RabbitMQ, JMS, RocketMQ, SQS consumers), `job` (`@Scheduled`, XXL-Job, Quartz, Celery, APScheduler, Airflow, NestJS cron), `event` (in-process event listeners, Django signals), `cli` (click/typer, Django commands), `startup` (`CommandLineRunner`). Feign and MicroProfile REST client interfaces are outbound calls, not triggers. Each trigger file must end up in a Workflow page scope or a Not covered row (`trigger-coverage`) |
+| `triggers` | where work enters production code, one entry per file with its `module`, `kinds` and first `locator`: `http` (Spring MVC, JAX-RS, FastAPI/Flask routes, Django `urls.py`, DRF views, NestJS, Express, Go handlers, ASP.NET), `rpc` (Dubbo, gRPC), `listener` (Kafka, RabbitMQ, JMS, RocketMQ, SQS consumers), `job` (`@Scheduled`, XXL-Job, Quartz, Celery, APScheduler, Airflow, NestJS cron), `event` (in-process event listeners, Django signals), `cli` (click/typer, Django commands), `startup` (`CommandLineRunner`). Feign and MicroProfile REST client interfaces are outbound calls, not triggers. Each trigger file must end up in a Workflow or Flow page scope or a Not covered row (`trigger-coverage`) |
 | `deps` | module edges `from` → `to` with the import `count`, the first import `locator`, and `mutual: true` when the modules import each other (a cycle); Java/Kotlin, Python, JS/TS (relative paths and workspace package names) and Go imports, test code excluded. The dependency direction Architecture states comes from here |
 | `central` | files imported from two or more other modules, most importers first: shared kernels whose change ripples widely |
 | `resources` | message topics and database tables named in two or more modules (listener annotations, consumers, send/publish calls with a literal name, entity mappings, MyBatis mapper XML, SQL files and SQL string literals), with one locator per module: coupling that no import shows |
+| `contracts` | hub only: interfaces two sources share, each with an `id`, `providers` and `consumers` (source and locator): `http METHOD /path` (a route one source serves and a client call in another reaches: Feign, RestTemplate, WebClient, requests/httpx, fetch/axios, Go `net/http`), `rpc Service` (Dubbo, gRPC), `topic name` (producer and listener), `table name` (writer and reader), `library artifact` (Maven, npm, Go, Python manifests, or an import across sources). `external: true` marks a client call no source serves. `okf links --json` filters them (`--source`, `--contract`, `--file`). Each non-external contract must be claimed by a Flow page or `architecture.md` (`contracts` frontmatter), or excluded by a Not covered row matching one of its site files (`link-coverage`) |
 | `entry_points` | process entry points (declared scripts, JVM `main` programs, Python files with `if __name__ == "__main__":`, `Dockerfile`, `web.xml`, API specs); never a test file. Framework entry points are in `triggers`. With few or no triggers (a library, a CLI, a compiler), these and the most-imported `central` files are where tracers start |
 | `commands`, `ci` | command candidates, each with the locator that defines it and the `cwd` it runs from (relative to the source root the locator names): that file's directory, or the source root when the command names that file by its source-root path. `kind` (`build`, `test`, `lint`, `format`, `typecheck`, `other`) says which Conventions row it can fill. A Python file with PEP 723 inline metadata (`# /// script`) is the command `uv run <path>` with `cwd` `.` (the source root). Besides declared scripts and targets, scan adds each build tool's own commands (Maven, Gradle, Cargo, Go, Python tools, .NET, CMake) with the project's wrapper, runner or lock prefix; to narrow a Maven reactor to one module add `-pl <module> -am`. A CI step `uses <workflow>` runs a reusable workflow kept elsewhere |
 | `configs` | lint, format and type configs: rule candidates with `Enforced by` lint or typecheck; a file repeated per module is listed a few times only |
@@ -35,10 +36,11 @@ the listed docs.
 | Modules and boundaries | scan `modules` and `deps` (direction, `mutual` cycles); `central` files; a module's public surface; who calls whom across a boundary | the boundary constrains a change (an allowed dependency direction, a seam, an owner) | architecture brief, plus a module stub when it has a mechanism, invariant or extension seam of its own |
 | Mechanisms | a call chain that crosses files inside a module; where objects are created, transformed and persisted; registries, dependency injection, config switches, plugin discovery | explaining it takes more than one file | the module brief (How it works) |
 | Workflows | scan `triggers`; a topic or table in `resources` that one module writes and another reads; with few triggers, `entry_points` and the public API of `central` files; follow calls from the entry until they cross at least one module boundary | spans modules and an agent would debug or extend it | workflow stub scoped to its trigger files and the files the flow runs through; a trigger worth no page is a Not covered candidate |
+| Cross-source flows (hub) | scan `contracts`: a client in one source and the route it reaches in another, a topic produced and consumed in different sources, a table two sources write or read | an end-to-end path crosses sources and an agent would change one side | Flow stub claiming its contracts, scoped to the entry files on each side; a library or a contract with no flow of its own is claimed by `architecture.md` (a Contracts row); a contract worth nothing is a Not covered candidate |
 | Terminology | see [Terminology](#terminology) | project-specific | glossary brief |
 | Conventions and commands | see [Conventions](#conventions) | config-backed or ≥2 instances | conventions brief |
 | Typical changes | `git log --format='%h %s' -- <module>`; scan `co_change`; extension seams with two or more implementations | the change recurs, or a seam invites it | the brief of the page whose scope it starts in, as a `Change:` lead |
-| Invariants and risks | asserts, guards, validation; exceptions with messages; transactions, locks, idempotency keys; DB constraints; restricted state transitions; must/never in test names; TODO/FIXME/HACK/NOTE; rollback and retry logic | breaking it corrupts data, loses work or fails silently | the owning module or workflow brief; cross-module ones in the architecture brief |
+| Invariants and risks | asserts, guards, validation; exceptions with messages; transactions, locks, idempotency keys; DB constraints; restricted state transitions; must/never in test names; TODO/FIXME/HACK/NOTE; rollback and retry logic | breaking it corrupts data, loses work or fails silently | the owning module or workflow brief; cross-module ones in the architecture brief (in a hub, the source's overview brief; across sources, the architecture brief) |
 | Open questions | a why you cannot find; conflicting code and docs; dead-looking paths | an answer would change what the page says | the brief of the page it concerns |
 
 A module earns its own page only when it has something beyond "what files are
@@ -110,9 +112,11 @@ Term: "dunning" used in src/billing/dunning.py#L1-L12 and docs/billing.md#L20
 ```
 
 Create module and workflow stubs as you go, each with a draft `description` and
-`scope`; stage 2 finalizes them:
+`scope`; stage 2 finalizes them. `okf new` derives the path from the type, the
+name and the scope (`workflows/invoice-posting.md`; in a hub
+`sources/<source>/workflows/...`, or `flows/...` for a Flow page) and prints it:
 
-    okf new workflows/invoice-posting.md --type Workflow --description "Read before changing how invoices are posted or retried." --scope "src/billing/**" --scope "src/payments/client.py"
+    okf new --type Workflow --name invoice-posting --description "Read before changing how invoices are posted or retried." --scope "src/billing/**" --scope "src/payments/client.py"
 
 ## Scouts
 
@@ -132,8 +136,8 @@ Not covered: src/legacy_export | dead since 2023? no imports found
 Open questions: 2
 ```
 
-Merge each handoff into the canon briefs (glossary, conventions, architecture)
-when it arrives.
+Merge each handoff into the canon briefs (glossary, conventions, architecture;
+in a hub also the source's overview and conventions) when it arrives.
 
 ## Tracers
 
@@ -175,9 +179,42 @@ Unclaimed: 0 of 6 trigger files
 Open questions: 1
 ```
 
+### Contract tracers (hub)
+
+In a hub, add a group per end-to-end path that `contracts` shows crossing
+sources: start at the outermost entry (a route no other source calls, a job, a
+listener of an external topic) and follow the contracts from source to source.
+One Flow stub per path, claiming every contract it crosses and scoped to the
+entry file on each side:
+
+    okf new --type Flow --name order-checkout --description "Read before changing how an order reserves stock and gets paid." --scope "api/src/order/web/OrderController.java" --scope "worker/src/inv/ReservationController.java" --contract "http POST /reservations/{}" --contract "topic order-created"
+
+`--contract` takes an id as `okf links --json` prints it, or a glob over ids
+(`http * /reservations/*`); `okf new` refuses one that matches no contract. The
+brief records one lead per hop, naming the source, the entry and the contract
+that carries the call on, and the other side's guard, retry or timeout:
+
+```markdown
+<!-- okf:todo
+Hop: api OrderController.create -> http POST /reservations/{} api/src/order/client/InventoryClient.java#L12
+Hop: worker ReservationController.reserve rejects id <= 0 worker/src/inv/ReservationController.java#L5-L8
+Hop: api publishes order-created; worker onOrder consumes it worker/src/inv/ReservationController.java#L10
+Change order: the client and the route change together? no version header found
+-->
+```
+
+A library, or a contract that no single flow explains (a shared table two
+services write), goes into the architecture brief with a `Contract:` lead; the
+coordinator adds it to the `contracts` list of `architecture.md` so its row
+lands in the Contracts table. A contract worth nothing (a health probe a
+monitor calls) is a Not covered candidate whose path matches one of its site
+files. Handoff adds `Contracts: <claimed> of <total>`.
+
 Discovery is done when every scanned module has a page scope or a Not covered
-candidate, every trigger file sits in a workflow stub's scope or a Not covered
-candidate, and every candidate sits in some page's brief. `okf status` stays in
-`discover` while a canon page or a stub has no brief, or while scan found
-triggers and no Workflow page exists; its next actions name what is missing,
-and `okf validate --json` lists every unclaimed trigger file (`trigger-coverage`).
+candidate, every trigger file sits in a Workflow or Flow stub's scope or a Not
+covered candidate, every contract is claimed or a Not covered candidate, and
+every candidate sits in some page's brief. `okf status` stays in `discover`
+while a canon page or a stub has no brief, while scan found triggers and no
+Workflow or Flow page exists, or while contracts are unclaimed and no Flow page
+exists; its next actions name what is missing, and `okf validate --json` lists
+every unclaimed trigger file (`trigger-coverage`) and contract (`link-coverage`).

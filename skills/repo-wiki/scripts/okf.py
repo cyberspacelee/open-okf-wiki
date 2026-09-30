@@ -85,7 +85,7 @@ def cmd_init(args) -> int:
         {
             "wiki": ws.wiki_rel,
             "config": f"{ws.wiki_rel}/{_config.CONFIG}",
-            "pages": [f"{ws.wiki_rel}/{p}" for p in _page.CANON.values()],
+            "pages": [f"{ws.wiki_rel}/{p}" for p in _page.canon(ws)],
             "next": "okf status --json",
         },
         args.json,
@@ -109,9 +109,42 @@ def cmd_scan(args) -> int:
 
 def cmd_new(args) -> int:
     ws = workspace(args)
-    path = args.path.removeprefix(ws.wiki_rel + "/")
-    page = _page.new_page(ws, path, args.type, args.description, args.scope or (), args.title)
-    emit({"page": f"{ws.wiki_rel}/{page.path}", "type": page.type, "scope": page.scope}, args.json)
+    page = _page.new_page(
+        ws, args.type, args.name, args.description, args.scope or (), args.title, args.source, args.contract or (),
+    )
+    out = {"page": f"{ws.wiki_rel}/{page.path}", "type": page.type, "scope": page.scope}
+    if page.contracts:
+        out["contracts"] = page.contracts
+    emit(out, args.json)
+    return 0
+
+
+def cmd_links(args) -> int:
+    import _scan
+
+    ws = _config.load(workspace_root(), args.wiki)
+    if not ws.hub:
+        emit({"contracts": [], "note": "contracts are derived between the sources of a hub"}, True)
+        return 0
+    found = _scan.contracts(ws)
+    if args.source:
+        found = [c for c in found if args.source in c.sources]
+    if args.contract:
+        found = [c for c in found if _page.contract_match(args.contract, c.id)]
+    if args.file:
+        path = _relative(ws, args.file, root().resolve())
+        found = [c for c in found if any(s.path == path or s.path.startswith(path + "/") for s in c.sites)]
+    emit({"contracts": [c.to_dict() for c in found]}, True)
+    return 0
+
+
+def cmd_log(args) -> int:
+    import _stamp
+
+    ws = _config.load(workspace_root(), args.wiki)
+    base = root().resolve()
+    files = [_relative(ws, p, base) for p in args.files] if args.files else None
+    emit(_stamp.log_entries(ws, since=args.since, files=files), args.json)
     return 0
 
 
@@ -225,9 +258,9 @@ def cmd_pointer(args) -> int:
 
     ws = workspace(args)
     if args.write:
-        emit(_stamp.write_pointer(ws, args.write), args.json)
+        emit(_stamp.write_pointer(ws, args.write, args.source), args.json)
     else:
-        print(_stamp.pointer(ws), end="")
+        print(_stamp.pointer(ws, args.source), end="")
     return 0
 
 
@@ -319,12 +352,23 @@ def build_parser() -> argparse.ArgumentParser:
     add("status", cmd_status, "derived phase and next actions")
     add("scan", cmd_scan, "repository facts at HEAD (JSON on stdout)")
 
-    new = add("new", cmd_new, "create a draft page stub")
-    new.add_argument("path", help="wiki-relative page path such as modules/billing.md")
+    new = add("new", cmd_new, "create a draft page stub at the path its type, name and scope derive")
     new.add_argument("--type", required=True, choices=_page.AUTHOR_TYPES)
-    new.add_argument("--description", required=True, help='when to read it: "Read before ..."')
+    new.add_argument("--name", help="page name for Module, Workflow and Flow pages, such as billing")
+    new.add_argument("--source", help="hub source of an Overview or source Conventions page")
+    new.add_argument("--description", help='when to read it: "Read before ..." (canon pages have a default)')
     new.add_argument("--title")
     new.add_argument("--scope", action="append", help="source glob (repeatable)")
+    new.add_argument("--contract", action="append", help="contract id or glob a Flow page claims (repeatable)")
+
+    links = add("links", cmd_links, "contracts between the sources of a hub (JSON)")
+    links.add_argument("--source", help="only contracts this source provides or consumes")
+    links.add_argument("--contract", help="only contracts matching this id or glob")
+    links.add_argument("--file", help="only contracts with a site in this file or directory")
+
+    log = add("log", cmd_log, "stamps recorded in log.md, derived from git history")
+    log.add_argument("--since", help="only entries on or after this date (YYYY-MM-DD)")
+    log.add_argument("--files", nargs="+", help="only entries of pages that cover or cite these paths")
 
     validate = add("validate", cmd_validate, "check every page; exit 1 on errors")
     validate.add_argument("paths", nargs="*", help="report only these pages")
@@ -332,7 +376,7 @@ def build_parser() -> argparse.ArgumentParser:
     review = add("review", cmd_review, "review subject for the independent reviewer")
     review.add_argument("action", choices=["prepare"])
 
-    stamp = add("stamp", cmd_stamp, "stamp reviewed drafts stable and rewrite index.md")
+    stamp = add("stamp", cmd_stamp, "stamp reviewed drafts stable; rewrite the indexes, log.md and the System map")
     stamp.add_argument("--by", required=True, help="producer actor, e.g. repo-wiki/<model>")
     stamp.add_argument("--unreviewed", action="store_true", help="stamp without an independent review")
 
@@ -347,6 +391,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     pointer = add("pointer", cmd_pointer, "print (or write) the AGENTS.md pointer block")
     pointer.add_argument("--write", metavar="FILE", help="replace or append the block in FILE")
+    pointer.add_argument("--source", help="in a hub: the block for this source's AGENTS.md")
 
     db = add("db", cmd_db, ("OpenGauss extension: list the tables the databases in repo-wiki.yaml "
                             "take, describe one table, or capture them as pages"))

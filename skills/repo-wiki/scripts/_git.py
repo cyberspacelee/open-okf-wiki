@@ -306,6 +306,31 @@ def log_name_only(repo: Path, max_commits: int) -> list[list[str]]:
     return commits
 
 
+def log_paths(repo: Path, path: str, max_commits: int) -> list[tuple[str, list[str]]]:
+    """(commit, changed paths at or below ``path``) for the commits reachable from HEAD
+    that touch ``path``, newest first; renames read as a deletion and an addition."""
+    result = _run(
+        repo, "-c", "log.showSignature=false", "log", "-z", "--no-renames", "--name-only",
+        "--format=%x00%H", f"--max-count={int(max_commits)}", "--", path, check=False,
+    )
+    if result.returncode:
+        return []  # no commit yet
+    out = result.stdout
+    commits: list[tuple[str, list[str]]] = []
+    header = False
+    first = False
+    for token in _text(out).split("\0"):
+        if header:
+            commits.append((token, []))
+            header, first = False, True
+        elif not token:
+            header = True
+        else:
+            commits[-1][1].append(token[1:] if first and token.startswith("\n") else token)
+            first = False
+    return commits
+
+
 def check_ignore(repo: Path, path: str) -> bool:
     result = _run(repo, "check-ignore", "-q", "--", path, check=False)
     if result.returncode not in (0, 1):

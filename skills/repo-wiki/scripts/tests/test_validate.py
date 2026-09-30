@@ -152,7 +152,7 @@ def test_nested_module_is_not_covered_by_its_child_scope(tmp_path):
         "svc/go.mod": "module svc\n", "svc/main.go": "package main\n",
         "svc/plugin/go.mod": "module plugin\n", "svc/plugin/p.go": "package plugin\n",
     })
-    _page.new_page(ws, "modules/plugin.md", "Module", "Read before changing the plugin.",
+    _page.new_page(ws, "Module", "plugin", "Read before changing the plugin.",
                    ["svc/plugin/**"])
     set_body(ws, "modules/plugin.md", "## Responsibility and boundaries\n\nPlugin.\n")
     messages = [i.message for i in _validate.validate(ws) if i.code == "coverage"]
@@ -194,7 +194,7 @@ def test_required_sections_per_type(tmp_path):
     set_body(ws, "architecture.md", arch.replace("## Not covered", "## Skipped paths"))
     conventions = _page.load_page(ws, "conventions.md").body
     set_body(ws, "conventions.md", conventions.replace("## Rules", "### rules"))  # any level, any case
-    _page.new_page(ws, "workflows/post.md", "Workflow", "Read before posting.", ["src/billing/**"])
+    _page.new_page(ws, "Workflow", "post", "Read before posting.", ["src/billing/**"])
     set_body(ws, "workflows/post.md", "## Making changes\n\nPosting.\n")
     found = {(i.page, i.message) for i in _validate.validate(ws) if i.code == "section"}
     assert found == {
@@ -230,7 +230,7 @@ def test_template_hints_are_pending_until_deleted(tmp_path):
         "Billing posts invoices.", "Billing posts invoices.\n\n<!-- okf:hint say more\nover lines -->"))
     found = [(i.code, i.severity, i.line) for i in _validate.validate(ws) if i.code == "hint"]
     assert len(found) == 1 and found[0][:2] == ("hint", "pending")
-    stub = _page.new_page(ws, "workflows/post.md", "Workflow", "Read before posting.", ["src/billing/**"])
+    stub = _page.new_page(ws, "Workflow", "post", "Read before posting.", ["src/billing/**"])
     assert len(stub.structure.hints) == 3
 
 
@@ -240,8 +240,8 @@ def test_zh_templates_carry_their_required_sections(tmp_path):
     repo = git_repo(tmp_path / "zh", {"src/a.py": "x = 1\n"})
     ws = wiki_ws(repo, "zh")
     _page.create_canon(ws)
-    _page.new_page(ws, "modules/a.md", "Module", "d", ["src/**"])
-    _page.new_page(ws, "workflows/a.md", "Workflow", "d", ["src/**"])
+    _page.new_page(ws, "Module", "a", "d", ["src/**"])
+    _page.new_page(ws, "Workflow", "a", "d", ["src/**"])
     assert not [i for i in _validate.validate(ws) if i.code == "section"]
 
 

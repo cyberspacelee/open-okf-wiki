@@ -1,7 +1,8 @@
 # Research
 
-How a writer turns one page's brief into verified content, for canon pages
-(stage 3) and every other page (stage 4). A brief is a scout's or tracer's
+How a writer turns one page's brief into verified content, for the glossary
+and conventions pages (stage 3), the Module, Workflow and Flow pages (stage 4)
+and the overview and architecture pages (stage 5). A brief is a scout's or tracer's
 condensed notes: its items are **leads**, places to look, not a list of what
 the page says. The page is only as complete as the writer's own **sweep** of
 the source; the brief checks the sweep, it never replaces it.
@@ -9,7 +10,10 @@ the source; the brief checks the sweep, it never replaces it.
 ## 1. Sweep
 
 Before reading the todo block, read the source the page answers for: the page's
-`scope`, plus for a Workflow the files the flow calls across its boundaries.
+`scope`, plus for a Workflow the files the flow calls across its boundaries,
+and for a Flow the sites of every contract it claims on both sides (`okf links
+--contract "<id>" --json`). An overview or architecture page sweeps the pages
+below it and the scan facts they rest on (`deps`, `resources`, `contracts`).
 Read it twice, for two different things.
 
 **How it works.** Start from the entry points and follow the calls:

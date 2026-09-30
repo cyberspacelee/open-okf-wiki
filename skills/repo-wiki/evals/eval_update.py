@@ -14,9 +14,12 @@ baseline, plants one semantic change (a commit), then scores the kernel's
 - precision: expected pages reported / pages reported;
 - reason kinds: each reported page carries exactly the expected reason kinds,
   and every expected suggested locator is present;
-- update: ``_impact.update`` drafts exactly the reported pages (plus the
-  Architecture page for unmapped modules or deleted Not covered paths), and
-  each draft's todo block holds the reason lines.
+- update: ``_impact.update`` drafts exactly the reported pages (plus the page
+  that answers for an unmapped module, an unclaimed trigger or contract, or a
+  deleted Not covered path), and each draft's todo block holds the reason lines.
+
+The hub fixture shares a topic between its sources, so a change on either side
+of the contract must reach the pages that claim it (``contract-changed``).
 
 Prints a table (or ``--json``) and exits 1 when recall < 1.0, a must-not page
 is reported, a reason kind or suggestion is wrong, or update drafts the wrong
@@ -102,7 +105,7 @@ def stamp_baseline(ws: _config.Workspace, repo: Path) -> None:
     commit(repo, "wiki v1")
     report = _impact.impact(ws)
     if (report["pages"] or report["unmapped_modules"] or report["unclaimed_triggers"]
-            or report["deleted_not_covered"] or report["missing_scope"]):
+            or report["deleted_not_covered"] or report["missing_scope"] or report["unclaimed_contracts"]):
         raise Failure(f"baseline is not clean: {json.dumps(report, indent=2)}")
 
 
@@ -282,7 +285,7 @@ def build_shop(base: Path) -> Path:
     repo = git_repo(base / "shop", SHOP)
     ws = _config.init(repo)
     for path, type, description, scope in SHOP_NEW:
-        _page.new_page(ws, path, type, description, scope)
+        _page.new_page(ws, type, Path(path).stem, description, scope)
     for path, body in SHOP_PAGES.items():
         set_body(ws, path, body)
     stamp_baseline(ws, repo)
@@ -293,28 +296,12 @@ def build_shop(base: Path) -> Path:
 
 APP_PY = "def handle(request):\n    return authorize(request) and dispatch(request)\n"
 AUTH_PY = "def authorize(request):\n    return request.token is not None\n"
+EVENTS_PY = "def dispatch(request):\n    producer.send(\"jobs\", request)\n    return True\n"
 JOB_PY = "def run(job):\n    return job.execute()\n"
 JOB_RETRY_PY = "LIMIT = 5\n"
+CONSUME_PY = "consumer = KafkaConsumer(\"jobs\")\n\ndef poll():\n    return [run(m) for m in consumer]\n"
 
-HUB_PAGES = {
-    "architecture.md": """## Structure
-
-api enqueues work that worker executes; they share no code.[^handle]
-
-## Not covered
-
-| Path | Reason |
-|---|---|
-
-[^handle]: api/src/app.py#L1-L2
-""",
-    "glossary.md": """| Term | Meaning | Avoid | Where |
-|---|---|---|---|
-| Handle | Entry point of every API request. | controller | `handle`[^handle] |
-
-[^handle]: api/src/app.py#L1-L2
-""",
-    "conventions.md": """## Commands
+_EMPTY_CONVENTIONS = """## Commands
 
 | Purpose | Command | Status |
 |---|---|---|
@@ -323,8 +310,61 @@ api enqueues work that worker executes; they share no code.[^handle]
 
 | Area | Rule | Enforced by |
 |---|---|---|
+"""
+
+HUB_PAGES = {
+    "architecture.md": """## Structure
+
+api enqueues work that worker executes; they share no code.[^handle] See
+[api](/sources/api/overview.md), [worker](/sources/worker/overview.md) and the
+[request flow](/flows/request.md).
+
+## Contracts
+
+| Contract | Provider | Consumers | Change order | Verify |
+|---|---|---|---|---|
+| `topic jobs` | api | worker | Add fields in api first; worker ignores unknown fields.[^send] | manual request, then a worker poll |
+
+## Not covered
+
+| Path | Reason |
+|---|---|
+
+[^handle]: api/src/app.py#L1-L2
+[^send]: api/src/events.py#L2
 """,
-    "modules/api.md": """## Responsibility
+    "glossary.md": """| Term | Meaning | Avoid | Where |
+|---|---|---|---|
+| Handle | Entry point of every API request. | controller | `handle`[^handle] |
+
+[^handle]: api/src/app.py#L1-L2
+""",
+    "conventions.md": """## Rules
+
+| Area | Rule | Enforced by |
+|---|---|---|
+""",
+    "sources/api/overview.md": """## Structure
+
+One module, [api](/sources/api/modules/api.md).
+
+## Not covered
+
+| Path | Reason |
+|---|---|
+""",
+    "sources/api/conventions.md": _EMPTY_CONVENTIONS,
+    "sources/worker/overview.md": """## Structure
+
+One module, [worker](/sources/worker/modules/worker.md).
+
+## Not covered
+
+| Path | Reason |
+|---|---|
+""",
+    "sources/worker/conventions.md": _EMPTY_CONVENTIONS,
+    "sources/api/modules/api.md": """## Responsibility
 
 The API owns request handling.
 
@@ -340,7 +380,7 @@ The API authorizes each request before dispatching it.[^auth]
 
 [^auth]: api/src/auth.py#L1-L2
 """,
-    "modules/worker.md": """## Responsibility
+    "sources/worker/modules/worker.md": """## Responsibility
 
 The worker owns job execution.
 
@@ -356,9 +396,19 @@ The worker executes queued jobs.[^run]
 
 [^run]: worker/jobs/run.py#L1-L2
 """,
-    "workflows/request.md": """## Flow
+    "flows/request.md": """## Call chain
 
-A request is handled by the API[^handle] and its job runs in the worker.[^run]
+| Step | Source | Entry | Contract | Next |
+|---|---|---|---|---|
+| 1 | api | `handle`[^handle] | `topic jobs` | worker runs the job |
+| 2 | worker | `run`[^run] | - | - |
+
+```mermaid
+sequenceDiagram
+  participant api
+  participant worker
+  api->>worker: topic jobs
+```
 
 ## Making changes
 
@@ -372,21 +422,26 @@ A request is handled by the API[^handle] and its job runs in the worker.[^run]
 }
 
 HUB_NEW = [
-    ("modules/api.md", "Module", "Read before changing request handling or authorization.", ["api/src/**"]),
-    ("modules/worker.md", "Module", "Read before changing job execution or retries.", ["worker/jobs/**"]),
-    ("workflows/request.md", "Workflow", "Read before changing the path from request to job.",
-     ["api/src/app.py", "worker/jobs/run.py"]),
+    ("Module", "api", "Read before changing request handling or authorization.", ["api/src/**"], ()),
+    ("Module", "worker", "Read before changing job execution or retries.", ["worker/jobs/**"], ()),
+    ("Flow", "request", "Read before changing the path from request to job.",
+     ["api/src/app.py", "worker/jobs/run.py"], ("topic jobs",)),
 ]
 
 
 def build_hub(base: Path) -> Path:
     hub = git_repo(base / "hub", {"README.md": "# Platform hub\n"})
-    git_repo(hub / "api", {"src/app.py": APP_PY, "src/auth.py": AUTH_PY, "README.md": "api\n"})
-    git_repo(hub / "worker", {"jobs/run.py": JOB_PY, "jobs/retry.py": JOB_RETRY_PY, "README.md": "worker\n"})
+    git_repo(hub / "api", {"src/app.py": APP_PY, "src/auth.py": AUTH_PY, "src/events.py": EVENTS_PY,
+                           "README.md": "api\n"})
+    git_repo(hub / "worker", {"jobs/run.py": JOB_PY, "jobs/retry.py": JOB_RETRY_PY,
+                              "jobs/consume.py": CONSUME_PY, "README.md": "worker\n"})
     ws = _config.init(hub, hub_sources=["api", "worker"])
     commit(hub, "wiki stubs")
-    for path, type, description, scope in HUB_NEW:
-        _page.new_page(ws, path, type, description, scope)
+    for type, name, description, scope, contracts in HUB_NEW:
+        _page.new_page(ws, type, name, description, scope, contracts=contracts)
+    arch = _page.load_page(ws, "architecture.md")
+    arch.meta["contracts"] = ["topic jobs"]
+    _page.write_page(arch)
     for path, body in HUB_PAGES.items():
         set_body(ws, path, body)
     stamp_baseline(ws, hub)
@@ -583,12 +638,12 @@ SCENARIOS = [
     Scenario(
         "hub-one-source-scope", "hub", "change worker/jobs/retry.py only",
         _in_source("worker", _files("limit", {"jobs/retry.py": "LIMIT = 7\n"})),
-        {"modules/worker.md": {"scope-modified"}},
+        {"sources/worker/modules/worker.md": {"scope-modified"}},
     ),
     Scenario(
         "hub-one-source-cited", "hub", "change the cited worker/jobs/run.py only",
         _in_source("worker", _edit("jobs/run.py", "job.execute()", "job.execute(timeout=30)")),
-        {"modules/worker.md": {"cited-changed"}, "workflows/request.md": {"cited-changed"}},
+        {"sources/worker/modules/worker.md": {"cited-changed"}, "flows/request.md": {"cited-changed"}},
     ),
     Scenario(
         "hub-api-cited", "hub", "change the cited api/src/app.py only",
@@ -596,8 +651,8 @@ SCENARIOS = [
         {
             "architecture.md": {"cited-changed"},
             "glossary.md": {"cited-changed"},
-            "modules/api.md": {"scope-modified"},
-            "workflows/request.md": {"cited-changed"},
+            "sources/api/modules/api.md": {"scope-modified"},
+            "flows/request.md": {"cited-changed"},
         },
     ),
     Scenario(
@@ -609,6 +664,25 @@ SCENARIOS = [
         "hub-new-module", "hub", "add worker/cli/main.py (a new module in one source)",
         _in_source("worker", _files("cli", {"cli/main.py": "def main():\n    pass\n"})),
         {}, unmapped=["worker/cli"],
+    ),
+    Scenario(
+        "hub-contract-provider-change", "hub",
+        "change api/src/events.py, the producer of topic jobs (no page scope reaches it)",
+        _in_source("api", _edit("src/events.py", "\"jobs\", request", "\"jobs\", request, key=request.id")),
+        {
+            "architecture.md": {"contract-changed", "cited-changed"},
+            "flows/request.md": {"contract-changed"},
+            "sources/api/modules/api.md": {"scope-modified"},
+        },
+    ),
+    Scenario(
+        "hub-contract-consumer-change", "hub", "change worker/jobs/consume.py, the consumer of topic jobs",
+        _in_source("worker", _edit("jobs/consume.py", "for m in consumer", "for m in consumer if m")),
+        {
+            "architecture.md": {"contract-changed"},
+            "flows/request.md": {"contract-changed"},
+            "sources/worker/modules/worker.md": {"scope-modified"},
+        },
     ),
     Scenario(
         "hub-wiki-only-commit", "hub", "commit a wiki note in the hub repository only",
@@ -669,7 +743,7 @@ def run_scenario(scenario: Scenario, baseline: Path, work: Path) -> dict:
             problem(page, f"[^{label}] suggested {got or 'nothing'}, expected {locator}")
     if report["unmapped_modules"] != scenario.unmapped:
         problem(None, f"unmapped_modules {report['unmapped_modules']}, expected {scenario.unmapped}")
-    if report["deleted_not_covered"] != scenario.deleted_not_covered:
+    if [item["path"] for item in report["deleted_not_covered"]] != scenario.deleted_not_covered:
         problem(None, f"deleted_not_covered {report['deleted_not_covered']}, expected {scenario.deleted_not_covered}")
     missing = [(item["page"], item["glob"]) for item in report["missing_scope"]]
     if missing != scenario.missing_scope:
@@ -699,14 +773,15 @@ def run_scenario(scenario: Scenario, baseline: Path, work: Path) -> dict:
 def _check_update(ws: _config.Workspace, report: dict, problems: list[str]) -> bool:
     """okf update drafts exactly the reported pages and records every reason line."""
     before = len(problems)
-    arch = _page.CANON["Architecture"]
     want: dict[str, list[str]] = {item["page"]: [_impact.describe(r) for r in item["reasons"]] for item in report["pages"]}
     for module in report["unmapped_modules"]:
-        want.setdefault(arch, []).append(f"unmapped-module {module}")
+        want.setdefault(_validate.coverage_page(ws, module), []).append(f"unmapped-module {module}")
     for item in report["unclaimed_triggers"]:
-        want.setdefault(arch, []).append(f"unclaimed-trigger {item['path']}")
-    for path in report["deleted_not_covered"]:
-        want.setdefault(arch, []).append(f"not-covered-deleted {path}")
+        want.setdefault(_validate.coverage_page(ws, item["path"]), []).append(f"unclaimed-trigger {item['path']}")
+    for item in report["unclaimed_contracts"]:
+        want.setdefault("architecture.md", []).append(f"unclaimed-contract {item['id']}")
+    for item in report["deleted_not_covered"]:
+        want.setdefault(item["page"], []).append(f"not-covered-deleted {item['path']}")
     for item in report["missing_scope"]:
         want.setdefault(item["page"], []).append(f"scope-empty {item['glob']}")
     result = _impact.update(ws)

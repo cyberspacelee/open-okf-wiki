@@ -102,8 +102,8 @@ I5 的关键在于写作期间 HEAD 不能变。draft 页面记录的是写作�
 | `review.json` | 旧设计中是 issue 台账（稳定 ID，跨修复轮次）与批准记录 | 批准与 issue 不能，这是 reviewer 的判断；台账不需要 | **改为 review report** `<wiki>/_review.json`：只保存当前一轮的 verdict 与 issues，没有 ID 和状态，下一轮 reviewer 把它当输入读；stamp 时删除。批准结果沉淀为页面的 `verified` |
 | review subject 文件 | 批准对象 | 能：subject 由 draft 页的 hash 和 HEAD 算出 | **删除**。`review prepare` 只输出 digest，stamp 时重算并比较 |
 | `repo-wiki.yaml`（放在仓库根） | lang、wiki 位置、exclude、多仓 sources | 部分能 | **移入 wiki 目录**。exclude 改为 Architecture 的 Not covered 表：这既是 I6 的依据，也是 Agent 需要知道的知识（例如"vendored 目录不要改"） |
-| `log.md` | 变更历史 | 能：`git log -- <wiki>` | **删除** |
-| 每个目录的 `index.md` | 分层导航 | 能：由根 index 按 type 分组即可 | **删除**，只生成根 `index.md` |
+| `log.md` | 变更历史，也让新会话知道最近改了什么 | 能：从 wiki 的 git 历史和页面的 stamp 推导 | **改为派生物**（ADR 0028）：stamp 按 OKF §9 生成，删掉后重新 stamp 得到同样的内容，不是台账 |
+| 每个目录的 `index.md` | 分层导航 | 能：由页面推导 | **hub 分层生成**（ADR 0028）：根 index 列系统级页面和各 source，`sources/<s>/index.md` 列该 source 的页面；单仓只有根 index |
 | manifest（页面到 blob 输入） | 页面与源码的映射 | 能：`scope`、footnote、`revision` 都在页面 frontmatter | **删除** |
 | OpenGauss catalog JSON 缓存 | 表结构证据 | 能：生成的 Table 页就是渲染后的 capture，其 frontmatter 带 hash | **删除**。`db capture` 直接渲染成页面 |
 | Run ID、pin worktree、generation 目录、current/previous pointer、export | 事务、冻结、回滚 | 能：git commit 与干净工作树检查 | **删除** |
@@ -130,10 +130,11 @@ I5 的关键在于写作期间 HEAD 不能变。draft 页面记录的是写作�
   docs/wiki/                  # 知识层 = OKF bundle，与代码一起提交；位置在 init 时可选
     repo-wiki.yaml            # 配置：lang（多仓时另有 sources）
     index.md                  # 生成：按 type 分组的路由表 + Source map
+    log.md                    # 生成：由 git 历史推导的更新日志（OKF §9）
     architecture.md           # canon：边界、依赖方向、理由、Not covered 表
     glossary.md               # canon：术语表
     conventions.md            # canon：命令表 + 规则表
-    modules/<name>.md
+    modules/<name>.md         # 路径由 okf new 按 type、name、scope 推导
     workflows/<name>.md
     _review.json              # 仅在 review 进行中存在；stamp 时删除
 ```
@@ -155,9 +156,27 @@ I5 的关键在于写作期间 HEAD 不能变。draft 页面记录的是写作�
   worker/
   docs/wiki/
     repo-wiki.yaml            # lang + sources: [api, worker]
-    …                         # 与单仓完全相同
+    index.md                  # 生成：系统级页面 + 每个 source 一行
+    log.md                    # 生成：更新日志
+    system-map.md             # 生成（type: Map）：各 source 之间的契约图
+    glossary.md               # canon：全系统一份
+    architecture.md           # canon：仓库分工、跨仓契约表（Contracts）、Not covered
+    conventions.md            # canon：跨仓规则（分支、发布、契约版本、改动顺序）
+    flows/<name>.md           # 跨 source 的端到端流程（type: Flow）
+    sources/<s>/
+      index.md                # 生成：该 source 的页面 + Source map
+      overview.md             # canon（type: Overview）：该 source 的结构、Not covered
+      conventions.md          # canon：该 source 的命令与规则
+      modules/<name>.md
+      workflows/<name>.md     # 只在一个 source 内的流程
 ```
 
+- **目录就是层级（ADR 0028）。** 每个作者页只有一个合法路径，由 type、name、source 和 scope 推导：
+  scope 在一个 source 内的 Module / Workflow 放在 `sources/<s>/` 下，跨 source 的流程是 Flow 页、放在
+  `flows/`。`okf new` 计算路径，放错位置报 `page-path`。
+- **契约（Contract）由 kernel 推导。** scan 把各 source 的 HTTP 路由与客户端调用、RPC 服务与 stub、
+  topic 的生产与消费、表的读写、库的发布与依赖匹配成契约（`okf links`）；Flow 页和 architecture.md 在
+  frontmatter 的 `contracts` 中认领，并在调用链表或 Contracts 表中写明提供方、消费方、变更顺序和验证方式。
 - **Locator** 相对 hub 根目录，第一段自然就是 source 名，例如 `api/src/…`。
 - **Revision** 按 source 记录。
 - **clone 和 fetch** 由用户或 Agent 用普通 git 完成。kernel 只检查 source 目录存在、是 git 仓、tracked 文件干净。
@@ -230,11 +249,16 @@ Invoices are immutable once posted; corrections are new credit items.[^posted]
 
 | type | 何时建 | 必需结构（en / zh 标题，`section` 规则检查） | 常见章节（示例，按内容命名） |
 |---|---|---|---|
-| `Architecture` | 恒有，1 页 | Structure / 整体结构；Not covered / 未单独成页（Path / Reason 表） | 设计取舍（链接已有 ADR）；跨模块约束；跨模块修改（修改指南表） |
+| `Architecture` | 恒有，1 页 | Structure / 整体结构；Not covered / 未单独成页（Path / Reason 表）；hub 另需 Contracts / 跨仓契约（契约表） | 设计取舍（链接已有 ADR）；跨模块（hub：跨仓）约束；跨模块修改（修改指南表） |
+| `Overview` | hub 每个 source 1 页 | Structure / 整体结构；Not covered / 未单独成页 | 该 source 的跨模块约束与修改 |
 | `Glossary` | 恒有，1 页 | 术语表（见 §5.3） | 易混淆的术语 |
-| `Conventions` | 恒有，1 页 | Commands / 常用命令（命令表）；Rules / 开发规则（规则表），见 §5.3 | 新代码放在哪里；每个扩展点一个"新增一个 X"章节 |
+| `Conventions` | 单仓 1 页；hub 系统 1 页 + 每个 source 1 页 | Commands / 常用命令（命令表）；Rules / 开发规则（规则表），见 §5.3；hub 的系统级 conventions 只需 Rules | 新代码放在哪里；每个扩展点一个"新增一个 X"章节 |
 | `Module` | 有真实边界、值得解释的机制、不变量或扩展点的模块 | Responsibility / 模块职责；How it works / 工作原理；Making changes / 修改指南（修改指南表，至少一行） | 关键约束；为什么这样设计；错误处理；新增一个 X；历史兼容；已知的坑 |
-| `Workflow` | Agent 需要调试或扩展的流程，从 scan 触发点或公开入口开始 | Flow / 执行流程；Making changes / 修改指南（修改指南表，至少一行） | 顺序与一致性约束；失败、重试与补偿；出问题时看哪里 |
+| `Workflow` | Agent 需要调试或扩展的流程，从 scan 触发点或公开入口开始，只在一个 source 内 | Flow / 执行流程；Making changes / 修改指南（修改指南表，至少一行） | 顺序与一致性约束；失败、重试与补偿；出问题时看哪里 |
+| `Flow` | hub 中跨 source 的端到端流程 | Call chain / 跨仓调用链（调用链表，至少一行，外加 mermaid sequenceDiagram）；Making changes / 修改指南 | 跨仓一致性；跨边界的超时、重试、幂等与补偿 |
+
+必需章节和表格由页面的**角色（role）**决定，而不只是 type：hub 的系统级 Architecture 要有契约表，
+系统级 Conventions 只要规则表（hub 自己没有命令）。
 
 图是推荐项，不是必需项：Architecture 的整体结构、Module 的工作原理和 Workflow 的执行流程通常各配一张 mermaid 图。
 
@@ -305,6 +329,24 @@ Invoices are immutable once posted; corrections are new credit items.[^posted]
 
 zh 表头：关键约束 / 由谁保证 / 违反会怎样。
 
+**跨仓契约（Contracts，hub 的 architecture.md）**
+
+| Contract | Provider | Consumers | Change order | Verify |
+|---|---|---|---|---|
+| `library com.acme:common` | worker | api | Release common from worker first, then bump api.[^common] | `mvn -q verify` in both |
+
+- zh 表头：契约 / 提供方 / 消费方 / 变更顺序 / 如何验证。Contract 写 `okf links` 给出的契约 id（或 id glob），
+  Provider、Consumers 写 source 名；变更顺序说明哪一侧先改先上线、另一侧依赖什么兼容性。
+
+**跨仓调用链（Call chain，Flow 页）**
+
+| Step | Source | Entry | Contract | Next |
+|---|---|---|---|---|
+| 1 | api | `OrderController.create`[^create] | `http POST /reservations/{}` | worker reserves stock |
+
+- zh 表头：步骤 / 仓库 / 入口 / 契约 / 下一步。每一跳只写入口和把调用带到下一跳的契约（同一 source 内写 `-`），
+  内部实现链接该 source 的 workflow 或 module 页。
+
 **Architecture / Not covered**
 
 | Path | Reason |
@@ -313,15 +355,18 @@ zh 表头：关键约束 / 由谁保证 / 违反会怎样。
 
 ### 5.4 生成物
 
-- **只生成根目录的 `index.md`**（OKF §8 格式，只带 `okf_version` frontmatter），内容包括：
-  - 按 type 分组的 `[title](path) - description`，只列 stable 页；
-  - **Source map**：扫描到的每个模块 → 覆盖它的页面或 Not covered 理由。Agent 按路径就能找到页面。
-- **不生成 `log.md`。** 变更历史用 `git log -- <wiki>`。
+- **`index.md`**（OKF §8）：单仓只有根 index；hub 的根 index 列系统级页面、System map 和每个 source，
+  `sources/<s>/index.md` 列该 source 的页面。条目为 `[title](path) - description (reviewed|unreviewed 日期)`，
+  只列 stable 页；**Source map** 把每个模块映射到覆盖它的页面或 Not covered 理由。超过 150 行报 `index-size`。
+- **`log.md`**（OKF §9）：stamp 从 wiki 的 git 历史加上尚未提交的 stamp 推导，按日期分组、最新在前，
+  每条记录新建或更新、source revision 区间和 reviewer；最多 100 条。删掉后重新 stamp 得到同样的内容，
+  合并冲突也用重新 stamp 解决。`okf log` 可按日期或文件过滤。
+- **`system-map.md`**（hub，type Map）：stamp 由 HEAD 的代码生成的契约图，每个契约列出提供方、消费方和认领它的页面。
 - **可选的 AGENTS.md 指针：** 由 `okf pointer` 生成，写入 `<!-- repo-wiki:begin/end -->` 托管块。
 
 ---
 
-## 6. 主 SOP：5 个阶段
+## 6. 主 SOP：6 个阶段
 
 每个阶段最后都运行 `okf status --json`。status 从 wiki 目录和 git 推导出当前阶段并给出 `next_actions`。
 全部工作状态都在 wiki 目录的页面里，所以上下文压缩后可以直接续跑。
@@ -331,7 +376,7 @@ zh 表头：关键约束 / 由谁保证 / 违反会怎样。
 
 ### 阶段 1 — Discover：收集事实，形成简报
 
-1. **`okf init` 已创建三页 canon 桩。** 它们不依赖任何发现结果，从一开始就作为候选的落点。
+1. **`okf init` 已创建 canon 桩**（单仓三页；hub 另加每个 source 的 overview 和 conventions）。 它们不依赖任何发现结果，从一开始就作为候选的落点。
 2. **运行 `okf scan`（stdout）。** 它输出：
    - 模块：来自构建 manifest，例如 workspaces、Maven/Gradle、Cargo、go.mod、pyproject；
      再加上有代码的顶层目录；顶层代码根（`src`、`lib`、`app`、`pkg`、`internal`、`packages`、
@@ -367,7 +412,8 @@ zh 表头：关键约束 / 由谁保证 / 违反会怎样。
      （术语、规范、命令、全局不变量）通过 handoff 返回，coordinator 收到即合并进 canon 桩的 todo 简报；
    - 第二轮 tracer 按触发点分组（同一模块同一 kind 的触发文件，或两个模块共享的 topic）：从入口追到结果，
      记录跨过的模块边界、碰到的 topic/表、途中的 guard、事务与重试，建 workflow 桩，scope 包含触发文件和
-     流程经过的文件；不值得成页的触发点作为 Not covered 候选。workflow 天然跨模块，按区域切分的 scout
+     流程经过的文件；不值得成页的触发点作为 Not covered 候选。hub 中 tracer 还按契约（scan `contracts`）分组，
+     沿契约跨 source 追踪，建 Flow 桩（`okf new --type Flow --contract …`），scope 包含各 source 的触发文件。workflow 天然跨模块，按区域切分的 scout
      会把它们漏在区域之间，所以单独一轮。
 5. **6 类发现各有落点：**
 
@@ -387,14 +433,16 @@ Workflow 页时停在 `discover`。
 ### 阶段 2 — Structure：确定页面集合
 
 - **Module 与 Workflow 页只在有"这里有哪些文件"之外的内容时保留**（边界、机制、约束或扩展点）。 需要的补建，不值得的删掉。页数由知识边界决定，不设目标。
-- **不值得建页的模块与触发文件** 写进 Architecture 的 Not covered 表，并附理由；一行 glob 可覆盖一组触发文件。
+- **不值得建页的模块与触发文件** 写进 Architecture 的 Not covered 表（hub 写进该 source 的 overview），并附理由；一行 glob 可覆盖一组触发文件。
+- **hub 的每个契约** 要么被某个 Flow 页或 architecture.md 在 `contracts` 中认领，要么有一行匹配其站点文件的 Not covered（`link-coverage`）。
 - **每页的 `description` 和 `scope` 在此定稿。**
-- **退出条件：** `okf validate` 的覆盖规则（I6，含 `trigger-coverage`）和 scope 规则通过。
+- **退出条件：** `okf validate` 的覆盖规则（I6，含 `trigger-coverage`、`link-coverage`）、scope 和 `page-path` 规则通过。
 
 ### 阶段 3 — Research：先写 canon
 
-- **写作顺序：** Glossary、Conventions、Architecture 在所有其他页面之前写完。
-  由 coordinator（或它派出的一个 owner）负责，这三页同一时间只有一个写者。
+- **写作顺序：** Glossary 和所有 Conventions 页在其他页面之前写完，因为每个 writer 都要用它们。
+  Architecture 和 Overview 由阶段 5 在下层页面写完后汇总（ADR 0028，参照 CodeWiki 的自底向上合成）；
+  它们的简报和 Not covered 行在阶段 1、2 已经写好。
 - **先扫后对账（`references/research.md`）：** 简报是 scout 的压缩笔记，条目只是线索（lead）。
   写作者先独立扫描（sweep）本页负责的源码——guard、事务、锁、重试、跨边界调用、触发点、共享资源——
   再打开简报逐条标记 confirmed / dropped / moved；扫描中发现、简报没提到的是新发现。核实不了的丢掉。
@@ -402,10 +450,7 @@ Workflow 页时停在 `discover`。
 - **Glossary：** 为每个概念选定 canonical 名称，把其他叫法填进 `Avoid`。
 - **Conventions：** 规则按 §5.3 的证据门槛核实；在安全的前提下运行 build、test、lint 命令，
   如实填写 Status。
-- **Architecture：**
-  - 把边界、依赖方向和设计理由写成正文；
-  - 源码或文档里找不到理由的，写"rationale not recorded"，不去推测。
-- **退出条件：** 三页没有 todo 块，且 `validate` 没有 error。
+- **退出条件：** Glossary 和 Conventions 页没有 todo 块，且 `validate` 没有 error。
 
 ### 阶段 4 — Write：并行写其余页面
 
@@ -422,7 +467,15 @@ Workflow 页时停在 `discover`。
   scope 内有触发点、guard 或跨模块调用却报告零新发现的页面，coordinator 派第二次扫描。
 - **退出条件：** 没有 todo 块，且 `validate` 没有 error。warning 交给 review 裁决。
 
-### 阶段 5 — Review & Stamp：审查，然后盖章
+### 阶段 5 — Assemble：汇总 Overview 与 Architecture
+
+- 在 Module、Workflow、Flow 页写完之后，由下往上写各 source 的 overview 和 architecture.md：
+  - 把边界、依赖方向和设计理由写成正文，链接下层页面（没有被任何页面链接的 Module/Workflow/Flow 页报 `orphan`）；
+  - hub 的 architecture.md 写 Contracts 表：每个它认领的契约一行（提供方、消费方、变更顺序、两侧如何验证）；
+  - 源码或文档里找不到理由的，写"rationale not recorded"，不去推测。
+- **退出条件：** 这些页没有 todo 块，且 `validate` 没有 error（含 `contract-row`）。
+
+### 阶段 6 — Review & Stamp：审查，然后盖章
 
 - **`okf review prepare --json`** 只读，输出：
   - `subject_digest`，由每个 draft 页的路径与文件 hash 计算（文件内容含 `revision`，因此源码变化也会让 digest 失效）；
@@ -498,9 +551,9 @@ Workflow 页时停在 `discover`。
    - 在正文开头插入一个 todo 块，每条原因一行，以 ` (since <sha12>)` 结尾（`git diff <sha12> -- <path>`
      即可看到变化），moved 的引用附建议的 locator；`revision-missing` 和 catalog 原因没有该后缀。
    - 目标页面缺失或无法解析时（如 architecture.md 被删），原因不写入任何页，而在输出的 `unplaced` 中列出。
-3. **对 draft 页面重跑阶段 3 或 4：** writer 协调完变更后删除 todo 块。
-   只有出现未映射模块或删除时，才回到阶段 2。
-4. 走阶段 5。review subject 只包含 draft 页面。
+3. **对 draft 页面重跑阶段 3、4 或 5：** writer 协调完变更后删除 todo 块。
+   只有出现未映射模块、未认领的触发文件或契约，或删除时，才回到阶段 2。
+4. 走阶段 6。review subject 只包含 draft 页面。
 
 开发中的 Agent 还可以运行 `okf impact --files <paths>`。它对每个路径输出
 `{read, update, change_guide, canon, note}`：scope 匹配的页面（修改前读）、引用它的页面（改完后更新）、
@@ -516,17 +569,19 @@ hub 的 source 目录内也能运行，相对路径从当前目录算起（sourc
 
 | 命令 | 读/写 | 作用 |
 |---|---|---|
-| `okf init [--wiki DIR] [--lang en\|zh] [--hub --source …]` | 写 | 创建 `<wiki>/repo-wiki.yaml` 和三页 canon 桩；hub 模式下还会在 `.gitignore` 中追加 source 目录。先检查全部前提（仓库或每个 source 已有提交）再写；中途失败则回滚，不留半成品 |
+| `okf init [--wiki DIR] [--lang en\|zh] [--hub --source …]` | 写 | 创建 `<wiki>/repo-wiki.yaml` 和 canon 桩（单仓三页；hub 另加每个 source 的 overview 和 conventions）；hub 模式下还会在 `.gitignore` 中追加 source 目录。先检查全部前提（仓库或每个 source 已有提交）再写；中途失败则回滚，不留半成品 |
 | `okf status --json` | 只读 | 输出 phase、next_actions、counts，以及最多 20 条 issue |
 | `okf scan --json` | 只读 | 见 §6 阶段 1，stdout 有界，不落盘 |
-| `okf new PATH --type T --description D [--title T] [--scope GLOB…]` | 写页面 | 按 lang 模板创建桩页面（含必需标题）：`status: draft`、`revision: HEAD`，外加空的 todo 块；拒绝匹配不到任何文件的 scope glob |
+| `okf new --type T [--name N] [--source S] [--description D] [--scope GLOB…] [--contract ID…]` | 写页面 | 在由 type、name、source、scope 推导出的路径上，按 lang 和角色模板创建桩页面（含必需标题）：`status: draft`、`revision: HEAD`，外加空的 todo 块；拒绝匹配不到任何文件的 scope glob 和匹配不到任何契约的 `--contract` |
+| `okf links [--source S] [--contract ID] [--file PATH] --json` | 只读 | hub 中各 source 之间的契约 |
+| `okf log [--since DATE] [--files PATH…] --json` | 只读 | 从 git 历史推导的 stamp 记录 |
 | `okf validate [--json] [PATH…]` | 只读 | 规则见 §7.3，一次报告全部问题 |
-| `okf review prepare --json` | 只读 | 见 §6 阶段 5 |
-| `okf stamp [--unreviewed] --by ACTOR` | 写页面和 index | 见 §6 阶段 5，幂等 |
+| `okf review prepare --json` | 只读 | 见 §6 阶段 6 |
+| `okf stamp [--unreviewed] --by ACTOR` | 写页面和派生文件 | 见 §6 阶段 6，幂等 |
 | `okf impact [--files …] --json` | 只读 | 见 Update |
 | `okf update --json` | 写页面 | 见 Update |
 | `okf verify --actor human:ID PAGE…` | 写页面 | 追加人工 verified |
-| `okf pointer [--write AGENTS.md]` | 只读或写托管块 | 生成 AGENTS.md 指针 |
+| `okf pointer [--source S] [--write AGENTS.md]` | 只读或写托管块 | 生成 AGENTS.md 指针；hub 中 `--source` 生成该 source 的指针 |
 | `okf db tables` / `okf db capture [--db NAME]`（扩展） | 读库 / 写页面 | 见 §7.8 |
 
 `--wiki DIR` 在子命令之前或之后都可以。每条 issue 的格式为 `{code, severity, page, line, message, fix}`，
@@ -546,16 +601,17 @@ hub 的 source 目录内也能运行，相对路径从当前目录算起（sourc
    - 某个 draft 页的 `revision` 与 HEAD 的源码内容不同；
    - 没有 draft 页，且 update 的计划（`_impact.plan`）会把 stale 页面、未映射模块或已删除的 Not covered
      路径、未认领的触发文件写进某页。status 因而不会连续两次给出不产生任何改动的 `update`。
-5. 发现未完成 → `discover`：至少有一页 canon，并且某页 canon 或某个 Module/Workflow 页只有空 todo 块，
-   或存在 `trigger-coverage` 问题而没有任何 Workflow 页。没有桩且 canon 简报全空时 next action 为
-   `okf scan`；否则列出仍缺简报的页面，没有 Workflow 页时再给出未认领触发文件的数量。
-6. 覆盖、触发点覆盖、scope 或 not-covered 规则失败 → `structure`
-7. canon 页有 todo 块或 error → `research`
-8. 其他页面有 todo 块或 error → `write`
-9. 存在 draft 页面，且 `_review.json` 缺失、无效、过期或为 changes_requested → `review`
+5. 发现未完成 → `discover`：至少有一页 canon，并且某页 canon 或某个 Module/Workflow/Flow 页只有空 todo 块，
+   或存在 `trigger-coverage` 问题而没有任何 Workflow/Flow 页，或存在 `link-coverage` 问题而没有任何 Flow 页。
+   没有桩且 canon 简报全空时 next action 为 `okf scan`；否则列出仍缺简报的页面，以及未认领的触发文件和契约数量。
+6. 覆盖、触发点覆盖、契约覆盖、契约认领、scope、not-covered 或 page-path 规则失败 → `structure`
+7. Glossary 或 Conventions 页有 todo 块或 error → `research`
+8. 除 Architecture、Overview 之外的页面有 todo 块或 error → `write`
+9. Architecture 或 Overview 页有 todo 块或 error → `assemble`
+10. 存在 draft 页面，且 `_review.json` 缺失、无效、过期或为 changes_requested → `review`
    （next actions 同时给出无独立 reviewer 时的 `okf stamp --unreviewed`）
-10. 存在 draft 页面，且 review 已批准 → `stamp`
-11. 否则 → `done`。next action：index 过期时用 `okf stamp` 重写；wiki 有未提交改动时
+11. 存在 draft 页面，且 review 已批准 → `stamp`
+12. 否则 → `done`。next action：index、log.md 或 System map 过期时用 `okf stamp` 重写；wiki 有未提交改动时
     `review and commit the wiki (<n> changed files)`；否则 `nothing to do: the wiki is committed and current`。
 
 `blocked` 之后的每个 phase，status 都列出最多 20 条 issue：本 phase 自己的在前，其余按 error、pending、
@@ -575,9 +631,17 @@ warning 排序。`pending` 就是 todo 块：阻塞 stamp，但不让 validate �
 | `footnote-join` | error | 每个引用都有定义，每个定义都被引用；stable 页的 `sources` 与 footnote 一致 | I3 |
 | `required-citation` | error | 术语、命令、规则、关键约束、修改指南表的每行都有 footnote | I2 |
 | `table-values` | error | 命令表的 Status、规则表的 Area 和 Enforced by 取值合法；修改指南行的 Start at 和 Verify 不为空 | I2 |
-| `change-guide` | error | 没有 todo 块的 Module / Workflow 页至少有一行修改指南 | — |
+| `change-guide` | error | 没有 todo 块的 Module / Workflow / Flow 页至少有一行修改指南 | — |
+| `page-path` | error | 作者页不在由 type、name、source、scope 推导出的路径上，或 scope 无法定位（hub 的 Module/Workflow 跨 source、Flow 只在一个 source 内） | — |
+| `flow-hops` | error | 没有 todo 块的 Flow 页缺调用链行或 mermaid sequenceDiagram | — |
+| `link-coverage` | error | hub 的每个契约（外部调用除外）被某页 `contracts` 认领，或被匹配其站点文件的 Not covered 行排除 | I6 |
+| `contract-claim` | error | `contracts` 中的 id 或 glob 匹配不到任何契约 | — |
+| `contract-row` | error | 没有 todo 块的页面认领的契约，在 Contracts 表或调用链表中没有对应行 | — |
+| `contract-unknown` | warning | Contracts 表或调用链表的 Contract 单元格匹配不到任何契约 | — |
+| `orphan` | warning | 没有被任何其他作者页链接的 Module / Workflow / Flow 页 | — |
+| `index-size` | warning | 某个 index 超过 150 行 | — |
 | `coverage` | error | 每个扫描到的模块，其拥有的文件（嵌套模块的文件归嵌套模块）至少有一个落在某页 scope 内，或模块出现在 Not covered 表中且有 reason | I6 |
-| `trigger-coverage` | error | 每个触发文件（scan `triggers`）落在某个 Workflow 页的 scope 内，或被带理由的 Not covered 行（路径、目录或 glob）排除 | I6 |
+| `trigger-coverage` | error | 每个触发文件（scan `triggers`）落在某个 Workflow 或 Flow 页的 scope 内，或被带理由的 Not covered 行（路径、目录或 glob）排除；hub 中报在该 source 的 overview 上 | I6 |
 | `scope` | error | 每个 glob 至少匹配一个 tracked 文件 | I5 |
 | `unreviewed-edit` | error | 标为 stable 的页面，`content_sha256`（正文加受保护的 frontmatter）与 `stamp.content_sha256` 不一致 → 应置为 draft | I4 |
 | `section` | error | 缺少该类型的必需标题（§5.2，en 或 zh） | — |
@@ -586,9 +650,9 @@ warning 排序。`pending` 就是 todo 块：阻塞 stamp，但不让 validate �
 | `mermaid` | error | 支持的图类型、fence 闭合、没有悬空连接 | — |
 | `todo` | pending | 页面仍有 `<!-- okf:todo -->` 块；阻塞 stamp，validate 仍以 0 退出 | — |
 | `hint` | pending | 页面仍有模板的 `<!-- okf:hint -->` 提示；阻塞 stamp，validate 仍以 0 退出 | — |
-| `canon-missing` / `canon-table` / `canon-empty` | error / error / warning | 三页 canon 存在，且各自的必需表格存在；表格为空时提示 | I2 |
-| `not-covered` | error | Not covered 行的路径匹配不到 tracked 文件，或没有理由 | I6 |
-| `index` | error | 没有 draft 页时，`index.md` 与渲染结果不一致 | I9 |
+| `canon-missing` / `canon-table` / `canon-empty` | error / error / warning | 每页 canon（hub 含各 source 的 overview 与 conventions）存在，且其角色的必需表格存在；表格为空时提示 | I2 |
+| `not-covered` | error | Not covered 行的路径匹配不到 tracked 文件，或没有理由；hub 中 overview 的行超出其 source | I6 |
+| `index` / `log` / `map` | error | 没有 draft 页时，各 `index.md`、`log.md`、`system-map.md` 与推导结果不一致或已过期 | I9 |
 | `db-binding` | warning | hub 中页面链接的数据库页，其库未绑定（`repos`）到该页 scope 所在的任何 source | — |
 | `alias` | warning | 在代码 span 之外使用了 Glossary 的 `Avoid` 别名 | I7 |
 | `uncited-why` | warning | 因果句（because / so that / 为了 / 因为…）没有 footnote | — |
@@ -603,7 +667,7 @@ warning 排序。`pending` 就是 todo 块：阻塞 stamp，但不让 validate �
   - `stamp: {content_sha256, reviewed_by}`（`reviewed_by` 为批准者，`--unreviewed` 时为 null，计入 hash）；
   - `status: stable`；
   - `revision` 不变（它已经等于 HEAD）。
-- 重新生成 `index.md`，删除 `_review.json`。
+- 重新生成各 `index.md`、`log.md` 和（hub）`system-map.md`，删除过期的派生文件和 `_review.json`。
 - 幂等：没有 draft 页时，stamp 不产生任何变化。
 
 ### 7.5 impact 算法
@@ -620,11 +684,15 @@ warning 排序。`pending` 就是 todo 块：阻塞 stamp，但不让 validate �
 3. 其余 scope 内的文件报告 `scope-added`、`scope-modified` 或 `scope-deleted`。
 4. revision 已不存在（例如 rebase 之后）→ `revision-missing`；链接的 Schema/Table 页重新 capture 后 hash
    变化或被删除 → `catalog-changed` / `catalog-deleted`。
+5. 页面认领的契约，其任一站点文件在该 source 中变了 → `contract-changed`，即使该文件不在页面 scope 内：
+   提供方改了路由，消费方所在的 Flow 页也会变成 stale。
 
 模块层面：扫描到的模块集合与各页 scope 对比，得出未映射的新模块和已删除的 Not covered 路径。
 
 `--files` 模式下，按 scope（`read`）、引用（`update`）和修改指南行（`change_guide`：被引 locator 或
-Change / Start at 单元格点名该路径）反查页面，不需要 diff，对每个路径输出 `{read, update, change_guide, canon, note}`。
+Change / Start at 单元格点名该路径）反查页面，不需要 diff，对每个路径输出 `{read, update, change_guide, canon, note}`；
+hub 中 canon 另含该 source 的 conventions 和 overview，并多一个 `contracts`：该路径是哪些契约的站点、对端站点、
+认领它的页面和 Contracts 表中的变更顺序行。
 
 整个算法只用 git 和 frontmatter，不引入任何额外的状态文件。
 
@@ -680,7 +748,7 @@ Change / Start at 单元格点名该路径）反查页面，不需要 diff，对
 
 ## 8. Agent 分工
 
-- **Coordinator：** 负责 status 循环、三页 canon、术语合并、Not covered 决策。
+- **Coordinator：** 负责 status 循环、canon 页、术语合并、Not covered 决策和契约认领。
 - **Scout（Discover，可选，2–4 个）：** 按区域调研，为本区域执行 `okf new` 并写简报；canon 候选通过 handoff 返回。
 - **Writer（Write，每页一个，可并行）：** 只写自己的页面。
 - **Reviewer（每轮一个新的，独立）：** 只读页面、源码和上一轮的 review report；只写 `_review.json`；

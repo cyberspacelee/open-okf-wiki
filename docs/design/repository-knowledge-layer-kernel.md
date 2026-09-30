@@ -21,12 +21,12 @@ only). No pydantic. Standard library otherwise. All git access goes through
 | `_diagram.py` | basic Mermaid structure check | `_markdown` |
 | `_git.py` | every git subprocess call | — |
 | `_config.py` | `Workspace`, `Source`, config load/init, hub-source detection, locator parse, path resolve, compiled globs | `_git`, yaml |
-| `_page.py` | `Page` model, page discovery, canon table parsing, templates, `new_page`, `mark_draft`, frontmatter writing | `_config`, `_frontmatter`, `_markdown` |
-| `_code.py` | code structure over blob text: trigger rules, import resolution (`Imports`), named resources (topics, tables) | — |
-| `_scan.py` | deterministic repository facts, `modules()`, `triggers()` | `_code`, `_config`, `_git` |
+| `_page.py` | `Page` model, page discovery, roles, derived page paths, canon, canon table parsing, templates, `new_page`, `mark_draft`, frontmatter writing | `_config`, `_frontmatter`, `_markdown` (`_scan`, `_code` lazily for contract claims) |
+| `_code.py` | code structure over blob text: trigger rules, import resolution (`Imports`), named resources (topics, tables), contract sites (`contract_sites`) and contract id normalization | — |
+| `_scan.py` | deterministic repository facts, `modules()`, `triggers()`, `contracts()` | `_code`, `_config`, `_git` |
 | `_validate.py` | every rule in design §7.3, `Issue`, `Facts` (HEAD facts shared with status, stamp and impact) | all above |
 | `_review.py` | subject digest, `_review.json` schema and checks | `_page`, `_config` |
-| `_stamp.py` | stamp, index render, `verify`, `pointer` | `_page`, `_review`, `_validate`, `_scan` |
+| `_stamp.py` | stamp, derived files (indexes, `log.md`, System map), `log_entries`, `verify`, `pointer` | `_page`, `_review`, `_validate`, `_scan` |
 | `_impact.py` | `impact`, `impact_files`, `update` | `_page`, `_git`, `_scan` |
 | `_status.py` | phase derivation | all above |
 | `_db.py`, `_dbpages.py` | OpenGauss capture and Schema/Table page rendering | `_page` |
@@ -164,6 +164,7 @@ def diff_name_status(repo: Path, old: str, new: str, pathspecs: list[str]) -> li
     # (status letter A/M/D/R/T, path, new_path for R) with -M and :(glob) pathspecs; empty pathspec list → whole tree
 def grep_files(repo: Path, rev: str, tokens: tuple[str, ...]) -> set[str]    # paths at rev containing any fixed string (git grep -l -I -F); narrows trigger reading
 def log_name_only(repo: Path, max_commits: int) -> list[list[str]]            # per commit file lists, newest first
+def log_paths(repo: Path, path: str, max_commits: int) -> list[tuple[str, list[str]]]   # (commit, changed paths under path), newest first, --no-renames; [] without a commit
 def check_ignore(repo: Path, path: str) -> bool
 ```
 
@@ -173,8 +174,9 @@ modules and coverage.
 
 ## Page model
 
-Pages are every `*.md` under `ws.wiki` except any `index.md` and any file whose
-name starts with `_`. Page id = posix path relative to `ws.wiki`.
+Pages are every `*.md` under `ws.wiki` except the reserved `index.md` and
+`log.md` (at any level; OKF §8, §9) and any file whose name starts with `_`.
+Page id = posix path relative to `ws.wiki`.
 
 Line endings: a page is read with CRLF and lone CR normalized to LF (a Windows
 `core.autocrlf` checkout parses and hashes like the commit). Every line count
@@ -190,11 +192,15 @@ root, so a link or `..` never writes or creates a file outside it.
 
 ```python
 # _page.py
-AUTHOR_TYPES = ("Architecture", "Glossary", "Conventions", "Module", "Workflow")
-GENERATED_TYPES = ("Schema", "Table")
-CANON = {"Architecture": "architecture.md", "Glossary": "glossary.md", "Conventions": "conventions.md"}
-FRONTMATTER_ORDER = ("type","title","description","tags","scope","status","revision",
-                     "sources","generated","verified","stamp")   # other keys follow, sorted
+AUTHOR_TYPES = ("Architecture", "Glossary", "Conventions", "Overview", "Module", "Workflow", "Flow")
+GENERATED_TYPES = ("Schema", "Table", "Map")
+RESERVED_NAMES = ("index.md", "log.md")
+MAP = "system-map.md"
+ROLE_TYPES = {"glossary": "Glossary", "architecture": "Architecture", "system-architecture": "Architecture",
+              "overview": "Overview", "conventions": "Conventions", "system-conventions": "Conventions",
+              "module": "Module", "workflow": "Workflow", "flow": "Flow"}
+FRONTMATTER_ORDER = ("type","title","description","tags","scope","contracts","status","revision",
+                     "sources","generated","verified","stamp","catalogs")   # other keys follow, sorted
 
 @dataclass
 class Page:
@@ -203,7 +209,7 @@ class Page:
     meta: dict
     body: str
     structure: Structure       # _markdown.extract(body)
-    @property type/status/scope/revision
+    @property type/status/scope/contracts/revision
     front: str                 # file text before the body (LF newlines)
     def content_sha256(self) -> str     # stamp hash, see below
     def file_sha256(self) -> str        # sha256 of the file bytes, CRLF/CR read as LF
@@ -211,9 +217,18 @@ class Page:
 def load_pages(ws) -> list[Page]            # sorted by path; frontmatter errors captured, not raised
 def load_page(ws, path: str) -> Page
 def write_page(page: Page) -> None          # FRONTMATTER_ORDER, atomic
-def new_page(ws, path, type, description, scope=(), title=None) -> Page
-    # template body from assets/templates/<lang>/<type lower>.md; status draft; revision = current HEADs;
-    # PageError when a scope glob matches no tracked file at HEAD (wiki excluded), naming the glob and the fix
+def canon(ws) -> dict[str, tuple[str, str | None]]   # canon path -> (role, source or None), creation order
+def role(ws, page) -> str | None            # canon role by path, else by type (see Roles and paths)
+def path_source(ws, path) -> str | None     # "." single; the source of sources/<s>/... in a hub; None system level
+def page_path(ws, type, name=None, source=None, scope=()) -> str    # the one valid path; PageError names the fix
+def path_problem(ws, page) -> str | None    # why the page is not at its derived path (page-path)
+def new_page(ws, type, name=None, description=None, scope=(), title=None, source=None, contracts=()) -> Page
+    # at page_path; template assets/templates/<lang>/<role>.md; status draft; revision = current HEADs;
+    # canon roles get canon_text defaults and refuse a scope; other pages need a description;
+    # PageError when a scope glob matches no tracked file at HEAD (wiki excluded), or a contract
+    # claim (Flow only) matches no contract (_scan.contracts)
+def contract_match(pattern, contract_id) -> bool   # fnmatchcase over _code.normalize_contract_id(pattern)
+def canon_text(lang, role, source=None) -> tuple[str, str]
 def mark_draft(ws, page: Page, reasons: list[str]) -> None
     # status draft, revision = current HEADs, drop sources/verified/stamp/generated, insert a todo block with reasons after frontmatter
 def current_revision(ws) -> dict[str, str]  # {source.name: head}
@@ -234,6 +249,8 @@ en or zh):
 | `invariants` | Invariant, Enforced at, Breaks when | 关键约束, 由谁保证, 违反会怎样 | yes |
 | `change_guide` | Change, Start at, Also change, Verify | 修改场景, 从这里改, 同步修改, 如何验证 | yes |
 | `not_covered` | Path, Reason | 路径, 原因 | no |
+| `contracts` | Contract, Provider, Consumers, Change order, Verify | 契约, 提供方, 消费方, 变更顺序, 如何验证 | yes |
+| `hops` | Step, Source, Entry, Contract, Next | 步骤, 仓库, 入口, 契约, 下一步 | yes |
 
 `Table(kind, header: list[str], rows: list[Row], line: int)`;
 `Row(cells: list[str], line: int, footnotes: list[str])`.
@@ -245,9 +262,15 @@ are an "adding a new X" section (Conventions, or the owning Module page).
 `Enforced by` values: `lint`, `typecheck`, `test`, `ci`, `review`,
 `convention`. Values are the same tokens in zh pages. A change guide row's
 `Start at` and `Verify` cells must not be empty or `-` (`table-values`);
-`Also change` may be `-`. Change guide rows live on Module and Workflow pages
-(`_page.CHANGE_GUIDE_TYPES`, at least one row each, `change-guide`) and, for
-cross-module changes, on Architecture.
+`Also change` may be `-`. Change guide rows live on Module, Workflow and Flow
+pages (`_page.CHANGE_GUIDE_ROLES`, at least one row each, `change-guide`) and,
+for cross-module changes, on Architecture and Overview. `contracts` and `hops`
+tables belong to a hub only: a contracts row names a source as Provider, a
+comma-separated list of sources as Consumers, and non-empty Contract, Change
+order and Verify cells; a hops row names a source and a non-empty Entry
+(`table-values`). A Contract cell holds one or more contract ids or id globs
+separated by `;` (code spans and footnotes stripped), or `-` in a hop that
+crosses no source.
 
 Todo block: `<!-- okf:todo` up to the next `-->`, may span lines; outside
 fences. `Structure.todos: list[tuple[int, str]]` (line, text). Hint:
@@ -255,17 +278,36 @@ fences. `Structure.todos: list[tuple[int, str]]` (line, text). Hint:
 `Structure.hints: list[tuple[int, str]]` (line, text). Every other HTML
 comment is ignored.
 
-Required sections (`_page.REQUIRED_SECTIONS`): a heading of any level whose
-text equals the en or zh title (case-insensitive, whitespace collapsed). The
-templates carry them; every other heading is the writer's choice.
+### Roles and paths
 
-| type | required headings (en / zh) |
-|---|---|
-| Architecture | Structure / 整体结构; Not covered / 未单独成页 |
-| Conventions | Commands / 常用命令; Rules / 开发规则 |
-| Module | Responsibility / 模块职责; How it works / 工作原理; Making changes / 修改指南 |
-| Workflow | Flow / 执行流程; Making changes / 修改指南 |
-| Glossary | none (the glossary table is enforced by `canon-table`) |
+A page's **role** decides its path, template (`assets/templates/<lang>/<role>.md`),
+required sections and canon tables. A canon page's role comes from its path
+(`_page.canon(ws)`); a body page's role is its type in lower case.
+
+| role | type | single repository | hub | required headings (en / zh) | canon tables |
+|---|---|---|---|---|---|
+| glossary | Glossary | `glossary.md` | `glossary.md` | none | glossary |
+| architecture | Architecture | `architecture.md` | — | Structure / 整体结构; Not covered / 未单独成页 | not_covered |
+| system-architecture | Architecture | — | `architecture.md` | Structure / 整体结构; Contracts / 跨仓契约; Not covered / 未单独成页 | contracts, not_covered |
+| overview | Overview | — | `sources/<s>/overview.md` | Structure / 整体结构; Not covered / 未单独成页 | not_covered |
+| conventions | Conventions | `conventions.md` | `sources/<s>/conventions.md` | Commands / 常用命令; Rules / 开发规则 | commands, rules |
+| system-conventions | Conventions | — | `conventions.md` | Rules / 开发规则 | rules |
+| module | Module | `modules/<name>.md` | `sources/<s>/modules/<name>.md` | Responsibility / 模块职责; How it works / 工作原理; Making changes / 修改指南 | — |
+| workflow | Workflow | `workflows/<name>.md` | `sources/<s>/workflows/<name>.md` | Flow / 执行流程; Making changes / 修改指南 | — |
+| flow | Flow | — | `flows/<name>.md` | Call chain / 跨仓调用链; Making changes / 修改指南 | — |
+
+Generated pages: Schema and Table under `databases/` (db extension), Map at
+`system-map.md` (hub, written by stamp).
+
+`page_path` rules: a name is one path segment without whitespace, not
+`index`, `log` or `_`-prefixed (`.md` optional). A hub Module or Workflow page's
+scope stays in one source: every glob starts with the same source name
+(`--source`, when given, must agree). A Flow page's scope spans two or more
+sources, every glob starting with a source name; Flow and Overview pages do not
+exist in a single repository. Canon roles take no scope. Required headings:
+a heading of any level whose text equals the en or zh title
+(case-insensitive, whitespace collapsed); every other heading is the writer's
+choice.
 
 Footnote definition grammar: `[^label]: <locator>( <note>)?`. The locator is
 the first whitespace-separated token, or a leading `<path with spaces>#L..`
@@ -278,10 +320,11 @@ Author frontmatter:
 
 | key | rule |
 |---|---|
-| `type` | one of AUTHOR_TYPES (GENERATED_TYPES only from the db extension) |
+| `type` | one of AUTHOR_TYPES (GENERATED_TYPES only from the db extension and stamp) |
 | `title`, `description` | non-empty strings |
 | `tags` | optional list of strings |
-| `scope` | list of globs; non-empty for Module and Workflow |
+| `scope` | list of globs; non-empty for Module, Workflow and Flow; empty for canon roles |
+| `contracts` | hub only, on a Flow page or the system Architecture page: list of contract ids or id globs the page claims |
 | `status` | `draft` or `stable` |
 | `revision` | map source name → 40-hex commit; keys == all source names |
 
@@ -296,7 +339,7 @@ with `Z`.
 `{"body": <body, LF newlines>, "meta": <every frontmatter key except status,
 sources, verified and stamp>, "reviewed_by": <stamp.reviewed_by>}`. It
 therefore covers the approving reviewer and the author keys (`type`,
-`title`, `description`, `tags`, `scope`), `revision`, `generated` and
+`title`, `description`, `tags`, `scope`, `contracts`), `revision`, `generated` and
 `catalogs`: hand-editing `revision` to HEAD or a `catalogs` hash would
 otherwise silence impact. `status` is left out because setting `draft` is the
 legitimate way to edit a stable page, `sources` is derived and join-checked
@@ -305,7 +348,7 @@ is checked instead: it must be a list of `{by, at}` entries that starts with
 `stamp.reviewed_by` when that is set and continues only with `human:<id>`
 actors dated at or after `generated.at`; anything else (a bot entry added by
 hand to an `--unreviewed` stamp, a removed reviewer entry) is `unreviewed-edit`. Generated Schema/Table pages carry `catalog_sha256` and no
-`revision`/`scope` requirement.
+`revision`/`scope` requirement; the generated Map page carries neither.
 
 ## Issues
 
@@ -327,27 +370,53 @@ Rule codes, severities and semantics are exactly design §7.3, plus:
   issue of every todo block and the `hint` issue of every template hint left
   in a page. Pending issues block stamp like errors, count under `pending` in
   status and validate, and do not fail `validate` (exit 0).
-- `section` (error): a page lacks a required section of its type (see Page
-  model); the message names the en and zh heading.
+- `section` (error): a page lacks a required section of its role (see Roles
+  and paths); the message names the en and zh heading.
+- `page-path` (error): an author page is not at the path `page_path` derives
+  from its type, name (file stem), source and scope, or its scope cannot place
+  it (a Module or Workflow scope spanning sources or starting with a wildcard
+  in a hub, a Flow scope inside one source, a Flow or Overview page in a single
+  repository); a Map page anywhere but `system-map.md` of a hub.
 - `db-binding` (warning, hub only): a page whose scope globs all start with
   source names links a generated database page whose `db.repos` shares none of
   those sources.
-- `change-guide` (error): a Module or Workflow page without a todo block has
-  no change guide row.
+- `change-guide` (error): a Module, Workflow or Flow page without a todo block
+  has no change guide row.
+- `flow-hops` (error): a Flow page without a todo block has no call chain row,
+  or no mermaid block starting with `sequenceDiagram`.
 
 - `config` (error): config or hub problems surfaced as issues by status.
-- `canon-missing` (error): a canon page file is absent.
-- `canon-table` (error): Glossary lacks a glossary table; Conventions lacks a
-  commands table or a rules table.
-- `canon-empty` (warning): a required canon table has no rows.
-- `index` (error only when no draft page exists): `index.md` differs from the
-  rendered index.
+- `canon-missing` (error): a canon page (`_page.canon(ws)`) is absent,
+  unparsable or of the wrong type; the fix is `okf new --type T [--source S]`.
+- `canon-table` (error): a canon page lacks a table of its role
+  (`_page.CANON_TABLES`).
+- `canon-empty` (warning): a required canon table other than Not covered and
+  Contracts has no rows.
+- `index`, `log`, `map` (error only when no draft page exists): a derived file
+  (every `index.md`, `log.md`, `system-map.md`) differs from its rendering, is
+  missing, or is stale (an `index.md` in a directory that no longer gets one).
+- `index-size` (warning, only when no draft page exists): a rendered index is
+  longer than `_stamp.INDEX_MAX_LINES` (150) lines.
 - `not-covered` (error): a Not covered row whose path matches no tracked file,
-  or with an empty reason.
-- `trigger-coverage` (error, on `architecture.md`): a trigger file (see Scan)
-  that no Workflow page scope matches and no Not covered row with a reason
-  matches (`glob_match`, so a row may be a path, a directory or a glob). One
-  issue per file, naming its trigger kinds.
+  or with an empty reason; in a hub, a row on a source's overview whose path
+  lies outside that source.
+- `coverage`, `trigger-coverage` (error, on `architecture.md` in a single
+  repository, on `sources/<s>/overview.md` of the module's or file's source in
+  a hub): a module in no page scope and no Not covered row; a trigger file (see
+  Scan) that no Workflow or Flow page scope matches and no Not covered row with
+  a reason matches (`glob_match`, so a row may be a path, a directory or a
+  glob). One issue per module or file, naming its trigger kinds.
+- `link-coverage` (error, hub, on `architecture.md`): a contract (not external)
+  that no page's `contracts` claims and no Not covered row (on any Architecture
+  or Overview page) excludes by matching one of its site files. One issue per
+  contract, naming its sites.
+- `contract-claim` (error): a `contracts` entry that matches no contract at HEAD.
+- `contract-row` (error, only without a todo block): a contract a page claims
+  is named by no Contract cell of its table: the Contracts table of the system
+  Architecture page, the call chain table of a Flow page.
+- `contract-unknown` (warning): a Contract cell that names no contract at HEAD.
+- `orphan` (warning): a Module, Workflow or Flow page that no other author page
+  links to (the indexes do not count).
 - `unreviewed-edit` (error): a stable page whose `content_sha256` differs from
   `stamp.content_sha256` (body, stamped frontmatter or `stamp.reviewed_by`
   edited after stamp), or whose `verified` list is not the one stamp and
@@ -355,6 +424,8 @@ Rule codes, severities and semantics are exactly design §7.3, plus:
   such a page, so `verify` and the pointer refuse it too.
 - `secret` scans the frontmatter lines (copied into `index.md`) as well as the
   body; the issue line is the file line.
+
+A link to `/system-map.md` in a hub is valid before the first stamp writes it.
 
 Locators are checked against the page's `revision` (draft pages: must equal
 HEAD, which the `revision` rule enforces; if it does not, locator checks run at
@@ -368,14 +439,19 @@ over `_code.TRIGGER_TOKENS`, then only the matching files are read), glob matche
 `current` per (source, revision), and `changes(source, rev)`: one whole-tree
 `git diff --name-status -M rev HEAD` per distinct revision, wiki paths dropped
 in a single repository. Git calls therefore grow with sources and distinct
-revisions, never with pages, citations or files × globs.
+revisions, never with pages, citations or files × globs. In a hub,
+`Facts.contracts` is `_scan.contracts` at HEAD, derived once per command.
 
 Coverage is by ownership: a file belongs to its deepest module, and a module is
 covered when a page scope matches at least one file it owns. A scope inside a
 nested module covers that module, not its parent. Trigger coverage is by file:
 `_validate.unclaimed_triggers(facts, pages)` lists `(path, kinds)` for every
-trigger file outside all Workflow scopes and Not covered rows; validate, status
-and impact share it.
+trigger file outside all Workflow and Flow scopes and Not covered rows;
+validate, status and impact share it, as they share
+`_validate.claimed_contracts(ws, facts, page)` and
+`_validate.unclaimed_contracts(ws, facts, pages)`. Not covered rows are read
+from every Architecture and Overview page; `_validate.coverage_page(ws, path)`
+names the page that answers for a module or trigger file.
 
 ## Scan
 
@@ -383,6 +459,7 @@ and impact share it.
 def scan(ws) -> dict        # the JSON document below; deterministic for a given HEAD
 def modules(ws, heads=None, listings=None) -> list[Module]   # Module(path: str, source: str, manifest: str | None)
 def triggers(ws, heads=None, listings=None) -> list[Trigger] # Trigger(path: str, line: int, kind: str), sorted by path, line, kind
+def contracts(ws, heads=None, listings=None) -> list[Contract]   # hub only ([] in a single repository), sorted: internal by id, then external
 def owner(path: str, modules) -> str | None     # deepest module directory containing path ("." when that is a module)
 def is_test_path(rel: str) -> bool              # the test-path rule, on a source-relative path
 ```
@@ -409,6 +486,11 @@ def is_test_path(rel: str) -> bool              # the test-path rule, on a sourc
   "terms": [{"term": "BillingRun", "kind": "camel", "count": 7, "locator": "src/billing/run.py#L12"},
             {"term": "InvoiceState", "kind": "state", "count": 9, "locator": "src/billing/state.py#L3", "members": ["DRAFT", "POSTED"]}],
   "co_change": [{"a": "src/a.py", "b": "tests/test_a.py", "support": 5, "confidence": 0.83}],
+  "contracts": [{"id": "http POST /reservations/{}", "kind": "http",
+                 "providers": [{"source": "worker", "locator": "worker/src/Res.java#L4"}],
+                 "consumers": [{"source": "api", "locator": "api/src/InventoryClient.java#L4"}]},
+                {"id": "http POST /v1/charges", "kind": "http", "providers": [],
+                 "consumers": [{"source": "web", "locator": "web/src/api.ts#L2"}], "external": true}],
   "truncated": {"commands": "80 of 97 commands shown, shallowest first; read the build files of the module you need"}
 }
 ```
@@ -591,9 +673,36 @@ schema and quotes stripped, lowercased, SQL words dropped). Only names found in
 two or more modules are listed, with the first site per module, most modules
 first.
 
+Contracts (hub only; `_code.contract_sites` over production code, SQL and
+mapper XML, `_scan._library_sites` over manifests; test, generated, example,
+sample, vendored and `testdata` paths skipped). A site is `(kind, key, role,
+line, hint)`; roles are `provider` and `consumer`. Comments are blanked and
+strings kept, so a route in a Javadoc is no site.
+
+| kind | provider sites | consumer sites | key |
+|---|---|---|---|
+| `http` | Spring `@*Mapping` (class `@RequestMapping` prefix; `method = RequestMethod.X`), JAX-RS `@Path` with `@GET`…, FastAPI/Flask decorators (`APIRouter(prefix=)`, `Blueprint(url_prefix=)`, `methods=[...]`), Django `path`/`re_path`/`url` in `urls.py` (ANY), Express `app`/`router`/`server`.verb, NestJS `@Controller` + `@Get`…, Go `HandleFunc("METHOD /p")`/`.GET("/p")`/chi `.Get("/p")`, ASP.NET `[Route]` + `[HttpGet]` (`[controller]` replaced); a mapping interface without a client annotation provides | Feign `@FeignClient(name|path|url)` and `@RegisterRestClient` mapping interfaces (hint: name or URL host), RestTemplate `getForObject`… (`exchange` reads `HttpMethod.X`), WebClient `.verb().uri(...)`, Python `requests`/`httpx`/`client`.verb with a URL-like literal, `fetch` (method option), `axios`/`http`/`api`/`client`.verb, Go `http.Get`/`NewRequest`, C# `GetAsync`… | `METHOD /path`: host, query and a leading base placeholder dropped, parameters (`{x}`, `:x`, `<x>`, `${x}`, `%s`) as `{}`, lowercase, no trailing slash; ANY when unknown |
+| `rpc` | `@DubboService` class `implements X`, `extends XGrpc.XImplBase`, `add_XServicer_to_server`, Go `RegisterXServer` | `@DubboReference X field`, `XGrpc.new*Stub`/`XGrpc.*Stub`, `*_pb2_grpc.XStub(`, Go `NewXClient` | interface or service name |
+| `topic` | send/publish calls with a literal topic | listener annotation attributes, `KafkaConsumer(`/`.subscribe(` | topic name |
+| `table` | entity mappings; SQL `into`/`update`/`table`/`delete from` targets | other SQL `from`/`join` targets | lowercase table name |
+| `library` | Maven project `groupId:artifactId` (parent group inherited), `package.json` `name`, `go.mod` `module`, `pyproject.toml` `[project] name` (normalized `a-b`) | Maven `dependencies` (`${project.groupId}` resolved), npm dependency keys, `go.mod` `require`, `[project] dependencies` | artifact |
+
+Matching: an HTTP client call reaches every route of another source whose
+method agrees (ANY matches any) and whose path is equal, or ends with the other
+path when the shorter has at least two segments (a gateway or context prefix);
+when several sources match, those named by the client's hint are kept. The
+contract id uses the route's key. A client that reaches no route is an
+`external` contract with no provider. `rpc` and `library`: a consumer and a
+provider of the same key in different sources. `topic` and `table`: a key used
+in two or more sources, its providers and consumers as found. An import from
+one source into another (`_code.Imports`) adds `library <imported module>` for
+a source pair no manifest library already links. A contract keeps the first
+site per file, at most 5 per role (`MAX_CONTRACT_SITES`), and spans two
+sources unless external.
+
 Limits: entry points 50, commands 80, docs 80, terms 50, configs 60 (at most 3
 paths per kind and file name, shallowest first), CI 30 files and 80 steps,
-co-change 30, triggers 100, deps 60, central 20, resources 40. `truncated` has
+co-change 30, triggers 100, deps 60, central 20, resources 40, contracts 100. `truncated` has
 one entry per list that hit its limit: a hint naming how many were shown and
 where the rest are (for triggers, `okf validate --json`, whose
 `trigger-coverage` issues list every unclaimed file); it is `{}` when nothing
@@ -632,59 +741,105 @@ routing, other. `approved` requires an empty `issues` list; `changes_requested`
 requires at least one issue. Unknown keys are invalid. `reviewer` is an actor
 (`<producer>/<version>` or `human:<id>`).
 
-## Stamp, index, verify, pointer
+## Stamp, derived files, verify, pointer
 
 - `stamp(ws, by: str, unreviewed: bool) -> dict`: preconditions (design §6
-  stage 5); on failure returns `{"stamped": [], "blocked": [Issue...]}` and
+  stage 6); on failure returns `{"stamped": [], "blocked": [Issue...]}` and
   writes nothing. `--unreviewed` skips a missing, stale or invalid review, but
   never a report that requested changes: while `_review.json` holds verdict
   `changes_requested` (for the current or a stale subject) it is blocked with a
   `review` issue naming the issue count, whose fix says to repair the issues and
   run a fresh review round, or to delete the report after resolving the issues
-  with the user. On success writes pages, `index.md`, deletes `_review.json`,
-  returns
+  with the user. The derived-file issues (`index`, `log`, `map`) never block:
+  stamp rewrites those files. On success writes pages, the derived files,
+  deletes `_review.json`, returns
 
   ```json
   {"stamped": ["modules/billing.md"], "verified_by": "repo-wiki-reviewer/<model>",
-   "index": "docs/wiki/index.md", "index_changed": true,
+   "derived": ["docs/wiki/index.md", "docs/wiki/log.md"],
    "warnings": [<Issue dicts of every remaining warning>], "blocked": []}
   ```
 
   Each stamped page gets `stamp: {content_sha256, reviewed_by}` (see Page
   model) and, when reviewed, `verified: [{by: <reviewer>, at}]`.
   `verified_by` is the approving reviewer (null for `--unreviewed` or with no
-  draft), `index_changed` says whether `index.md` was rewritten, `warnings` are
-  the warning issues (`alias`, `uncited-why`, `parrot`, `canon-empty`, ...)
-  validated after writing, so `line` is the stamped file line. Warnings never
-  block a stamp. With no draft page it only rewrites a differing index.
-- `render_index(ws, pages, modules) -> str`: frontmatter `okf_version: "0.2"`;
-  sections in order Architecture, Glossary, Conventions, Workflow, Module, Schema,
-  Table (zh: 架构, 术语表, 开发规范, 流程, 模块, 数据库, 数据表), entries
-  `* [title](path) - description`; then `# Source map` (zh `# 源码映射`) with
-  `* \`module/\` - [title](path), …` or `* \`module/\` - Not covered: reason`.
+  draft), `derived` lists the derived files written or removed (workspace
+  paths), `warnings` are the warning issues (`alias`, `uncited-why`, `parrot`,
+  `canon-empty`, `orphan`, ...) validated after writing, so `line` is the
+  stamped file line. Warnings never block a stamp. With no draft page it only
+  rewrites differing derived files.
+- `render_derived(ws, pages, facts) -> dict[str, str]`: wiki path -> text of
+  every derived file; `write_derived` writes the differing ones and removes a
+  stale `index.md`, `log.md` or `system-map.md` (`derived_on_disk`).
+- Indexes (`render_indexes`, OKF §8): entries `* [title](link) - description
+  (<reviewed|unreviewed> YYYY-MM-DD)` for stable author pages (reviewed: a
+  stamped page with a `verified` entry; the date is `generated.at`), no marker
+  for generated pages; sections sorted by title then path. A single
+  repository has one root `index.md`: frontmatter `okf_version: "0.2"`, sections
+  Architecture, Glossary, Conventions, Workflows, Modules, Database (Schema
+  pages; Table pages are linked from them) (zh 架构, 术语表, 开发规范, 流程,
+  模块, 数据库), then `# Source map` (zh `# 源码映射`) with `* \`module/\` -
+  [title](path), …`, `Not covered: reason` or `no page yet`. A hub's root index
+  lists the system pages (Architecture, the System map entry rendered from the
+  map's own title and description, Glossary, Conventions, Flows, Database) and
+  `# Sources` (zh `# 源仓库`) with `* [<source>](sources/<source>/) - <overview
+  description>`; each `sources/<source>/index.md` (no frontmatter) lists
+  Overview, Conventions, Workflows and Modules of that source, links relative
+  to its directory, and its Source map, where a page outside the directory (a
+  Flow) is linked bundle-absolute (`/flows/x.md`).
+- `render_log` (`log.md`, OKF §9): `# Update log` (zh `# 更新日志`), then days
+  (`## YYYY-MM-DD`) newest first, entries `* **Creation|Update**: [title](/path)
+  - <revisions>; reviewed by <reviewer>|unreviewed`. Derived, never
+  appended: `_git.log_paths(ws.root, wiki, 400)` walked oldest first, one entry
+  whenever a page's `stamp.content_sha256` at a commit differs from the last
+  one seen for that path (the first seen is read at `<commit>^`), then the
+  working-tree pages (stamps not yet committed). Creation when the path had no
+  earlier stamp; revisions are `<source> <old12>..<new12>` per changed source
+  (the new revision alone for a creation; no source label in a single
+  repository). Sorted by `generated.at` descending, then path; at most 100
+  entries, then a line pointing to `git log -- <wiki>`. Deleting the file and
+  stamping rebuilds it byte for byte; a merge conflict is resolved the same way.
+- `log_entries(ws, since=None, files=None) -> {"entries": [...]}` (`okf log`):
+  entries `{path, at, reviewer, title, kind, revisions}`, only those on or after
+  `since` (YYYY-MM-DD, else `StampError`) and those of pages `impact_files`
+  lists under `read` or `update` for `files`.
+- `render_map` (`system-map.md`, hub): a generated page, frontmatter `type: Map`,
+  title, description, `status: stable`; body: a note that it is generated, a
+  mermaid flowchart with one node per source and one edge per consumer ->
+  provider pair labelled with contract counts per kind, a `## Contracts` table
+  (`| Contract | Provider | Consumers | Described in |`, sites as `source
+  \`locator\``, the claiming pages as bundle-absolute links) and an `##
+  External calls` table; "No contracts between sources at HEAD." when there
+  are none.
 - `verify(ws, actor, paths)`: actor must start with `human:`; pages must be
   `stamped` (matching hash and a valid `verified` list); appends `{by, at}`
   (outside the hash, checked by the `verified` rule). Idempotent per actor: a
   stamp resets `verified`, so a page that already holds an entry by `actor` is
   left unchanged and reported in `already_verified`; after a re-stamp the same
   actor records again. Returns `{verified, by, at[, already_verified]}`.
-- `pointer(ws) -> str` and `write_pointer(ws, target: Path)`: block between
-  `<!-- repo-wiki:begin -->` and `<!-- repo-wiki:end -->`, at most 15 lines
-  including both markers. It says: open `<wiki>/index.md` and pick pages by
-  description or Source map, then check claims in the cited lines;
-  `<wiki>/glossary.md` and `<wiki>/conventions.md` are must-read before naming
-  or changing code; before editing, `okf impact --files <paths> --json` lists
-  pages to read, pages to update and change guide rows (where to start, what
-  else to change, how to verify); after changing files
-  in a page's `scope`, update the page or set `status: draft` with a todo
-  block; invariant rows (whole invariant tables, header and rows) are printed by
-  `rg -nU '^\|\s*Invariant\s*\|.*\n(\|.*\n)*' <wiki>` (zh: `关键约束`), with
-  `<wiki>` shell-quoted (`shlex.quote`) when it holds spaces. In a hub one
-  more line asks to paste the block into each source's AGENTS.md too (paths are
-  relative to the hub root); the kernel never writes into sources. The
-  remaining lines list the `verified` commands from a stable Conventions page
-  whose content still matches its stamp (a header line plus as many commands as
-  fit). Writing replaces an existing block or appends one.
+- `pointer(ws, source=None) -> str` and `write_pointer(ws, target: Path,
+  source=None)`: block between `<!-- repo-wiki:begin -->` and `<!--
+  repo-wiki:end -->`, at most 15 lines including both markers. It says: open
+  the index (`<wiki>/index.md`, or `<wiki>/sources/<source>/index.md` with a
+  source) and pick pages by description or Source map, then check claims in
+  the cited lines; the must-read pages before naming or changing code
+  (`<wiki>/glossary.md` and `<wiki>/conventions.md`, plus
+  `<wiki>/sources/<source>/conventions.md` with a source); before editing,
+  `okf impact --files <paths> --json` lists pages to read, pages to update and
+  change guide rows (where to start, what else to change, how to verify);
+  after changing files in a page's `scope`, update the page or set `status:
+  draft` with a todo block; invariant rows (whole invariant tables, header and
+  rows) are printed by `rg -nU '^\|\s*Invariant\s*\|.*\n(\|.*\n)*' <wiki>` (zh:
+  `关键约束`), with `<wiki>` shell-quoted (`shlex.quote`) when it holds
+  spaces. In a hub one more line follows: without a source, to paste `okf
+  pointer --source <name>` into each source's AGENTS.md (paths relative to the
+  hub root; the kernel never writes into sources); with one, where the
+  contracts are (`<wiki>/system-map.md`, `okf links --json`) and to follow
+  their Change order. The remaining lines list the `verified` commands of the
+  stable conventions page of that level (`conventions.md`, or the source's)
+  whose content still matches its stamp. A source that is not configured, or a
+  source in a single repository, is a `StampError`. Writing replaces an
+  existing block or appends one.
 
 ## Impact and update
 
@@ -702,7 +857,8 @@ def update(ws) -> dict      # {"drafted", "rebased", "unplaced", "impact"}
  "pages": [{"page": "modules/billing.md", "status": "stable", "revision": {".": "<sha>"},
             "reasons": [{"kind": "cited-moved", "path": "src/b.py", "locator": "src/b.py#L3-L5", "suggested": "src/b.py#L7-L9", "since": "<sha12>"}]}],
  "unmapped_modules": ["src/new"], "unclaimed_triggers": [{"path": "src/new/api.py", "kinds": ["http"]}],
- "missing_scope": [{"page": "…", "glob": "…"}], "deleted_not_covered": ["old/"]}
+ "missing_scope": [{"page": "…", "glob": "…"}], "deleted_not_covered": [{"page": "architecture.md", "path": "old"}],
+ "unclaimed_contracts": [{"id": "topic order-cancelled", "sources": ["api", "worker"]}]}
 ```
 
 Reason kinds: `cited-context` (cited lines identical at the same place, file
@@ -710,8 +866,11 @@ changed), `cited-moved` (unique exact match elsewhere, `suggested` given; follow
 renames), `cited-changed`, `cited-deleted`, `scope-added`, `scope-modified`,
 `scope-deleted`, `revision-missing` (the recorded commit is gone, e.g. after a
 rebase), `catalog-changed` and `catalog-deleted` (a linked Schema/Table page was
-re-captured with a different hash or removed). Every reason found by diffing a
-source (the `cited-*` and `scope-*` kinds) carries `since`, the first 12 hex
+re-captured with a different hash or removed), and `contract-changed` (`{kind,
+contract, path, since}`: a site file of a contract the page claims changed in
+its source, whether or not the page's scope reaches that file). Every reason
+found by diffing a source (the `cited-*`, `scope-*` and `contract-changed`
+kinds) carries `since`, the first 12 hex
 digits of the revision it was diffed from. Only pages with at least one
 reason are listed. Diffs run per source from `revision[source]` to that source's
 HEAD over the whole tree (`Facts.changes`, one diff per distinct revision), then
@@ -723,15 +882,19 @@ detection, so a cited file renamed out of the scope would otherwise read as
 deleted. A revision that is current (see Status) is skipped. `update`
 refuses dirty sources, calls `_page.mark_draft` for every listed page with one
 reason line per reason, `describe(reason)`: `<kind> <path>` for scope reasons,
-`<kind> [^label] <locator>[ -> suggested <locator>]` for cited reasons, both
+`<kind> [^label] <locator>[ -> suggested <locator>]` for cited reasons,
+`contract-changed <id> <path>` for contract reasons, all
 ending with ` (since <sha12>)`, the base the change was diffed from (so
 `git diff <sha12> -- <path>` shows it); `revision-missing <source> <sha12>:
 recheck every claim` and the catalog reasons have no suffix. A reason equal to
 a whole `- ` line already in the todo block is not repeated (the suffix is
 part of the line; substrings do not count). It adds
-`unmapped-module`, `unclaimed-trigger <path> (<kinds>)` and
-`not-covered-deleted` lines to the Architecture page and
-`scope-empty` lines to the page owning the glob, and rebases the revision of any
+`unmapped-module` and `unclaimed-trigger <path> (<kinds>)` lines to the page
+that answers for the module or file (`_validate.coverage_page`: the
+architecture page, or the source's overview in a hub), `unclaimed-contract <id>
+(<sources>)` lines to `architecture.md`, `not-covered-deleted` lines to the
+page holding the row and `scope-empty` lines to the page owning the glob, and
+rebases the revision of any
 other draft whose revision is no longer current. `plan(ws, report, pages)`
 computes the new lines per page (the pages update would redraft) and the
 `unplaced` reasons whose page is missing or has unparsable frontmatter
@@ -751,12 +914,22 @@ update before changing it:
   "note": null}}}
 ```
 
+In a hub each entry also has `contracts`:
+
+```json
+"contracts": [{"id": "http POST /reservations/{}", "role": "consumer",
+               "counterparts": ["worker worker/src/Res.java#L4"], "pages": ["flows/checkout.md"],
+               "change_order": [{"page": "architecture.md", "line": 14, "contract": "…", "provider": "worker",
+                                 "consumers": "api", "change_order": "…", "verify": "…"}],
+               "external": false}]
+```
+
 - `read`: pages whose scope matches the path. A directory also matches a scope
   glob with a tracked file below it (`src/*.py` for `src`, via
   `Facts.matches`) or a scope literal prefix below it.
 - `update`: pages with a citation of the path (or, for a directory, below it).
-- `change_guide`: rows of every change guide table (Architecture, Module and
-  Workflow pages) that concern the path: a cited locator of the row is the path,
+- `change_guide`: rows of every change guide table (Architecture, Overview,
+  Module, Workflow and Flow pages) that concern the path: a cited locator of the row is the path,
   below the directory, or a directory above it; or the Change or Start at cell
   names it: a path or glob token matching it (`src/billing/**`), its file name
   (`retry.py`), or, for a file, a code-span identifier of 3+ characters that
@@ -765,7 +938,12 @@ update before changing it:
   the file line of the row; `change`, `start`, `also` and `verify` are the
   cells without backticks and footnote references.
 - `canon`: the glossary and conventions pages that exist (wiki-relative), to
-  read before naming or changing code.
+  read before naming or changing code; in a hub, for a path in a source, also
+  that source's conventions and overview.
+- `contracts` (hub): every contract with a site at or below the path: `role`
+  (`provider`, `consumer`, or `consumer/provider`), `counterparts` (the other
+  sources' sites as `source locator`), `pages` (pages whose `contracts` claim
+  it), `change_order` (Contracts rows naming it) and `external`.
 - `note`: null, or `; `-joined notes: `resolved <given> to <path> (only source
   <name> has it)` for an unprefixed hub path found in exactly one source (the
   result key is then the resolved path), `ambiguous: sources <a>, <b> all have
@@ -804,34 +982,40 @@ is the absolute workspace root (where commands that write must run), also in
 Phase order: `init` (`NotInitialized`) → `blocked` (any other config error or
 dirty tracked source files; next action names the files) → `research` for a
 broken canon page (`canon-missing`: the file is absent, has unparsable
-frontmatter or the wrong type; one action per page: the exact `okf new <path>
---type T --title ... --description ...` command with the localized defaults,
-fix the frontmatter by hand, or set the type) → `update` (a draft page's
-revision has different source content than HEAD, or no page is a draft and
-`_impact.plan` would redraft a page for stale pages, unmapped modules, deleted
-Not covered paths or empty scope globs) →
-`discover` → `structure` (coverage, trigger-coverage, scope or not-covered errors)
-→ `research` (canon page with todo or error) → `write` (other page with todo or
-error; a `section` error counts like any other page error) → `review` (drafts;
-review missing, stale, invalid or changes requested;
-next actions also offer `okf stamp --unreviewed`, except while `_review.json`
-holds a `changes_requested` verdict, current or stale) → `stamp` (drafts; review
-approved) → `done`.
+frontmatter or the wrong type; one action per page: `recreate the canon page:
+okf new --type T[ --source S]`, fix the frontmatter by hand, or set the type)
+→ `update` (a draft page's revision has different source content than HEAD,
+or no page is a draft and `_impact.plan` would redraft a page for stale pages,
+unmapped modules, unclaimed triggers or contracts, deleted Not covered paths
+or empty scope globs) → `discover` → `structure` (coverage,
+trigger-coverage, link-coverage, contract-claim, scope, not-covered or
+page-path errors) → `research` (a Glossary or Conventions canon page with a
+todo block, a hint or an error) → `write` (any other page with a todo, hint or
+error, except the Architecture and Overview pages; a `section` error counts
+like any other page error) → `assemble` (an Architecture or Overview page
+with a todo, hint or error: they are written from the pages below them) →
+`review` (drafts; review missing, stale, invalid or changes requested; next
+actions also offer `okf stamp --unreviewed`, except while `_review.json` holds
+a `changes_requested` verdict, current or stale) → `stamp` (drafts; review
+approved) → `done`. Derived-file issues (`index`, `log`, `map`) never hold an
+earlier phase.
 
 `discover` holds while discovery is incomplete: at least one canon page exists
-and either a canon page or a Module/Workflow page has only empty todo blocks
-(whitespace only, the template's block; a page without a todo block is not
-empty), or `trigger-coverage` issues exist and there is no Workflow page. Its
-next action is `okf scan --json, then stage 1 (Discover)` while there is no
-Module or Workflow page and every canon brief is empty; otherwise it names the
-pages still missing a brief (up to 10) and, when no Workflow page traces a
-trigger, the number of unclaimed trigger files, whose issues come first.
+and either a canon page or a Module/Workflow/Flow page has only empty todo
+blocks (whitespace only, the template's block; a page without a todo block is
+not empty), or `trigger-coverage` issues exist and there is no Workflow or
+Flow page, or `link-coverage` issues exist and there is no Flow page. Its next
+action is `okf scan --json, then stage 1 (Discover)` while there is no Module,
+Workflow or Flow page and every canon brief is empty; otherwise it names the
+pages still missing a brief (up to 10), the number of unclaimed trigger files
+when no Workflow or Flow page traces a trigger, and the number of unclaimed
+contracts when no Flow page exists; those issues come first.
 
-`done` next actions: `okf stamp --by repo-wiki/<model> (rewrites index.md)` when
-`index.md` is stale; else `review and commit the wiki (<n> changed files): git
-diff -- <wiki>` when `git status --porcelain -- <wiki>` (untracked files
-included) lists changes; else `nothing to do: the wiki is committed and
-current`.
+`done` next actions: `okf stamp --by repo-wiki/<model> (rewrites the indexes,
+log.md and the System map)` when a derived file is stale; else `review and
+commit the wiki (<n> changed files): git diff -- <wiki>` when `git status
+--porcelain -- <wiki>` (untracked files included) lists changes; else
+`nothing to do: the wiki is committed and current`.
 
 Status routes to `update` only when update can act: a stale draft is always
 rebased or redrafted, and otherwise the same `plan` update runs must be
@@ -848,15 +1032,15 @@ wiki, so only equality counts.
 ## CLI
 
 `uv run <skill>/scripts/okf.py [--wiki DIR] <command>`; commands run from the
-workspace root. The read-only `status`, `validate` and `impact` (with or
-without `--files`) also run from any directory below it: they load the
+workspace root. The read-only `status`, `validate`, `impact` (with or
+without `--files`), `links` and `log` also run from any directory below it: they load the
 workspace at the current directory's git toplevel, or at the hub root when
 that toplevel is a configured hub source (`enclosing_hub`). Commands that
 write (`init`, `new`, `scan`, `update`, `stamp`, `verify`, `pointer`, `db`)
 still refuse to run elsewhere and name the root to run from: the hub root when
 the current directory lies below a configured hub source, else the repository
 root. A path suggested inside a command in an error, fix or next action
-(`--wiki DIR`, `okf new PATH`, `git diff -- <wiki>`) is shell-quoted
+(`--wiki DIR`, `okf new --source S`, `git diff -- <wiki>`) is shell-quoted
 (`shlex.quote`). `--wiki DIR` is relative to the
 workspace root. `--json` prints one JSON document on stdout; otherwise a short
 human summary. Exit codes: 0 success, 1 validation/precondition failure
@@ -871,14 +1055,16 @@ without `--json` go to stderr (`okf: ...`), with `--json` as `{"error": ...}`.
 | `init [--wiki DIR] [--lang en\|zh] [--hub --source NAME ...]` | |
 | `status --json` | |
 | `scan --json` | stdout only |
-| `new PATH --type T --description D [--title T] [--scope GLOB ...]` | in a hub, each glob must start with a source name or a wildcard; every glob must match a tracked file at HEAD (exit 2 otherwise) |
+| `new --type T [--name N] [--source S] [--description D] [--title T] [--scope GLOB ...] [--contract ID ...]` | the path is `page_path` (see Roles and paths); prints `{page, type, scope[, contracts]}`; `--name` for Module, Workflow and Flow; `--source` for an Overview or source Conventions page; canon pages default title and description; in a hub, each glob must start with a source name or a wildcard; every glob must match a tracked file at HEAD and every `--contract` (Flow only) a contract (exit 2 otherwise) |
+| `links [--source S] [--contract ID] [--file PATH] --json` | hub contracts (`Contract.to_dict`), filtered by a participating source, an id or glob, a file or directory with a site; also from a subdirectory or a hub source. In a single repository `{"contracts": [], "note": ...}` |
+| `log [--since YYYY-MM-DD] [--files PATH ...] [--json]` | `_stamp.log_entries`; also from a subdirectory or a hub source |
 | `validate [--json] [PATH ...]` | PATH filters reported pages (wiki-relative, or with the wiki prefix); cross-page rules still use all pages; a PATH that is no page exits 2 |
 | `review prepare --json` | `_review.subject` plus `state` (`missing`, `invalid`, `stale`, `changes_requested`, `approved`) and, for `changes_requested` or `stale` with a readable report, `previous_issues` (issue count of that report, which the fresh reviewer reads); with no draft: `{"pages": [], "message": ...}` |
-| `stamp --by ACTOR [--unreviewed] [--json]` | success: `stamped`, `verified_by`, `index`, `index_changed`, `warnings`, `blocked: []` (see Stamp); blocked: the validate shape (`errors`, `pending`, `warnings`, `issues`) plus `stamped: []`, exit 1. Without `--json` each remaining warning prints as `warning[code] page:line: message` |
+| `stamp --by ACTOR [--unreviewed] [--json]` | success: `stamped`, `verified_by`, `derived`, `warnings`, `blocked: []` (see Stamp); blocked: the validate shape (`errors`, `pending`, `warnings`, `issues`) plus `stamped: []`, exit 1. Without `--json` each remaining warning prints as `warning[code] page:line: message` |
 | `impact [--files PATH ...] --json` | also from a subdirectory or a hub source; relative paths start at the current directory (see Impact) |
 | `update --json` | `{"drafted", "rebased", "unplaced", "impact"}` |
 | `verify --actor human:ID PAGE ... [--json]` | a page already verified by the actor since its stamp is a no-op listed in `already_verified` |
-| `pointer [--write FILE]` | FILE must resolve inside the workspace root (exit 2 otherwise) |
+| `pointer [--source S] [--write FILE]` | FILE must resolve inside the workspace root (exit 2 otherwise); `--source` in a hub prints the block for that source's AGENTS.md |
 | `db tables [--db NAME]... --json` | extension; `{"databases": [{name, repos, database, schemas: [{schema, tables, excluded, skipped}], unmatched_schema_rules, code_not_taken: [{table, schema, reason, locator}], code_not_found: [{table, locator}]}]}`; code tables come from `_scan.code_tables(ws, db.repos)` (lowercase, compared case-insensitively) |
 | `db describe TABLE [--db NAME] [--schema S]` | extension; `--db` needed with several databases, `--schema` unless the database has one exact schema rule |
 | `db capture [--db NAME]... --json` | extension; one read-only snapshot per database: `_db.capture(url, rules)` → `_dbpages.render_database` → `_dbpages.write_database`, which writes changed pages and removes generated pages of that database (generator `repo-wiki/okf-db`, `db.name`) the capture no longer produces. Layout `databases/<db>/<schema>.md` and `databases/<db>/<schema>/<table>.md` (slugs); `db` frontmatter `{name, schema, table?, repos?}` (repos only in a hub, also appended to the description as "Used by"). A rule set taking no table is a `DbError`. Per database `{name, pages, written, removed, unmatched_schema_rules}` or `{name, error}`; any error exits 1 after the other databases are captured. With no `databases` configured every `db` action is a `ConfigError` |

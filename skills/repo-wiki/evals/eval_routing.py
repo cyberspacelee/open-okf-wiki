@@ -7,8 +7,9 @@
 
 Real commits made after the wiki was written become tasks (the commit message
 is the task, the touched source files are the answer key). A router sees only
-the wiki ``index.md`` and the task text and names up to K pages; a task's file
-is covered when one of those pages has it in its ``scope`` or cites it.
+the wiki indexes (the root ``index.md`` and, in a hub, each source's
+``index.md``) and the task text and names up to K pages; a task's file is
+covered when one of those pages has it in its ``scope`` or cites it.
 
 Subcommands (run from the repository or hub root, or pass --repo):
 
@@ -234,12 +235,25 @@ def _jsonl(rows: list[dict]) -> str:
 # --- packet ------------------------------------------------------------------------------
 
 
-def cmd_packet(args) -> int:
-    ws = workspace(args)
+def index_text(ws: _config.Workspace) -> str:
+    """What a router reads: the root index and, in a hub, every source index after it
+    (the second level of disclosure), its relative links rewritten wiki-relative so
+    one text names every page by the path an answer uses."""
     index = ws.wiki / "index.md"
     if not index.is_file():
         raise EvalError(f"{ws.wiki_rel}/index.md not found; stamp the wiki first (okf stamp)")
-    text = index.read_text(encoding="utf-8")
+    parts = [index.read_text(encoding="utf-8")]
+    for file in sorted((ws.wiki / _page.SOURCES_DIR).glob("*/index.md")):
+        base = file.parent.relative_to(ws.wiki).as_posix()
+        text = re.sub(r"\]\((?![a-z]+:|/)([^)]+)\)", lambda m, base=base: f"]({base}/{m[1]})",
+                      file.read_text(encoding="utf-8"))
+        parts.append(f"<!-- {base}/index.md -->\n{text}")
+    return "\n".join(parts)
+
+
+def cmd_packet(args) -> int:
+    ws = workspace(args)
+    text = index_text(ws)
     rows = [{"id": t["id"], "task": t["task"], "index": text, "k": args.k} for t in load_tasks(args.tasks)]
     _write(args.out, _jsonl(rows))
     return 0
@@ -510,9 +524,9 @@ def _single_fixture(base: Path) -> tuple[Path, str, str]:
         "tests/test_billing.py": "def test_post():\n    assert True\n",
     })
     ws = _config.init(repo)
-    _page.new_page(ws, "modules/billing.md", "Module",
+    _page.new_page(ws, "Module", "billing",
                    "Read before changing invoice posting or charge retries.", ["src/billing/**"])
-    _page.new_page(ws, "modules/payments.md", "Module",
+    _page.new_page(ws, "Module", "payments",
                    "Read before changing the payment gateway client or refunds.", ["src/payments/**"])
     _stamp_wiki(ws, {
         "architecture.md": "## Structure\n\nBilling calls payments.[^post]\n\n"
@@ -553,18 +567,28 @@ def _hub_fixture(base: Path) -> tuple[Path, str]:
     worker = _repo(hub / "worker", {"jobs/run.py": "def run(job):\n    return job.execute()\n"})
     before = _commit(worker, "Worker: already documented change", {"jobs/retry.py": "LIMIT = 5\n"})
     ws = _config.init(hub, hub_sources=["api", "worker"])
-    _page.new_page(ws, "modules/api.md", "Module", "Read before changing request handling or token authorization.",
+    _page.new_page(ws, "Module", "api", "Read before changing request handling or token authorization.",
                    ["api/src/**"])
-    _page.new_page(ws, "modules/worker.md", "Module", "Read before changing job execution or job retries.",
+    _page.new_page(ws, "Module", "worker", "Read before changing job execution or job retries.",
                    ["worker/jobs/**"])
+
+    def overview(name: str) -> str:
+        return (f"## Structure\n\nOne module, [{name}](/sources/{name}/modules/{name}.md).\n\n"
+                "## Not covered\n\n| Path | Reason |\n|---|---|\n")
+
     _stamp_wiki(ws, {
-        "architecture.md": "## Structure\n\napi enqueues jobs for worker.[^handle]\n\n"
+        "architecture.md": "## Structure\n\napi enqueues jobs for worker.[^handle]\n\n## Contracts\n\n"
+                           "| Contract | Provider | Consumers | Change order | Verify |\n|---|---|---|---|---|\n\n"
                            "## Not covered\n\n| Path | Reason |\n|---|---|\n\n[^handle]: api/src/app.py#L1-L2\n",
         "glossary.md": "| Term | Meaning | Avoid | Where |\n|---|---|---|---|\n"
                        "| Handle | Request entry point. | | `handle`[^h] |\n\n[^h]: api/src/app.py#L1\n",
-        "conventions.md": _CONVENTIONS,
-        "modules/api.md": _module_body("Requests are authorized first.", "auth", "api/src/auth.py#L1-L2"),
-        "modules/worker.md": _module_body("Jobs execute in the worker.", "run", "worker/jobs/run.py#L1-L2"),
+        "conventions.md": "## Rules\n\n| Area | Rule | Enforced by |\n|---|---|---|\n",
+        "sources/api/overview.md": overview("api"),
+        "sources/api/conventions.md": _CONVENTIONS,
+        "sources/worker/overview.md": overview("worker"),
+        "sources/worker/conventions.md": _CONVENTIONS,
+        "sources/api/modules/api.md": _module_body("Requests are authorized first.", "auth", "api/src/auth.py#L1-L2"),
+        "sources/worker/modules/worker.md": _module_body("Jobs execute in the worker.", "run", "worker/jobs/run.py#L1-L2"),
     })
     _commit(hub, "wiki v1")
     _commit(api, "API: validate token authorization", {"src/auth.py": "def authorize(request):\n    return bool(request.token)\n"})
@@ -656,6 +680,10 @@ def selftest(base: Path) -> dict:
     _check(all(t["commit"] != before for t in tasks), "hub task from before the stamped revision")
     _run(["tasks", *h, "--since", f"worker={before}^", "--out", str(base / "hub-since.json")])
     _check(len(load_tasks(str(base / "hub-since.json"))) == 3, "hub --since override")
+    _run(["packet", *h, "--tasks", str(hub_tasks), "--out", str(base / "hub-packets.jsonl")])
+    packet = json.loads((base / "hub-packets.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    _check("[api](sources/api/)" in packet["index"] and "](sources/api/modules/api.md)" in packet["index"],
+           "hub packet lacks the source indexes with wiki-relative links")
     _run(["baseline", *h, "--tasks", str(hub_tasks), "--out", str(base / "hub-answers.jsonl")])
     hub_score = score(_config.load(hub), tasks, load_answers(str(base / "hub-answers.jsonl")), DEFAULT_K)
     _check(hub_score["summary"]["full_coverage_rate"] == 1.0, f"hub baseline {hub_score}")

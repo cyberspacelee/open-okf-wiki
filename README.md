@@ -33,6 +33,7 @@ AGENTS.md (in a hub, into each source's AGENTS.md). The evidence and ablation no
   docs/wiki/             # default location; choose another with okf init --wiki DIR
     repo-wiki.yaml       # lang: en|zh (plus sources: [...] in a hub)
     index.md             # generated: pages grouped by type + Source map
+    log.md               # generated: stamps, derived from git history
     architecture.md      # canon: boundaries, dependency direction, Not covered table
     glossary.md          # canon: Term | Meaning | Avoid | Where
     conventions.md       # canon: commands table + rules table
@@ -41,25 +42,49 @@ AGENTS.md (in a hub, into each source's AGENTS.md). The evidence and ablation no
     _review.json         # review report; exists only while a review round is open
 ```
 
-There are five author page types: **Architecture**, **Glossary** and
-**Conventions** (together the *canon*, written first) plus **Module** and
-**Workflow**. The OpenGauss extension generates **Schema** and **Table** pages.
-The kernel recognizes the canon tables by their header rows, in English or
-Chinese:
+A hub (one wiki for several repositories) is laid out by source:
+
+```text
+<hub>/docs/wiki/
+  index.md  log.md  system-map.md          # generated; system-map.md lists the contracts between sources
+  glossary.md  architecture.md  conventions.md   # system canon; architecture holds the Contracts table
+  flows/<name>.md                          # end-to-end flows that cross sources
+  sources/<source>/index.md                # generated: that source's pages and source map
+  sources/<source>/overview.md             # canon: that source's structure and Not covered table
+  sources/<source>/conventions.md          # canon: that source's commands and rules
+  sources/<source>/modules/<name>.md
+  sources/<source>/workflows/<name>.md
+```
+
+There are seven author page types: **Glossary**, **Conventions**,
+**Architecture** and (in a hub) **Overview**, together the *canon*, plus
+**Module**, **Workflow** and (in a hub) **Flow**. `okf new` derives each page's
+path from its type, name and scope. The OpenGauss extension generates
+**Schema** and **Table** pages; stamp generates the hub's **Map** page. The
+kernel recognizes these tables by their header rows, in English or Chinese:
 
 - glossary: Term, Meaning, Avoid, Where
 - commands: Purpose, Command, Status
 - rules: Area, Rule, Enforced by
 - invariants: Invariant, Enforced at, Breaks when
-- change impact: Change, Also change or check
+- change guide: Change, Start at, Also change, Verify
 - Not covered: Path, Reason
+- contracts (hub architecture): Contract, Provider, Consumers, Change order, Verify
+- call chain (Flow): Step, Source, Entry, Contract, Next
 
 Rule `Area` is one of `layout`, `naming`, `api`, `errors`, `logging`,
-`config`, `testing`, `build-ci`, `dependencies`, `vcs`. Each type also has
-required headings that `okf new` writes and `okf validate` checks
-(Architecture: Boundaries and dependencies, Not covered; Conventions: Commands,
-Rules; Module: Responsibility and boundaries; Workflow: Trigger to outcome; zh
-equivalents in zh wikis). Diagrams are recommended, not required.
+`config`, `testing`, `build-ci`, `dependencies`, `vcs`. Each page also has
+required headings that `okf new` writes and `okf validate` checks (for
+example Module: Responsibility, How it works, Making changes; zh equivalents
+in zh wikis). Diagrams are recommended; a Flow page needs a sequence diagram.
+
+In a hub, `okf scan` derives the **contracts** between sources from the code:
+a route one source serves and a client in another calls, an RPC service and
+its stubs, a topic one produces and another consumes, a table two write, a
+library one publishes and another depends on. Each must be claimed by a Flow
+page or the architecture page, which states the order a change ships in and
+how to verify both sides; a change on either side makes the claiming page
+stale.
 
 Every row except Not covered must carry a citation. So must every causal "why"
 sentence. A citation is an ordinary footnote whose definition starts with a
@@ -92,7 +117,8 @@ Why 3 attempts: rationale not recorded.
 
 Authors write `scope`. The kernel writes `status` and `revision`, and at stamp
 time `sources`, `generated`, `verified` and `stamp`. `index.md` lists every
-stable page as `[title](path) - description`. Its **Source map** section links
+stable page as `[title](path) - description (reviewed|unreviewed date)`; in a
+hub the root index links each source's own index. Its **Source map** section links
 each scanned module to the pages that cover it, or to its Not covered reason.
 Modules are build-declared modules plus top-level code directories; a
 top-level code root such as `src/` is split into one module per child (unless
@@ -119,31 +145,34 @@ commits. The source tree must stay clean for the whole session.
 
 | Stage | What happens | Exit check |
 |---|---|---|
-| 1 Discover | `okf scan`, read docs, build and CI files; create page stubs whose todo blocks hold briefs; optional parallel scouts | stubs have briefs |
-| 2 Structure | keep only pages that pass the Grep Test; settle `description` and `scope`; list skipped modules in Not covered | no coverage, scope or not-covered errors |
-| 3 Research | write glossary, conventions and architecture first; run build, test and lint commands where it is safe | canon pages have no todo block and no validation error |
-| 4 Write | one writer per remaining page, in parallel, given the three canon pages | no todo block and no validation error anywhere |
-| 5 Review & stamp | `okf review prepare`, a fresh independent reviewer per round writing the review report, `okf stamp` | pages are stable, `index.md` is rewritten |
-| Update | `okf update` redrafts the stale pages; stages 3-5 run again for those pages only | as above |
+| 1 Discover | `okf scan`, read docs, build and CI files; create page stubs whose todo blocks hold briefs; parallel scouts by area, tracers by trigger and (hub) by contract | stubs have briefs; triggers and contracts are traced |
+| 2 Structure | keep only pages that pass the Grep Test; settle `description` and `scope`; list skipped modules in Not covered; claim every contract | no coverage, contract, scope, page-path or not-covered errors |
+| 3 Research | write the glossary and conventions pages first; run build, test and lint commands where it is safe | those pages have no todo block and no validation error |
+| 4 Write | one writer per Module, Workflow and Flow page, in parallel | no todo block and no validation error on them |
+| 5 Assemble | write the overview and architecture pages from the pages below them | no todo block and no validation error anywhere |
+| 6 Review & stamp | `okf review prepare`, a fresh independent reviewer per round writing the review report, `okf stamp` | pages are stable; indexes, `log.md` and the System map are rewritten |
+| Update | `okf update` redrafts the stale pages; stages 3-6 run again for those pages only | as above |
 
 Kernel commands (`okf = uv run <skill>/scripts/okf.py`, run from the repository
-or hub root; the read-only `status`, `validate` and `impact` also run from any
+or hub root; the read-only `status`, `validate`, `impact`, `links` and `log` also run from any
 directory below it, including a hub source; every command accepts `--json`, and
 `--wiki DIR` before or after the subcommand):
 
 | Command | Purpose |
 |---|---|
-| `okf init [--wiki DIR] [--lang en\|zh] [--hub --source NAME ...]` | create `repo-wiki.yaml` and the three canon stubs; refuses a repository (or hub source) without a commit, and writes nothing when it fails |
+| `okf init [--wiki DIR] [--lang en\|zh] [--hub --source NAME ...]` | create `repo-wiki.yaml` and the canon stubs; refuses a repository (or hub source) without a commit, and writes nothing when it fails |
 | `okf status --json` | derived phase, next actions, counts, up to 20 issues |
-| `okf scan --json` | repository facts at HEAD: modules, entry points, commands, CI, configs, tests, docs, term candidates, co-change pairs |
-| `okf new PATH --type T --description D [--title T] [--scope GLOB ...]` | create a draft page stub with the required headings; a scope glob must match a tracked file |
+| `okf scan --json` | repository facts at HEAD: modules, triggers, dependencies, shared resources, contracts (hub), entry points, commands, CI, configs, tests, docs, term candidates, co-change pairs |
+| `okf new --type T [--name N] [--source S] [--description D] [--scope GLOB ...] [--contract ID ...]` | create a draft page stub, with the required headings, at the path its type, name and scope derive; a scope glob must match a tracked file, a contract a derived contract |
+| `okf links [--source S] [--contract ID] [--file PATH] --json` | hub contracts: what depends on what |
+| `okf log [--since DATE] [--files PATH ...]` | stamps from `log.md`, filtered by date or by the pages that cover given files |
 | `okf validate [--json] [PATH ...]` | check every page; each issue carries a fix hint; exits 1 on errors |
 | `okf review prepare --json` | review subject: `subject_digest`, draft pages, review report (`_review.json`) path |
-| `okf stamp --by ACTOR [--unreviewed]` | stamp reviewed drafts stable, rewrite `index.md` and list remaining warnings |
-| `okf impact [--files PATH ...] --json` | stale pages since their revision; with `--files`, per path `{read, update, change_impact, canon, note}` |
+| `okf stamp --by ACTOR [--unreviewed]` | stamp reviewed drafts stable, rewrite the indexes, `log.md` and the System map, and list remaining warnings |
+| `okf impact [--files PATH ...] --json` | stale pages since their revision; with `--files`, per path `{read, update, change_guide, canon, note}` and, in a hub, `contracts` |
 | `okf update --json` | redraft stale pages, listing the changes in a todo block; reasons whose page is missing come back as `unplaced` |
 | `okf verify --actor human:ID PAGE ...` | record a human review of stamped pages |
-| `okf pointer [--write FILE]` | print or write (through a symlink such as `CLAUDE.md -> AGENTS.md`) the AGENTS.md pointer block (at most 15 lines: index, must-read glossary and conventions, `impact --files`, an `rg` pattern for invariant rows, verified commands) |
+| `okf pointer [--source S] [--write FILE]` | print (for a hub source with `--source`) or write (through a symlink such as `CLAUDE.md -> AGENTS.md`) the AGENTS.md pointer block (at most 15 lines: index, must-read glossary and conventions, `impact --files`, an `rg` pattern for invariant rows, verified commands) |
 | `okf db {tables,describe,capture} --url-env VAR ...` | OpenGauss extension |
 
 For **multi-repository hubs** and **OpenGauss** Schema/Table pages, see
@@ -170,17 +199,21 @@ distinct revision and reports a reason for each affected page:
 - `scope-added`, `scope-modified` and `scope-deleted`
 - `revision-missing`
 - `catalog-changed` and `catalog-deleted`, for re-captured or removed tables
+- `contract-changed`, when a site of a contract the page claims changed on
+  either side, even outside the page's scope
 
-It also reports unmapped modules and deleted Not covered paths. `okf update`
+It also reports unmapped modules, unclaimed triggers and contracts, and
+deleted Not covered paths. `okf update`
 turns the affected pages back into drafts and writes one reason line per change
 into a todo block, ending in `(since <sha12>)` so `git diff <sha12> -- <path>`
-shows the change. The agent then runs stages 3-5 again for those pages only. A
+shows the change. The agent then runs stages 3-6 again for those pages only. A
 commit that
 touches only the wiki does not make a single-repository page stale. While
 coding, `okf impact --files <paths> --json` returns for each path the pages to
 `read` before you edit it, the pages to `update` afterwards, the
-`change_impact` rows to check (`{page, line, change, also}`), the `canon` pages
-and a `note` (a resolved or ambiguous hub path, a Not covered reason, or `no
+change guide rows to check (`{page, line, change, start, also, verify}`),
+the `canon` pages, in a hub the `contracts` the path takes part in, and a
+`note` (a resolved or ambiguous hub path, a Not covered reason, or `no
 page covers this path`). It also works from a subdirectory or from inside a
 hub source; relative paths start at the current directory.
 
@@ -190,16 +223,16 @@ hub source; relative paths start at the current directory.
   - locators exist at the page's revision and point to tracked text files;
   - footnote references and definitions match, and match `sources`;
   - required citations, required section headings and allowed table values;
-  - module coverage, scope globs and links;
+  - page paths, module, trigger and (hub) contract coverage, scope globs and links;
   - secrets and Mermaid syntax;
-  - a matching `index.md`;
+  - matching indexes, `log.md` and System map;
   - that no stable page was edited after its stamp, body or frontmatter.
 
   Alias use, uncited "why" sentences and parroted code are warnings for the
   reviewer.
 - **Review.** A reviewer that wrote none of the pages checks every canon row and
   causal sentence against the source. It samples the remaining prose and routes
-  three invented tasks through `index.md`. It writes only the review report
+  three invented tasks through the indexes. It writes only the review report
   (`_review.json`), which is bound to the drafts by `subject_digest`, so a page
   edited after review makes the approval stale. Each repair round goes to a new
   reviewer with a fresh context that reads only the pages, the sources and the
@@ -227,9 +260,9 @@ self-contained test).
 
 | Script | Measures |
 |---|---|
-| `run_cli_e2e.py` (tier 1) | deterministic lifecycle on a fixture: init → stamp, then moved lines, a changed invariant, a new module and a HEAD move under a draft, checking impact, update and status |
+| `run_cli_e2e.py` (tier 1) | deterministic lifecycle on a fixture: init → stamp, then moved lines, a changed invariant, a new module and a HEAD move under a draft, checking impact, update and status; then a two-source hub with shared contracts through the assemble stage, layered indexes, the System map, the log and a contract change |
 | `eval_update.py [--strict] [--list] [scenarios ...]` | update recall and precision: planted changes in single-repository and hub fixtures must reach `impact` with the right reason kinds, and `update` must draft exactly those pages |
-| `eval_routing.py tasks\|packet\|baseline\|score` | routing recall: real commits made after the wiki become tasks; a router that sees only `index.md` picks K pages; the score is how many touched files those pages cover |
+| `eval_routing.py tasks\|packet\|baseline\|score` | routing recall: real commits made after the wiki become tasks; a router that sees only the indexes picks K pages; the score is how many touched files those pages cover |
 | `eval_citations.py sample\|score\|calibrate\|agreement` | citation support rate: blind claim packets for a host-run judge, then scoring and a human calibration sheet with Cohen's kappa |
 | `eval_canon.py score --gold G [--run-commands]` | term, rule and command recall against a hand-curated gold file; `--run-commands` re-runs the `verified` commands in a throwaway worktree |
 | `setup_java_ws.py BASE` | builds a Kill Bill multi-repository hub for live evaluation |
@@ -246,8 +279,8 @@ uv run skills/repo-wiki/evals/eval_canon.py selftest
 
 ```text
 skills/repo-wiki/SKILL.md            # the skill's runtime SOP
-skills/repo-wiki/references/         # discovery, pages, review, extensions
-skills/repo-wiki/scripts/okf.py      # CLI; _scan/_page/_validate/_review/_stamp/_impact/_status, _db/_dbpages
+skills/repo-wiki/references/         # discovery, research, pages, review, extensions
+skills/repo-wiki/scripts/okf.py      # CLI; _scan/_code/_page/_validate/_review/_stamp/_impact/_status, _db/_dbpages
 skills/repo-wiki/scripts/tests/      # pytest suite for the kernel
 skills/repo-wiki/assets/templates/   # en and zh page stubs
 skills/repo-wiki/evals/              # tier-1 e2e and tier-2 evaluations

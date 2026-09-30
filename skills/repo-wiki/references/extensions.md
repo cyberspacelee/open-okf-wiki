@@ -15,6 +15,13 @@ separate git repository in a direct child directory, ignored by the hub:
   api/              # source: its own git repository, not tracked by the hub
   worker/
   docs/wiki/        # repo-wiki.yaml has lang and sources: [api, worker]
+    index.md        # generated: system pages and one line per source
+    log.md          # generated: stamps, from git history
+    system-map.md   # generated: the contracts between the sources
+    glossary.md  architecture.md  conventions.md   # system canon
+    flows/<name>.md                                # flows that cross sources
+    sources/api/    # index.md (generated), overview.md, conventions.md, modules/, workflows/
+    sources/worker/
 ```
 
 Set up with plain git; `okf` never clones or fetches:
@@ -24,7 +31,9 @@ Set up with plain git; `okf` never clones or fetches:
     git clone <worker-url> worker
     okf init --hub --source api --source worker
 
-Then commit `.gitignore` and the wiki stubs in the hub. Run every `okf` command
+It creates the system glossary, conventions and architecture stubs and, per
+source, `sources/<name>/overview.md` and `sources/<name>/conventions.md`. Then
+commit `.gitignore` and the wiki stubs in the hub. Run every `okf` command
 from the hub root; run inside a source, a command that writes refuses and names
 the hub root, while the read-only `okf status`, `okf validate` and `okf impact`
 load the hub wiki from anywhere below the hub. `impact --files` reads relative
@@ -46,16 +55,65 @@ Differences from a single repository:
   commit or stash inside a source yourself; ask the user.
 - **Modules** from `okf scan` carry the source prefix; a source with no module
   of its own is one module named after the source.
+- **Layout.** `okf new` places a page by its scope: a Module or Workflow page
+  whose globs all start with `api/` lives in `sources/api/modules/` or
+  `sources/api/workflows/`; a flow whose scope reaches two sources is a Flow
+  page in `flows/`. A page elsewhere fails `page-path`.
+- **Canon per level.** One glossary for the system (names stay global). The
+  system conventions page holds cross-repository rules (Rules only: branches,
+  releases, contract versioning, which repository changes first); each
+  source's conventions page holds its commands and rules. Each source's
+  overview holds its structure and its Not covered rows (which start with the
+  source name); coverage issues of a source land on its overview. The system
+  architecture page says which repository owns what and holds the Contracts
+  table. `okf impact --files` on a source file names the system glossary and
+  conventions plus that source's conventions and overview.
 - **Refresh.** To document newer code, the user (or you, when asked) fetches
   and checks out the wanted commit in each source with plain git. The next
   `okf status --json` shows the moved HEAD; follow it into `okf update --json`.
 - **Commit** wiki changes in the hub repository, never in a source.
-- **Pointer.** `okf pointer` prints one block for the hub, with one line asking
-  to paste it into each source's AGENTS.md (paths are relative to the hub root).
-  A human does that; never write into a source yourself.
-- Cross-source flows (api enqueues, worker consumes) are Workflow pages whose
-  `scope` lists globs from both sources; the architecture page states which
-  source depends on which.
+- **Pointer.** `okf pointer` prints the block for the hub's own AGENTS.md;
+  `okf pointer --source api` prints the block for `api/AGENTS.md` (its index,
+  its conventions, the system glossary and conventions, the System map; paths
+  relative to the hub root). A human pastes it; never write into a source
+  yourself.
+- **Indexes.** The root `index.md` lists the system pages and links each
+  source directory; `sources/<name>/index.md` lists that source's pages and
+  its source map. Stamp writes them, `log.md` and `system-map.md`.
+
+### Contracts between sources
+
+`okf scan --json` lists `contracts`, derived from the code at HEAD: a route in
+one source that a client in another calls (`http POST /reservations/{}`), an
+RPC service and its stubs (`rpc InventoryService`), a topic one source
+produces and another consumes (`topic order-created`), a table two sources
+write or read (`table t_order`), an artifact one source publishes and another
+depends on or imports (`library com.acme:common`). A client call no source
+serves is listed as `external`. `okf links --json` filters them by `--source`,
+`--contract` (id or glob) or `--file`; `system-map.md` renders them after each
+stamp.
+
+Every contract (not external) needs a home (`link-coverage`):
+
+- **A Flow page** that traces the path end to end claims the contracts it
+  crosses in its `contracts` frontmatter (`okf new --type Flow --contract ...`)
+  and names each in a call chain row (`Step | Source | Entry | Contract |
+  Next`), with a `sequenceDiagram` whose participants are the sources.
+- **The architecture page** claims contracts no flow explains (libraries,
+  shared tables) in its `contracts` frontmatter and gives each a Contracts row
+  (`Contract | Provider | Consumers | Change order | Verify`): which side
+  changes and ships first, what compatibility the other side relies on, how to
+  verify both sides.
+- **A Not covered row** whose path matches one of the contract's site files
+  (a health probe a monitor calls) excludes it.
+
+A claim that matches no contract fails `contract-claim`; a claimed contract
+without its row fails `contract-row` once the page's todo block is gone. When
+any site of a claimed contract changes, on either side, `okf impact` reports
+`contract-changed` for the claiming page even if its scope does not reach that
+file, and `okf update` drafts it. `okf impact --files` on a site file lists the
+contract, its counterpart sites, the pages that describe it and its change
+order.
 
 ## OpenGauss databases
 
@@ -150,7 +208,7 @@ which invariants the code adds on top of it, which workflow writes it.
 **Re-capture** regenerates the pages from the live catalog; each carries a
 `catalog_sha256`. When a table's hash changes or its page is removed,
 `okf impact --json` lists every author page linking it and `okf update --json`
-drafts them with a todo block, like any code change. Redo stages 3-5 for those
+drafts them with a todo block, like any code change. Redo stages 3-6 for those
 pages.
 
 **Capture failure is a blocker for that database only.** A missing variable, a

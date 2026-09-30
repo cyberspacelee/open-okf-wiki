@@ -200,7 +200,7 @@ def init(
         if create_canon:
             import _page
 
-            for path in _page.CANON.values():
+            for path in _page.canon(ws):
                 undo.create(ws.wiki / path)
             _page.create_canon(ws)
     except BaseException:

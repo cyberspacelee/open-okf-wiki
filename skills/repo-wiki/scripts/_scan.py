@@ -27,7 +27,7 @@ MAX_BYTES = 1 << 20
 LIMITS = {
     "entry_points": 50, "commands": 80, "docs": 80, "terms": 50, "configs": 60,
     "ci_files": 30, "ci_steps": 80, "triggers": 100, "deps": 60, "central": 20,
-    "resources": 40,
+    "resources": 40, "contracts": 100,
 }
 MAX_CO_CHANGE = 30
 MAX_TEST_DIRS = 20
@@ -748,6 +748,8 @@ def scan(ws: _config.Workspace) -> dict:
     imports = _code.Imports()
     found_triggers: list[Trigger] = []
     named: list[tuple[str, str, str, int]] = []  # (kind, name, file, line)
+    collector = _ContractCollector()
+    module_source: dict[str, str] = {}
     co_change: list[dict] = []
     for source in ws.sources:
         clean, dirty = _git.is_clean(source.path, [] if ws.hub else [ws.wiki_rel])
@@ -756,7 +758,9 @@ def scan(ws: _config.Workspace) -> dict:
             shallow = _git.is_shallow(source.path)
             sources.append({"name": source.name, "head": tree.head, "clean": clean,
                             "dirty": [tree.ws(path) for path in dirty], "shallow": shallow})
-            mods += _module_facts(tree, _source_modules(tree, ws.hub))
+            source_mods = _module_facts(tree, _source_modules(tree, ws.hub))
+            module_source.update({m["path"]: source.name for m in source_mods})
+            mods += source_mods
             entries += _entry_points(tree)
             commands += _commands(tree)
             ci_files += _ci(tree)
@@ -768,8 +772,14 @@ def scan(ws: _config.Workspace) -> dict:
             found_triggers += _source_triggers(tree)
             _register_packages(tree, imports)
             # The one pass that reads every hand-written code and doc blob.
-            for path, text in tree.texts([p for p in tree.files if _term_file(p) or _mapper_candidate(p)]):
+            wanted = [p for p in tree.files if _term_file(p) or _mapper_candidate(p)
+                      or (ws.hub and contract_candidate(p))]
+            for path, text in tree.texts(wanted):
                 if text is None or _is_generated(text):
+                    continue
+                if ws.hub and contract_candidate(path):
+                    collector.add(tree, path, text)
+                if not (_term_file(path) or _mapper_candidate(path)):
                     continue
                 if _term_file(path):
                     terms.add(tree, path, text)
@@ -787,7 +797,11 @@ def scan(ws: _config.Workspace) -> dict:
     per_module = Counter(t["module"] for t in trigger_list)
     for module in mods:
         module["triggers"] = per_module[module["path"]]
-    deps, central = _dependency_facts(imports, module_paths)
+    edges = imports.edges()
+    deps, central = _dependency_facts(edges, module_paths)
+    contract_list = [
+        c.to_dict() for c in collector.result(_cross_source_imports(edges, module_paths, module_source), module_source)
+    ] if ws.hub else []
     resources = _resource_facts(named, module_paths)
     best: dict[str, int] = {}
     for rank, path in entries:
@@ -819,6 +833,9 @@ def scan(ws: _config.Workspace) -> dict:
                  "read a module's imports with rg -n '^(import|from) ' <module>")),
         "central": (len(central) > LIMITS["central"],
                     f"{LIMITS['central']} of {len(central)} shared files shown, most importing modules first"),
+        "contracts": (len(contract_list) > LIMITS["contracts"],
+                      (f"{LIMITS['contracts']} of {len(contract_list)} contracts shown; okf links --json lists "
+                       "every one, and okf validate --json names each unclaimed one (link-coverage)")),
         "resources": (len(resources) > LIMITS["resources"],
                       (f"{LIMITS['resources']} of {len(resources)} shared topics and tables shown; "
                       "rg -n '<name>' finds every use of one")),
@@ -844,6 +861,7 @@ def scan(ws: _config.Workspace) -> dict:
         "deps": shown("deps", deps),
         "central": shown("central", central),
         "resources": shown("resources", resources),
+        "contracts": shown("contracts", contract_list),
         "entry_points": shown("entry_points", entry_list),
         "commands": shown("commands", commands),
         "ci": ci,
@@ -942,12 +960,12 @@ def _mapper_candidate(rel: str) -> bool:
     return _suffix(rel) == ".xml" and not is_test_path(rel) and not GENERATED_TOKEN.search(rel)
 
 
-def _dependency_facts(imports: _code.Imports, module_paths: set[str]) -> tuple[list[dict], list[dict]]:
+def _dependency_facts(import_edges, module_paths: set[str]) -> tuple[list[dict], list[dict]]:
     """Module edges (importing module -> imported module) and the files most modules import."""
     edges: dict[tuple[str, str], set[tuple[str, int]]] = defaultdict(set)
     importers: dict[str, set[str]] = defaultdict(set)
     statements: Counter = Counter()
-    for path, line, target in imports.edges():
+    for path, line, target in import_edges:
         source, dest = owner(path, module_paths), owner(target, module_paths)
         if source is None or dest is None or source == dest:
             continue
@@ -1009,6 +1027,301 @@ def _resource_facts(named: list[tuple[str, str, str, int]], module_paths: set[st
             "locators": [_config.Locator(p, n, n).text() for _, (p, n) in sorted(by_module.items())][:6],
         })
     return sorted(out, key=lambda r: (-len(r["modules"]), r["kind"], r["name"]))
+
+
+# --- contracts between sources ----------------------------------------------------------------
+#
+# A contract is an interface two sources of a hub share: a route one serves and
+# another calls, an RPC service, a topic, a table, a library. Sites come from
+# ``_code.contract_sites`` (code) and ``_library_sites`` (manifests); matching them
+# across sources is deterministic for a given HEAD.
+
+MAX_CONTRACT_SITES = 5  # sites kept per contract and role
+
+
+@dataclass(frozen=True)
+class ContractSite:
+    source: str
+    path: str  # workspace-relative
+    line: int
+
+    @property
+    def locator(self) -> str:
+        return _config.Locator(self.path, self.line, self.line).text()
+
+
+@dataclass(frozen=True)
+class Contract:
+    id: str  # "<kind> <key>", e.g. "http POST /orders", "topic order-created"
+    kind: str
+    providers: tuple[ContractSite, ...]
+    consumers: tuple[ContractSite, ...]
+    external: bool = False  # an HTTP client whose provider is outside the hub
+
+    @property
+    def sites(self) -> tuple[ContractSite, ...]:
+        return self.providers + self.consumers
+
+    @property
+    def sources(self) -> list[str]:
+        return sorted({site.source for site in self.sites})
+
+    def to_dict(self) -> dict:
+        def roles(sites):
+            return [{"source": s.source, "locator": s.locator} for s in sites]
+
+        out = {"id": self.id, "kind": self.kind, "providers": roles(self.providers),
+               "consumers": roles(self.consumers)}
+        if self.external:
+            out["external"] = True
+        return out
+
+
+class _ContractCollector:
+    """Contract sites of every source, fed in one pass over the files, then matched."""
+
+    def __init__(self):
+        self.sites: list[tuple[str, str, _code.Site]] = []  # (source, workspace path, site)
+
+    def add(self, tree: "_Tree", rel: str, text: str) -> None:
+        if is_test_path(rel) or _fixture_path(rel):
+            return
+        name = _name(rel)
+        if name in _LIBRARY_MANIFESTS:
+            found = _library_sites(rel, text)
+        else:
+            found = _code.contract_sites(rel, text)
+        self.sites += [(tree.source.name, tree.ws(rel), site) for site in found]
+
+    def result(self, import_edges=(), module_source=None) -> list[Contract]:
+        return _match_contracts(self.sites, import_edges, module_source or {})
+
+
+def contract_candidate(rel: str) -> bool:
+    """A file that may hold contract sites: production code, SQL, mapper XML, manifests."""
+    if is_test_path(rel) or _fixture_path(rel) or GENERATED_TOKEN.search(rel):
+        return False
+    return bool(_language(rel)) or _suffix(rel) == ".sql" or _mapper_candidate(rel) or _name(rel) in _LIBRARY_MANIFESTS
+
+
+def _fixture_path(rel: str) -> bool:
+    return bool(re.search(r"(^|/)(examples?|samples?|node_modules|vendor|third_party|testdata)/", rel))
+
+
+def contracts(
+    ws: _config.Workspace,
+    heads: dict[str, str] | None = None,
+    listings: dict[str, list[str]] | None = None,
+) -> list[Contract]:
+    """Every contract between the sources of a hub at HEAD, sorted by id; empty in a
+    single repository (a monorepo's cross-module relations are deps and resources)."""
+    if not ws.hub:
+        return []
+    collector = _ContractCollector()
+    imports = _code.Imports()
+    module_source: dict[str, str] = {}
+    module_paths: set[str] = set()
+    for source in ws.sources:
+        with _git.BlobReader(source.path) as blobs:
+            tree = _Tree(ws, source, blobs, (heads or {}).get(source.name), (listings or {}).get(source.name))
+            for path, _ in _source_modules(tree, ws.hub):
+                module_paths.add(tree.ws(path))
+                module_source[tree.ws(path)] = source.name
+            _register_packages(tree, imports)
+            for rel, text in tree.texts([p for p in tree.files if contract_candidate(p)]):
+                if text is None or _is_generated(text):
+                    continue
+                collector.add(tree, rel, text)
+                if _language(rel):
+                    imports.add(tree.ws(rel), text)
+    edges = [(path, line, target) for path, line, target in imports.edges()]
+    return collector.result(_cross_source_imports(edges, module_paths, module_source), module_source)
+
+
+def _cross_source_imports(edges, module_paths, module_source) -> list[tuple[str, str, int, str]]:
+    """(importing file, its line, imported module, imported file) for imports that
+    cross sources; the fallback library contracts where no manifest names the artifact."""
+    out = []
+    for path, line, target in edges:
+        mine, theirs = owner(path, module_paths), owner(target, module_paths)
+        if mine and theirs and module_source.get(mine) != module_source.get(theirs):
+            out.append((path, line, theirs, target))
+    return out
+
+
+def _source_of(path: str) -> str:
+    return path.split("/", 1)[0]
+
+
+def _match_contracts(sites, import_edges, module_source) -> list[Contract]:
+    by_kind: dict[str, list[tuple[str, str, _code.Site]]] = defaultdict(list)
+    for item in sites:
+        by_kind[item[2].kind].append(item)
+    found: dict[str, dict] = {}
+
+    def put(contract_id: str, kind: str, role: str, source: str, path: str, line: int, external=False):
+        entry = found.setdefault(contract_id, {"kind": kind, "provider": set(), "consumer": set(), "external": external})
+        entry[role].add(ContractSite(source, path, line))
+
+    # http: every client call matched to the routes of other sources.
+    routes = [(src, path, site) for src, path, site in by_kind["http"] if site.role == "provider"]
+    for src, path, site in by_kind["http"]:
+        if site.role != "consumer":
+            continue
+        method, _, url = site.key.partition(" ")
+        hits = [(r_src, r_path, r) for r_src, r_path, r in routes if r_src != src and _route_matches(method, url, r.key)]
+        if site.hint:
+            named = [h for h in hits if _hint_names(site.hint, h[0])]
+            hits = named or hits
+        if not hits:
+            put(f"http {site.key}", "http", "consumer", src, path, site.line, external=True)
+            continue
+        for r_src, r_path, route in hits:
+            contract_id = f"http {route.key}"
+            put(contract_id, "http", "provider", r_src, r_path, route.line)
+            put(contract_id, "http", "consumer", src, path, site.line)
+    # rpc and library: a consumer in one source, a provider of the same key in another.
+    for kind in ("rpc", "library"):
+        providers: dict[str, list] = defaultdict(list)
+        for src, path, site in by_kind[kind]:
+            if site.role == "provider":
+                providers[site.key].append((src, path, site))
+        for src, path, site in by_kind[kind]:
+            if site.role != "consumer":
+                continue
+            others = [p for p in providers.get(site.key, []) if p[0] != src]
+            if not others:
+                continue
+            contract_id = f"{kind} {site.key}"
+            for p_src, p_path, p_site in others:
+                put(contract_id, kind, "provider", p_src, p_path, p_site.line)
+            put(contract_id, kind, "consumer", src, path, site.line)
+    # topic and table: a name two sources use; writers and producers provide it.
+    for kind in ("topic", "table"):
+        users: dict[str, list] = defaultdict(list)
+        for item in by_kind[kind]:
+            users[item[2].key].append(item)
+        for key, items in users.items():
+            if len({src for src, _, _ in items}) < 2:
+                continue
+            for src, path, site in items:
+                put(f"{kind} {key}", kind, site.role, src, path, site.line)
+    # Imports across sources, where no manifest already names a library between the pair.
+    paired = {
+        (c.source, p.source)
+        for entry in found.values() if entry["kind"] == "library"
+        for c in entry["consumer"] for p in entry["provider"]
+    }
+    for path, line, module, target in import_edges:
+        pair = (_source_of(path) if "/" in path else path, module_source.get(module))
+        if pair in paired:
+            continue
+        contract_id = f"library {module}"
+        put(contract_id, "library", "provider", module_source.get(module) or _source_of(target), target, 1)
+        put(contract_id, "library", "consumer", _source_of(path), path, line)
+    out = []
+    for contract_id, entry in found.items():
+        providers, consumers = _pick_sites(entry["provider"]), _pick_sites(entry["consumer"])
+        external = entry["external"] and not providers
+        if not external and len({s.source for s in providers + consumers}) < 2:
+            continue
+        out.append(Contract(contract_id, entry["kind"], providers, consumers, external))
+    return sorted(out, key=lambda c: (c.external, c.id))
+
+
+def _pick_sites(sites) -> tuple[ContractSite, ...]:
+    """The first site per file, ordered by source, path and line, at most MAX_CONTRACT_SITES."""
+    first: dict[tuple[str, str], ContractSite] = {}
+    for site in sorted(sites, key=lambda s: (s.source, s.path, s.line)):
+        first.setdefault((site.source, site.path), site)
+    return tuple(list(first.values())[:MAX_CONTRACT_SITES])
+
+
+def _route_matches(method: str, url: str, route_key: str) -> bool:
+    """A client call (method, normalized path) reaches a route key ``METHOD /path``:
+    same path, or one path ends with the other (a gateway or context prefix) when the
+    shorter has at least two segments; methods agree unless either is ANY."""
+    r_method, _, r_path = route_key.partition(" ")
+    if method != r_method and _code.ANY not in (method, r_method):
+        return False
+    if url == r_path:
+        return True
+    a, b = url.strip("/").split("/"), r_path.strip("/").split("/")
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    return len(short) >= 2 and long[-len(short):] == short
+
+
+def _hint_names(hint: str, source: str) -> bool:
+    """A client's declared service (Feign name, URL host) names this source."""
+    h = re.sub(r"[^a-z0-9]", "", hint.lower())
+    s = re.sub(r"[^a-z0-9]", "", source.lower())
+    return bool(h) and bool(s) and (h in s or s in h)
+
+
+_LIBRARY_MANIFESTS = ("pom.xml", "package.json", "go.mod", "pyproject.toml")
+
+
+def _library_sites(rel: str, text: str) -> list[_code.Site]:
+    """Artifacts a manifest declares (provider) and depends on (consumer)."""
+    name = _name(rel)
+    lines = _files.text_lines(text)
+
+    def line_of(needle: str, default: int = 1) -> int:
+        found = _find(lines, re.escape(needle))
+        return found if found is not None else default
+
+    sites: list[_code.Site] = []
+    if name == "pom.xml":
+        try:
+            root = ElementTree.fromstring(text)
+        except ElementTree.ParseError:
+            return []
+
+        def child(node, tag):
+            found = node.find(f"{{*}}{tag}")
+            return found.text.strip() if found is not None and found.text else None
+
+        parent = root.find("{*}parent")
+        group = child(root, "groupId") or (child(parent, "groupId") if parent is not None else None)
+        artifact = child(root, "artifactId")
+        if group and artifact:
+            sites.append(_code.Site("library", f"{group}:{artifact}", "provider", line_of(f"<artifactId>{artifact}<")))
+        deps = root.findall("{*}dependencies/{*}dependency") + root.findall("{*}profiles/{*}profile/{*}dependencies/{*}dependency")
+        for dep in deps:
+            g, a = child(dep, "groupId"), child(dep, "artifactId")
+            if g and a:
+                g = group if g in ("${project.groupId}", "${groupId}") and group else g
+                sites.append(_code.Site("library", f"{g}:{a}", "consumer", line_of(f"<artifactId>{a}<")))
+    elif name == "package.json":
+        data = _dict(_load("json", text))
+        package = data.get("name")
+        if isinstance(package, str) and package:
+            sites.append(_code.Site("library", package, "provider", line_of('"name"')))
+        for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+            for dep in _dict(data.get(key)):
+                sites.append(_code.Site("library", dep, "consumer", line_of(f'"{dep}"')))
+    elif name == "go.mod":
+        for number, line in enumerate(lines, 1):
+            module = re.match(r"^module\s+(\S+)", line)
+            if module:
+                sites.append(_code.Site("library", _unquote(module[1]), "provider", number))
+            required = re.match(r"^\s*(?:require\s+)?([\w.-]+(?:/[\w.~-]+)+)\s+v\S+", line)
+            if required and not line.startswith("module"):
+                sites.append(_code.Site("library", required[1], "consumer", number))
+    elif name == "pyproject.toml":
+        project = _dict(_dict(_load("toml", text)).get("project"))
+        package = project.get("name")
+        if isinstance(package, str) and package:
+            sites.append(_code.Site("library", _py_dist(package), "provider", line_of("name")))
+        for spec in _strings(project.get("dependencies")):
+            dep = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", spec)
+            if dep:
+                sites.append(_code.Site("library", _py_dist(dep[1]), "consumer", line_of(dep[1])))
+    return sites
+
+
+def _py_dist(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _bound_ci(files: list[dict]) -> tuple[list[dict], bool]:

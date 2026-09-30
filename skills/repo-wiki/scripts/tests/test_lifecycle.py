@@ -10,7 +10,7 @@ import _review
 import _stamp
 import _status
 import _validate
-from helpers import commit
+from helpers import commit, write
 from kit import ARCH, BILLING, approve, complete, set_body
 
 
@@ -73,8 +73,13 @@ def test_stamp_requires_approval_then_writes_provenance_and_index(tmp_path):
     assert index.startswith('---\nokf_version: "0.2"\n---\n')
     assert "* `src/billing/` - [Billing](modules/billing.md)" in index
     assert "`tests/`" not in index  # a top-level test root is no module
+    assert result["derived"] == ["docs/wiki/index.md", "docs/wiki/log.md"]
+    log = (ws.wiki / "log.md").read_text(encoding="utf-8")
+    day = page.meta["generated"]["at"][:10]
+    assert log.startswith(f"# Update log\n\n## {day}\n\n* **Creation**: [Architecture](/architecture.md) - ")
+    assert "reviewed by repo-wiki-reviewer/test" in log and log.count("**Creation**") == 4
     again = _stamp.stamp(ws, "repo-wiki/test")
-    assert again["stamped"] == [] and again["index_changed"] is False
+    assert again["stamped"] == [] and again["derived"] == []
 
 
 def test_stamp_blocks_on_todo_and_dirty_sources(tmp_path):
@@ -188,7 +193,7 @@ def test_git_calls_do_not_grow_with_pages(tmp_path, monkeypatch):
 
     root, ws = complete(tmp_path)
     for n in range(12):
-        _page.new_page(ws, f"workflows/w{n}.md", "Workflow", "Read w.", ["src/billing/**"])
+        _page.new_page(ws, "Workflow", f"w{n}", "Read w.", ["src/billing/**"])
         set_body(ws, f"workflows/w{n}.md", BILLING.replace("## Responsibility", "## Flow").replace("## How it works", "## Steps"))
     assert _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)["blocked"] == []
     commit(root, {}, "wiki")
@@ -236,7 +241,7 @@ def test_update_refuses_dirty_sources(tmp_path):
 
 
 def _brief_canon(ws, text="Brief: from discovery"):
-    for path in _page.CANON.values():
+    for path in _page.canon(ws):
         page = ws.wiki / path
         page.write_text(page.read_text(encoding="utf-8").replace(
             "<!-- okf:todo\n-->", f"<!-- okf:todo\n{text}\n-->", 1), encoding="utf-8")
@@ -252,7 +257,7 @@ def test_status_phases(tmp_path):
     commit(root, {}, "wiki")
     assert _status.status(root)["phase"] == "discover"
     ws = _config.load(root)
-    _page.new_page(ws, "modules/a.md", "Module", "Read before a.", ["src/**"])
+    _page.new_page(ws, "Module", "a", "Read before a.", ["src/**"])
     # A stub without a brief while the canon briefs are empty: still discovering.
     status = _status.status(root)
     assert status["phase"] == "discover" and "modules/a.md" in status["next_actions"][0]
@@ -286,7 +291,7 @@ def test_status_review_stamp_done(tmp_path):
     commit(root, {}, "wiki")
     assert _status.status(root)["phase"] == "done"
     (ws.wiki / "index.md").unlink()
-    assert "rewrites index.md" in _status.status(root)["next_actions"][0]
+    assert "rewrites the indexes" in _status.status(root)["next_actions"][0]
 
 
 def test_cli_round_trip(tmp_path, capsys, monkeypatch):
@@ -301,7 +306,7 @@ def test_cli_round_trip(tmp_path, capsys, monkeypatch):
     assert okf.main(["stamp", "--by", "repo-wiki/test", "--json"]) == 1
     capsys.readouterr()
     assert okf.main(["stamp", "--by", "not an actor"]) == 2
-    assert okf.main(["new", "../x.md", "--type", "Module", "--description", "d"]) == 2
+    assert okf.main(["new", "--type", "Module", "--name", "../x", "--description", "d"]) == 2
     assert okf.main(["init", "--hub"]) == 2
     capsys.readouterr()
     # A page filter that names no page is a usage error, not a silent pass.
@@ -336,42 +341,6 @@ def test_cli_wiki_option_before_or_after_the_subcommand(tmp_path, capsys, monkey
     assert okf.build_parser().parse_args(["status"]).wiki is None
 
 
-def test_hub_lifecycle(tmp_path):
-    import _config
-    from helpers import git_repo
-
-    hub = git_repo(tmp_path / "hub", {"README.md": "hub\n"})
-    api = git_repo(hub / "api", {"src/app.py": "def handle():\n    return 1\n"})
-    git_repo(hub / "worker", {"jobs/run.py": "def run():\n    return 2\n"})
-    ws = _config.init(hub, hub_sources=["api", "worker"])
-    commit(hub, {}, "wiki")
-    assert _status.status(hub)["phase"] == "discover"
-    with pytest.raises(_page.PageError, match="prefix it with one of: api, worker"):
-        _page.new_page(ws, "modules/app.md", "Module", "Read before app.", ["src/**"])
-    _page.new_page(ws, "workflows/request.md", "Workflow", "Read before changing request handling.",
-                   ["api/src/**", "worker/jobs/**"])
-    set_body(ws, "architecture.md", "## Structure\n\napi enqueues work for worker.\n\n## Not covered\n\n| Path | Reason |\n|---|---|\n")
-    set_body(ws, "glossary.md", "| Term | Meaning | Avoid | Where |\n|---|---|---|---|\n| Handle | Entry point. | | `handle`[^h] |\n\n[^h]: api/src/app.py#L1\n")
-    set_body(ws, "conventions.md", "## Commands\n\n| Purpose | Command | Status |\n|---|---|---|\n\n## Rules\n\n| Area | Rule | Enforced by |\n|---|---|---|\n")
-    set_body(ws, "workflows/request.md", ("## Flow\n\nThe worker runs jobs.[^run]\n\n## Making changes\n\n"
-              "| Change | Start at | Also change | Verify |\n|---|---|---|---|\n"
-              "| Job result | `run`[^run] | - | manual run |\n\n[^run]: worker/jobs/run.py#L1-L2\n"))
-    errors = [i for i in _validate.validate(ws) if i.severity == "error"]
-    assert errors == []
-    result = _stamp.stamp(ws, "repo-wiki/test", unreviewed=True)
-    assert "workflows/request.md" in result["stamped"]
-    page = _page.load_page(ws, "workflows/request.md")
-    assert set(page.meta["revision"]) == {"api", "worker"}
-    index = (ws.wiki / "index.md").read_text(encoding="utf-8")
-    assert "* `api/src/` - [Request](workflows/request.md)" in index
-    commit(hub, {}, "wiki v1")
-    commit(api, {"src/app.py": "def handle():\n    return 3\n"})
-    report = _impact.impact(ws)
-    pages = {p["page"]: {r["kind"] for r in p["reasons"]} for p in report["pages"]}
-    assert pages == {"glossary.md": {"cited-context"}, "workflows/request.md": {"scope-modified"}}
-    assert _status.status(hub)["phase"] == "update"
-
-
 # --- regressions ------------------------------------------------------------------------
 
 
@@ -398,7 +367,10 @@ def test_hub_impact_matches_scope_globs_as_validate_does(tmp_path, glob, expecte
     # A hub glob whose first segment is a wildcard used to be dropped by impact,
     # so the page was never reported stale although validate counted its files.
     hub, api, web, ws = _hub(tmp_path)
-    _page.new_page(ws, "modules/all.md", "Module", "Read before changing code.", [glob])
+    # A wildcard hub glob fails page-path (its source is unknown), but impact still
+    # matches it the way validate does.
+    write(ws.wiki / "modules/all.md", {"type": "Module", "title": "All", "description": "d", "scope": [glob],
+                                       "status": "draft", "revision": _page.current_revision(ws)}, "Body.\n")
     assert _validate.Facts(ws).matches(glob)
     commit(hub, {}, "page")
     commit(api, {"src/a.py": "x = 2\n"})
@@ -416,7 +388,7 @@ def test_update_compares_whole_reason_lines(tmp_path):
 
     root = git_repo(tmp_path / "r", {"src/a": "a\n", "src/a.py": "b\n"})
     ws = wiki_ws(root)
-    page = _page.new_page(ws, "modules/a.md", "Module", "Read.", ["src/**"])
+    page = _page.new_page(ws, "Module", "a", "Read.", ["src/**"])
     set_body(ws, page.path, "<!-- okf:todo\n- scope-modified src/a.py\n-->\n\nBody.\n")
     commit(root, {}, "draft")
     draft = page.revision["."]  # wiki-only commits keep it current
@@ -500,8 +472,8 @@ def test_impact_files_directory_finds_wildcard_scopes(tmp_path):
 
     root = git_repo(tmp_path / "r", {"src/a.py": "a = 1\n", "lib/b.py": "b = 1\n"})
     ws = wiki_ws(root)
-    _page.new_page(ws, "modules/a.md", "Module", "Read.", ["src/*.py"])
-    later = _page.new_page(ws, "modules/later.md", "Module", "Read.", ["lib/**"])
+    _page.new_page(ws, "Module", "a", "Read.", ["src/*.py"])
+    later = _page.new_page(ws, "Module", "later", "Read.", ["lib/**"])
     later.meta["scope"] = ["lib/new/**"]  # okf new refuses a glob without files
     _page.write_page(later)
     files = _impact.impact_files(ws, ["src", "src/", "lib", "src/a.py", "docs"])["files"]
@@ -575,9 +547,9 @@ def test_impact_files_lists_change_guide_rows_and_canon(tmp_path):
 def test_impact_files_in_a_hub_resolves_unprefixed_paths(tmp_path):
     _, api, _, ws = _hub(tmp_path)
     commit(api, {"src/only.py": "z = 1\n"})
-    _page.new_page(ws, "modules/api.md", "Module", "Read before api.", ["api/src/**"])
+    _page.new_page(ws, "Module", "api", "Read before api.", ["api/src/**"])
     files = _impact.impact_files(ws, ["src/only.py", "src", "api/src/a.py", "nowhere.py"])["files"]
-    assert files["api/src/only.py"]["read"] == ["modules/api.md"]
+    assert files["api/src/only.py"]["read"] == ["sources/api/modules/api.md"]
     assert files["api/src/only.py"]["note"] == "resolved src/only.py to api/src/only.py (only source api has it)"
     assert files["src"]["note"] == "ambiguous: sources api, web all have src; prefix it with the source name"
     assert files["api/src/a.py"]["note"] is None
@@ -588,11 +560,11 @@ def test_cli_impact_files_from_inside_a_hub_source(tmp_path, capsys, monkeypatch
     import okf
 
     _, api, web, ws = _hub(tmp_path)
-    _page.new_page(ws, "modules/api.md", "Module", "Read before api.", ["api/src/**"])
+    _page.new_page(ws, "Module", "api", "Read before api.", ["api/src/**"])
     monkeypatch.chdir(api)
     assert okf.main(["impact", "--files", "src/a.py", "--json"]) == 0
     files = json.loads(capsys.readouterr().out)["files"]
-    assert files["api/src/a.py"]["read"] == ["modules/api.md"]
+    assert files["api/src/a.py"]["read"] == ["sources/api/modules/api.md"]
     monkeypatch.chdir(api / "src")
     assert okf.main(["impact", "--files", "a.py", str(web / "src/b.py"), "--json"]) == 0
     files = json.loads(capsys.readouterr().out)["files"]
@@ -639,7 +611,7 @@ def test_stamp_lists_remaining_warnings_with_file_lines(tmp_path, capsys, monkey
     [warning] = [w for w in result["warnings"] if w["code"] == "uncited-why"]
     lines = (ws.wiki / "modules/billing.md").read_text(encoding="utf-8").split("\n")
     assert warning["page"] == "modules/billing.md" and "because" in lines[warning["line"] - 1]
-    assert result["verified_by"] is None and result["index_changed"] is True
+    assert result["verified_by"] is None and "docs/wiki/index.md" in result["derived"]
     # The human summary shows each warning as page:line.
     commit(root, {}, "stamped")
     assert okf.main(["stamp", "--by", "repo-wiki/test"]) == 0
@@ -655,8 +627,8 @@ def test_status_discover_until_briefs_exist(tmp_path):
     _config.init(root)
     commit(root, {}, "wiki")
     ws = _config.load(root)
-    _page.new_page(ws, "modules/a.md", "Module", "Read before a.", ["src/**"])
-    _page.new_page(ws, "modules/b.md", "Module", "Read before b.", ["lib/**"])
+    _page.new_page(ws, "Module", "a", "Read before a.", ["src/**"])
+    _page.new_page(ws, "Module", "b", "Read before b.", ["lib/**"])
     set_body(ws, "modules/a.md", "<!-- okf:todo\nBrief\n-->\n\n## Responsibility and boundaries\n")
     status = _status.status(root)
     # One stub still has no brief and the canon briefs are empty.
@@ -684,13 +656,13 @@ def test_status_discover_until_triggers_are_traced(tmp_path):
     commit(root, {}, "wiki")
     ws = _config.load(root)
     _brief_canon(ws)
-    _page.new_page(ws, "modules/api.md", "Module", "Read before api.", ["src/**"])
+    _page.new_page(ws, "Module", "api", "Read before api.", ["src/**"])
     set_body(ws, "modules/api.md", "<!-- okf:todo\nBrief\n-->\n\n## Responsibility and boundaries\n")
     status = _status.status(root)
     # Triggers exist and no Workflow page traces any of them.
     assert status["phase"] == "discover" and "3 trigger files" in status["next_actions"][0]
     assert {i["code"] for i in status["issues"][:3]} == {"trigger-coverage"}
-    _page.new_page(ws, "workflows/order.md", "Workflow", "Read before order creation.",
+    _page.new_page(ws, "Workflow", "order", "Read before order creation.",
                    ["src/api/routes.py", "src/core/tasks.py"])
     set_body(ws, "workflows/order.md", "<!-- okf:todo\nTrace\n-->\n\n## Trigger to outcome\n")
     status = _status.status(root)

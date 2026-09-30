@@ -15,15 +15,30 @@ import _frontmatter
 import _git
 import _markdown
 
-AUTHOR_TYPES = ("Architecture", "Glossary", "Conventions", "Module", "Workflow")
-GENERATED_TYPES = ("Schema", "Table")
-CANON = {
-    "Architecture": "architecture.md",
-    "Glossary": "glossary.md",
-    "Conventions": "conventions.md",
+AUTHOR_TYPES = ("Architecture", "Glossary", "Conventions", "Overview", "Module", "Workflow", "Flow")
+GENERATED_TYPES = ("Schema", "Table", "Map")
+# Reserved at every level of the wiki: generated navigation and history (OKF §8, §9).
+RESERVED_NAMES = ("index.md", "log.md")
+MAP = "system-map.md"  # the generated contract map of a hub
+SOURCES_DIR = "sources"
+FLOWS_DIR = "flows"
+# A page's role decides its path, template, required sections and canon tables. The
+# type alone is not enough: the system Architecture of a hub carries the contracts,
+# the system Conventions of a hub has no commands of its own.
+ROLE_TYPES = {
+    "glossary": "Glossary",
+    "architecture": "Architecture",
+    "system-architecture": "Architecture",
+    "overview": "Overview",
+    "conventions": "Conventions",
+    "system-conventions": "Conventions",
+    "module": "Module",
+    "workflow": "Workflow",
+    "flow": "Flow",
 }
+CANON_ROLES = ("glossary", "architecture", "system-architecture", "overview", "conventions", "system-conventions")
 FRONTMATTER_ORDER = (
-    "type", "title", "description", "tags", "scope", "status", "revision",
+    "type", "title", "description", "tags", "scope", "contracts", "status", "revision",
     "sources", "generated", "verified", "stamp", "catalogs",
 )  # other keys follow, sorted
 KERNEL_KEYS = ("sources", "generated", "verified", "stamp", "catalogs")
@@ -35,33 +50,70 @@ UNSTAMPED_KEYS = ("status", "sources", "verified", "stamp")
 TEMPLATE_TODO = "<!-- okf:todo\n-->"
 TEMPLATES = Path(__file__).resolve().parent.parent / "assets" / "templates"
 
+# Localized default (title, description) of each canon role; {source} is the source name.
 _CANON_TEXT = {
     "en": {
-        "Architecture": (
+        "architecture": (
             "Architecture",
             ("Read first: how the system is split, which way dependencies point, "
              "cross-module changes and what has no page."),
         ),
-        "Glossary": (
+        "system-architecture": (
+            "Architecture",
+            ("Read first: which repository owns what, the contracts between repositories, "
+             "the order cross-repository changes ship in, and what has no page."),
+        ),
+        "overview": (
+            "{source} overview",
+            ("Read before changing {source}: how it is split, which way its dependencies point, "
+             "cross-module changes and what has no page."),
+        ),
+        "glossary": (
             "Glossary",
             ("Read when a project term, abbreviation or state name is unclear, or "
              "before naming something new."),
         ),
-        "Conventions": (
+        "conventions": (
             "Conventions",
             ("Read before changing code: commands, where new code goes, how to extend, "
              "and the rules for errors, config, tests and CI."),
         ),
+        "source-conventions": (
+            "{source} conventions",
+            ("Read before changing code in {source}: commands, where new code goes, how to "
+             "extend, and the rules for errors, config, tests and CI."),
+        ),
+        "system-conventions": (
+            "Conventions",
+            ("Read before a change that spans repositories: branch, release and contract "
+             "rules, and the order cross-repository changes ship in."),
+        ),
     },
     "zh": {
-        "Architecture": ("架构", "先读：系统怎么拆分、依赖方向、跨模块改动，以及哪些代码没有单独成页。"),
-        "Glossary": (
+        "architecture": ("架构", "先读：系统怎么拆分、依赖方向、跨模块改动，以及哪些代码没有单独成页。"),
+        "system-architecture": (
+            "架构",
+            "先读：每个仓库负责什么、仓库之间的契约、跨仓改动的上线顺序，以及哪些内容没有单独成页。",
+        ),
+        "overview": (
+            "{source} 概览",
+            "修改 {source} 前阅读：它怎么拆分、依赖方向、跨模块改动，以及哪些代码没有单独成页。",
+        ),
+        "glossary": (
             "术语表",
             "遇到不清楚的项目术语、缩写或状态名时，或在给新事物命名前阅读。",
         ),
-        "Conventions": (
+        "conventions": (
             "开发规范",
             "修改代码前阅读：常用命令、新代码放在哪里、如何扩展，以及错误处理、配置、测试和 CI 的规则。",
+        ),
+        "source-conventions": (
+            "{source} 开发规范",
+            "修改 {source} 的代码前阅读：常用命令、新代码放在哪里、如何扩展，以及错误处理、配置、测试和 CI 的规则。",
+        ),
+        "system-conventions": (
+            "开发规范",
+            "做跨仓库的改动前阅读：分支、发布和契约规则，以及跨仓改动的上线顺序。",
         ),
     },
 }
@@ -79,8 +131,17 @@ TABLE_KINDS = {
         ("修改场景", "从这里改", "同步修改", "如何验证"),
     ),
     "not_covered": (("path", "reason"), ("路径", "原因")),
+    # Hub only: the system Architecture's contracts and a Flow page's call chain.
+    "contracts": (
+        ("contract", "provider", "consumers", "change order", "verify"),
+        ("契约", "提供方", "消费方", "变更顺序", "如何验证"),
+    ),
+    "hops": (
+        ("step", "source", "entry", "contract", "next"),
+        ("步骤", "仓库", "入口", "契约", "下一步"),
+    ),
 }
-CITED_KINDS = ("glossary", "commands", "rules", "invariants", "change_guide")
+CITED_KINDS = ("glossary", "commands", "rules", "invariants", "change_guide", "contracts", "hops")
 COMMAND_STATUS = ("verified", "not-run", "failed")
 # Extension knowledge is not a rule area: steps to add a new X are an extension
 # recipe (Conventions, or the owning Module page). vcs: commit message, pull
@@ -89,17 +150,33 @@ RULE_AREAS = (
     "layout", "naming", "api", "errors", "logging", "config", "testing",
     "build-ci", "dependencies", "vcs",
 )
-# Headings every page of a type must keep from its template (en or zh, any level,
+# Headings every page of a role must keep from its template (en or zh, any level,
 # case-insensitive). Every other heading is the writer's choice.
 REQUIRED_SECTIONS = {
-    "Architecture": (("Structure", "整体结构"), ("Not covered", "未单独成页")),
-    "Conventions": (("Commands", "常用命令"), ("Rules", "开发规则")),
-    "Module": (("Responsibility", "模块职责"), ("How it works", "工作原理"), ("Making changes", "修改指南")),
-    "Workflow": (("Flow", "执行流程"), ("Making changes", "修改指南")),
+    "architecture": (("Structure", "整体结构"), ("Not covered", "未单独成页")),
+    "system-architecture": (("Structure", "整体结构"), ("Contracts", "跨仓契约"), ("Not covered", "未单独成页")),
+    "overview": (("Structure", "整体结构"), ("Not covered", "未单独成页")),
+    "conventions": (("Commands", "常用命令"), ("Rules", "开发规则")),
+    "system-conventions": (("Rules", "开发规则"),),
+    "module": (("Responsibility", "模块职责"), ("How it works", "工作原理"), ("Making changes", "修改指南")),
+    "workflow": (("Flow", "执行流程"), ("Making changes", "修改指南")),
+    "flow": (("Call chain", "跨仓调用链"), ("Making changes", "修改指南")),
 }
-# Page types that must carry at least one change guide row: the pages an agent
-# opens right before editing their scope.
-CHANGE_GUIDE_TYPES = ("Module", "Workflow")
+# Tables each canon role must hold (canon-table), and whose rows must not be empty
+# (canon-empty) except Not covered.
+CANON_TABLES = {
+    "glossary": ("glossary",),
+    "conventions": ("commands", "rules"),
+    "system-conventions": ("rules",),
+    "architecture": ("not_covered",),
+    "system-architecture": ("contracts", "not_covered"),
+    "overview": ("not_covered",),
+}
+# Roles that must carry at least one change guide row: the pages an agent opens
+# right before editing their scope.
+CHANGE_GUIDE_ROLES = ("module", "workflow", "flow")
+# Roles that may claim contracts in their frontmatter.
+CONTRACT_ROLES = ("system-architecture", "flow")
 ENFORCED_BY = ("lint", "typecheck", "test", "ci", "review", "convention")
 FOOTNOTE_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -153,7 +230,17 @@ class Page:
         if self.type not in AUTHOR_TYPES:
             return False
         body = self.body.strip()
-        return any(body == template(lang, self.type).strip() for lang in _config.LANGS)
+        return any(
+            body == template(lang, role).strip()
+            for lang in _config.LANGS
+            for role, type in ROLE_TYPES.items()
+            if type == self.type
+        )
+
+    @property
+    def contracts(self) -> list:
+        value = self.meta.get("contracts")
+        return value if isinstance(value, list) else []
 
     def content_sha256(self, reviewed_by=...) -> str:
         """sha256 of the reviewed content: the body (LF newlines), every frontmatter
@@ -194,7 +281,7 @@ class Table:
 
 def is_page_path(path: str) -> bool:
     name = PurePosixPath(path).name
-    return name.endswith(".md") and name != "index.md" and not name.startswith("_")
+    return name.endswith(".md") and name not in RESERVED_NAMES and not name.startswith("_")
 
 
 def load_pages(ws: _config.Workspace) -> list[Page]:
@@ -286,33 +373,169 @@ def current_revision(ws: _config.Workspace) -> dict[str, str]:
     return {source.name: _git.head(source.path) for source in ws.sources}
 
 
-# --- templates and creation --------------------------------------------------------
+# --- roles, paths and creation -----------------------------------------------------
 
 
 @cache
-def template(lang: str, type: str) -> str:
-    return (TEMPLATES / lang / f"{type.lower()}.md").read_text(encoding="utf-8")
+def template(lang: str, role: str) -> str:
+    return (TEMPLATES / lang / f"{role}.md").read_text(encoding="utf-8")
 
 
-def _check_path(path: str) -> None:
-    if not isinstance(path, str) or not path:
-        raise PageError("page path is empty; pass a path such as modules/billing.md")
-    if "\\" in path or path.startswith("/"):
+def canon(ws: _config.Workspace) -> dict[str, tuple[str, str | None]]:
+    """Canon page path -> (role, source name or None), in creation order.
+
+    A single repository has the glossary, conventions and architecture; a hub has
+    the system glossary, conventions and architecture plus, per source, its
+    conventions and its overview."""
+    if not ws.hub:
+        return {
+            "glossary.md": ("glossary", None),
+            "conventions.md": ("conventions", None),
+            "architecture.md": ("architecture", None),
+        }
+    found = {
+        "glossary.md": ("glossary", None),
+        "conventions.md": ("system-conventions", None),
+        "architecture.md": ("system-architecture", None),
+    }
+    for source in ws.sources:
+        found[f"{SOURCES_DIR}/{source.name}/conventions.md"] = ("conventions", source.name)
+        found[f"{SOURCES_DIR}/{source.name}/overview.md"] = ("overview", source.name)
+    return found
+
+
+def path_source(ws: _config.Workspace, path: str) -> str | None:
+    """The source a page path belongs to: ``sources/<s>/...`` in a hub, "." for every
+    page of a single repository, None for a hub's system-level pages."""
+    if not ws.hub:
+        return "."
+    parts = path.split("/")
+    if len(parts) >= 3 and parts[0] == SOURCES_DIR and any(s.name == parts[1] for s in ws.sources):
+        return parts[1]
+    return None
+
+
+def role(ws: _config.Workspace, page: "Page") -> str | None:
+    """The page's role: its canon position, or its type for body pages. A canon type
+    at a non-canon path gets the role it would have at the canon path of its level."""
+    entry = canon(ws).get(page.path)
+    if entry is not None and ROLE_TYPES[entry[0]] == page.type:
+        return entry[0]
+    return {
+        "Glossary": "glossary",
+        "Architecture": "system-architecture" if ws.hub else "architecture",
+        "Conventions": "conventions" if path_source(ws, page.path) else "system-conventions",
+        "Overview": "overview",
+        "Module": "module",
+        "Workflow": "workflow",
+        "Flow": "flow",
+    }.get(page.type)
+
+
+def scope_sources(ws: _config.Workspace, scope) -> set[str] | None:
+    """Sources a scope reaches: every glob's first segment in a hub ({"."} in a single
+    repository); None when a hub glob starts with a wildcard (it may reach any source)."""
+    if not ws.hub:
+        return {"."}
+    names = {source.name for source in ws.sources}
+    found = set()
+    for glob in scope:
+        first = str(glob).split("/", 1)[0]
+        if first not in names:
+            return None
+        found.add(first)
+    return found
+
+
+def _check_name(name) -> str:
+    if not isinstance(name, str) or not name.strip():
+        raise PageError("the page needs a name, such as billing (--name)")
+    name = name.strip().removesuffix(".md")
+    if not name or "/" in name or "\\" in name or name in (".", "..") or any(ch.isspace() for ch in name):
         raise PageError(
-            f"page path {path!r} must be a relative posix path under the wiki, "
-            "such as modules/billing.md"
+            f"page name {name!r} must be one path segment without spaces, such as billing or order-checkout"
         )
-    if any(part in ("", ".", "..") for part in path.split("/")):
-        raise PageError(f"page path {path!r} must not contain empty, . or .. segments")
-    name = path.rsplit("/", 1)[-1]
-    if not name.endswith(".md") or name == ".md":
-        raise PageError(f"page path {path!r} must end with .md")
-    if name == "index.md":
-        raise PageError("index.md is generated by okf stamp; choose another name")
-    if name.startswith("_"):
+    if name.startswith("_") or f"{name}.md" in RESERVED_NAMES:
+        raise PageError(f"page name {name!r} is reserved (index, log and names starting with _)")
+    return name
+
+
+def page_path(
+    ws: _config.Workspace,
+    type: str,
+    name: str | None = None,
+    source: str | None = None,
+    scope=(),
+) -> str:
+    """The one wiki path a page of this type, name, source and scope may have.
+
+    Module and Workflow pages live with the one source their scope reaches
+    (``modules/`` in a single repository, ``sources/<s>/modules/`` in a hub); a
+    Flow page spans sources (``flows/``, hub only). Raises PageError naming the fix."""
+    names = [s.name for s in ws.sources]
+    if source is not None and ws.hub and source not in names:
+        raise PageError(f"source {source!r} is not configured; use one of: {', '.join(names)}")
+    if type == "Glossary":
+        return "glossary.md"
+    if type == "Architecture":
+        return "architecture.md"
+    if type == "Conventions":
+        if source is None or not ws.hub:
+            return "conventions.md"
+        return f"{SOURCES_DIR}/{source}/conventions.md"
+    if type == "Overview":
+        if not ws.hub:
+            raise PageError(
+                "an Overview page describes one source of a hub; a single repository uses architecture.md"
+            )
+        if source is None:
+            raise PageError(f"an Overview page needs its source (--source, one of: {', '.join(names)})")
+        return f"{SOURCES_DIR}/{source}/overview.md"
+    if type not in ("Module", "Workflow", "Flow"):
+        raise PageError(f"unknown page type {type!r}; use one of {', '.join(AUTHOR_TYPES)}")
+    name = _check_name(name)
+    folder = {"Module": "modules", "Workflow": "workflows"}.get(type)
+    reached = scope_sources(ws, scope) if scope else set()
+    if type == "Flow":
+        if not ws.hub:
+            raise PageError(
+                "a Flow page spans sources of a hub; in a single repository write a Workflow page"
+            )
+        if reached is None or len(reached) < 2:
+            raise PageError(
+                "a Flow page's scope must span two or more sources, each glob starting with a "
+                "source name; a flow inside one source is a Workflow page"
+            )
+        return f"{FLOWS_DIR}/{name}.md"
+    if not ws.hub:
+        return f"{folder}/{name}.md"
+    if reached is None or len(reached) != 1:
         raise PageError(
-            f"page file names must not start with _ ({path!r}); those are kernel files"
+            f"a {type} page's scope must stay inside one source, every glob starting with that "
+            "source's name; a flow across sources is a Flow page"
         )
+    (only,) = reached
+    if source is not None and source != only:
+        raise PageError(f"--source {source} does not match the scope, which lies in {only}")
+    return f"{SOURCES_DIR}/{only}/{folder}/{name}.md"
+
+
+def path_problem(ws: _config.Workspace, page: "Page") -> str | None:
+    """Why the page does not sit at the path its type, name and scope derive, or None."""
+    if page.type == "Map":
+        return None if ws.hub and page.path == MAP else f"the System map is generated at {MAP} in a hub"
+    if page.is_generated or page.type not in AUTHOR_TYPES:
+        return None
+    try:
+        expected = page_path(
+            ws, page.type, PurePosixPath(page.path).stem, path_source(ws, page.path)
+            if page.type in ("Conventions", "Overview") and ws.hub else None, page.scope,
+        )
+    except PageError as exc:
+        return str(exc)
+    if expected != page.path:
+        return f"a {page.type} page with this scope belongs at {expected}"
+    return None
 
 
 def default_title(path: str, lang: str) -> str:
@@ -325,23 +548,22 @@ def default_title(path: str, lang: str) -> str:
 
 def new_page(
     ws: _config.Workspace,
-    path: str,
     type: str,
-    description: str,
+    name: str | None = None,
+    description: str | None = None,
     scope=(),
     title: str | None = None,
+    source: str | None = None,
+    contracts=(),
 ) -> Page:
-    _check_path(path)
+    """Create a draft stub at the path ``page_path`` derives. Canon pages take their
+    localized default title and description when none is given."""
     if type not in AUTHOR_TYPES:
-        raise PageError(
-            f"unknown page type {type!r}; use one of {', '.join(AUTHOR_TYPES)}"
-        )
-    file = ws.wiki / path
-    if file.exists():
-        raise PageError(f"{path} already exists; edit it instead of creating it")
+        raise PageError(f"unknown page type {type!r}; use one of {', '.join(AUTHOR_TYPES)}")
     scope = [scope] if isinstance(scope, str) else list(scope)
+    contracts = [contracts] if isinstance(contracts, str) else list(contracts)
     if ws.hub:
-        names = [source.name for source in ws.sources]
+        names = [s.name for s in ws.sources]
         for glob in scope:
             first = glob.split("/", 1)[0]
             if first not in names and not any(char in first for char in "*?["):
@@ -349,7 +571,24 @@ def new_page(
                     f"scope glob {glob!r} does not start with a source directory; in a "
                     f"hub prefix it with one of: {', '.join(names)}"
                 )
+    path = page_path(ws, type, name, source, scope)
+    file = ws.wiki / path
+    if file.exists():
+        raise PageError(f"{path} already exists; edit it instead of creating it")
+    page_role = canon(ws).get(path, (None,))[0] or type.lower()
+    if page_role in CANON_ROLES:
+        if scope:
+            raise PageError(f"a {type} page has no scope; its place in the wiki says what it covers")
+        default_title_text, default_description = canon_text(ws.lang, page_role, path_source(ws, path))
+        title = title if title is not None else default_title_text
+        description = description if description is not None else default_description
+    elif not isinstance(description, str) or not description.strip():
+        raise PageError('the page needs a description saying when to read it: "Read before changing ..."')
+    if contracts and page_role not in CONTRACT_ROLES:
+        raise PageError("only Flow pages and the hub's architecture.md claim contracts")
     _check_scope_matches(ws, scope)
+    if contracts:
+        _check_contracts(ws, contracts)
     meta = {
         "type": type,
         "title": title if title is not None else default_title(path, ws.lang),
@@ -358,7 +597,9 @@ def new_page(
         "status": "draft",
         "revision": current_revision(ws),
     }
-    body = template(ws.lang, type)
+    if contracts:
+        meta["contracts"] = contracts
+    body = template(ws.lang, page_role)
     write_page(_page(path, file, meta, body, None, 0))
     return load_page(ws, path)
 
@@ -382,20 +623,45 @@ def _check_scope_matches(ws: _config.Workspace, scope: list) -> None:
         )
 
 
-def canon_text(lang: str, type: str) -> tuple[str, str]:
+def _check_contracts(ws: _config.Workspace, contracts: list) -> None:
+    """Every claimed contract id or glob must match a contract scan derives at HEAD."""
+    import _scan  # lazy: _scan does not depend on pages
+
+    ids = [contract.id for contract in _scan.contracts(ws)]
+    for claim in contracts:
+        if not isinstance(claim, str) or not claim.strip() or not any(contract_match(claim, i) for i in ids):
+            raise PageError(
+                f"contract {claim!r} matches no contract between sources; okf links --json lists them "
+                "(ids such as 'http POST /orders' or 'topic order-created', or globs such as 'http * /orders/*')"
+            )
+
+
+def contract_match(pattern: str, contract_id: str) -> bool:
+    """A claimed contract (an id, or a glob over ids with * and ?) names this id.
+    Whitespace is collapsed and HTTP path parameters normalized on both sides."""
+    import fnmatch
+
+    import _code
+
+    return fnmatch.fnmatchcase(contract_id, _code.normalize_contract_id(pattern))
+
+
+def canon_text(lang: str, role: str, source: str | None = None) -> tuple[str, str]:
     """Localized default (title, description) of a canon page."""
-    return _CANON_TEXT[lang][type]
+    key = "source-conventions" if role == "conventions" and source not in (None, ".") else role
+    title, description = _CANON_TEXT[lang][key]
+    name = source or ""
+    return title.replace("{source}", name), description.replace("{source}", name)
 
 
 def create_canon(ws: _config.Workspace) -> list[Page]:
-    """Create the three canon stubs; files that already exist are left alone."""
+    """Create every canon stub of the workspace; files that already exist are left alone."""
     pages = []
-    for type, path in CANON.items():
+    for path, (page_role, source) in canon(ws).items():
         if (ws.wiki / path).exists():
             pages.append(load_page(ws, path))
             continue
-        title, description = canon_text(ws.lang, type)
-        pages.append(new_page(ws, path, type, description, (), title))
+        pages.append(new_page(ws, ROLE_TYPES[page_role], source=source))
     return pages
 
 

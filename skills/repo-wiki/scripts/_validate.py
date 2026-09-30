@@ -111,6 +111,11 @@ class Facts:
         """Every trigger at HEAD (framework routes, listeners, jobs, commands)."""
         return _scan.triggers(self.ws, self.head, self.listings)
 
+    @cached_property
+    def contracts(self) -> list[_scan.Contract]:
+        """Contracts between the sources of a hub at HEAD (empty in a single repository)."""
+        return _scan.contracts(self.ws, self.head, self.listings)
+
     def current(self, source: _config.Source, rev) -> bool:
         """True when ``rev`` has the same source content as HEAD, ignoring wiki-only commits."""
         head = self.head[source.name]
@@ -164,10 +169,11 @@ def _in_wiki(ws: _config.Workspace, path: str) -> bool:
 
 
 def not_covered_rows(pages: list[_page.Page]) -> list[tuple[_page.Page, _page.Row, str, str]]:
-    """(page, row, path, reason) for every Not covered row of the Architecture page."""
+    """(page, row, path, reason) for every Not covered row of the Architecture and
+    Overview pages."""
     rows = []
     for page in pages:
-        if page.type != "Architecture":
+        if page.type not in ("Architecture", "Overview") or page.error:
             continue
         for table in _page.tables(page).get("not_covered", []):
             for row in table.rows:
@@ -203,8 +209,8 @@ def module_exclusions(facts: Facts, pages: list[_page.Page]) -> dict[str, str]:
 
 
 def unclaimed_triggers(facts: Facts, pages: list[_page.Page]) -> list[tuple[str, list[str]]]:
-    """(trigger file, its trigger kinds) for every trigger file that no Workflow page
-    scope matches and no Not covered row (path or glob, with a reason) excludes."""
+    """(trigger file, its trigger kinds) for every trigger file that no Workflow or Flow
+    page scope matches and no Not covered row (path or glob, with a reason) excludes."""
     kinds: dict[str, set[str]] = {}
     for trigger in facts.triggers:
         kinds.setdefault(trigger.path, set()).add(trigger.kind)
@@ -212,7 +218,7 @@ def unclaimed_triggers(facts: Facts, pages: list[_page.Page]) -> list[tuple[str,
         return []
     claimed: set[str] = set()
     for page in pages:
-        if page.type == "Workflow" and not page.error and not page.is_generated:
+        if page.type in ("Workflow", "Flow") and not page.error and not page.is_generated:
             for glob in scope_globs(page):
                 claimed.update(facts.matches(glob))
     rows = [path for _, _, path, reason in not_covered_rows(pages) if path and reason]
@@ -220,6 +226,31 @@ def unclaimed_triggers(facts: Facts, pages: list[_page.Page]) -> list[tuple[str,
         (path, sorted(found, key=_scan.TRIGGER_KINDS.index))
         for path, found in sorted(kinds.items())
         if path not in claimed and not any(_config.glob_match(row, path) for row in rows)
+    ]
+
+
+def claimed_contracts(ws, facts: Facts, page: _page.Page) -> list[_scan.Contract]:
+    """Contracts the page's frontmatter ``contracts`` names (ids or globs)."""
+    claims = [c for c in page.contracts if isinstance(c, str) and c.strip()]
+    if not claims or page.error:
+        return []
+    return [c for c in facts.contracts if any(_page.contract_match(claim, c.id) for claim in claims)]
+
+
+def unclaimed_contracts(ws, facts: Facts, pages: list[_page.Page]) -> list[_scan.Contract]:
+    """Contracts (not external) that no page claims and no Not covered row excludes
+    (a row path or glob matching one of the contract's site files)."""
+    if not ws.hub or not facts.contracts:
+        return []
+    claimed: set[str] = set()
+    for page in pages:
+        if not page.is_generated:
+            claimed.update(c.id for c in claimed_contracts(ws, facts, page))
+    rows = [path for _, _, path, reason in not_covered_rows(pages) if path and reason]
+    return [
+        c for c in facts.contracts
+        if not c.external and c.id not in claimed
+        and not any(_config.glob_match(row, site.path) for row in rows for site in c.sites)
     ]
 
 
@@ -270,8 +301,10 @@ def validate(
             reader.close()
     issues += _canon_issues(ws, pages)
     issues += _db_binding_issues(ws, pages)
-    issues += _coverage_issues(facts, pages)
-    issues += _index_issues(ws, facts, pages)
+    issues += _coverage_issues(ws, facts, pages)
+    issues += _contract_issues(ws, facts, pages)
+    issues += _orphan_issues(ws, pages)
+    issues += _derived_issues(ws, facts, pages)
     if only is not None:
         wanted = {PurePosixPath(p).as_posix().removeprefix(ws.wiki_rel + "/") for p in only}
         issues = [issue for issue in issues if issue.page in wanted]
@@ -303,14 +336,15 @@ def _page_issues(ws, facts, page, readers, glossary) -> list[Issue]:
             )
         ]
     issues = _frontmatter_issues(ws, page)
+    issues += _path_issues(ws, page)
     if page.is_generated:
         issues += _link_issues(ws, page)
         return issues
     issues += _revision_issues(ws, facts, page)
     issues += _footnote_issues(page)
     issues += _locator_issues(ws, facts, page, readers)
-    issues += _table_issues(page)
-    issues += _section_issues(page)
+    issues += _table_issues(ws, page)
+    issues += _section_issues(ws, page)
     issues += _scope_issues(facts, page)
     issues += _stamp_issues(page)
     issues += _link_issues(ws, page)
@@ -318,7 +352,8 @@ def _page_issues(ws, facts, page, readers, glossary) -> list[Issue]:
     issues += _mermaid_issues(page)
     issues += _todo_issues(page)
     issues += _hint_issues(page)
-    issues += _change_guide_issues(page)
+    issues += _change_guide_issues(ws, page)
+    issues += _flow_issues(ws, page)
     issues += _alias_issues(page, glossary)
     issues += _why_issues(page)
     issues += _parrot_issues(page)
@@ -349,20 +384,38 @@ def _frontmatter_issues(ws, page) -> list[Issue]:
     if meta.get("status") not in ("draft", "stable"):
         bad(f"status is {meta.get('status')!r}", "Set status: draft; okf stamp sets stable.")
     if page.is_generated:
-        if not isinstance(meta.get("catalog_sha256"), str):
+        if page.type != "Map" and not isinstance(meta.get("catalog_sha256"), str):
             bad(
                 "generated page lacks catalog_sha256",
                 "Regenerate the page with okf db capture; never write Schema or Table pages by hand.",
             )
         return issues
+    page_role = _page.role(ws, page)
     scope = meta.get("scope", [])
     if not isinstance(scope, list) or not all(isinstance(g, str) and g.strip() for g in scope):
         bad("scope must be a list of glob strings", "Write scope as a YAML list such as [src/billing/**].")
-    elif not scope and page.type in ("Module", "Workflow"):
+    elif not scope and page_role in _page.CHANGE_GUIDE_ROLES:
         bad(
             f"a {page.type} page needs a scope",
             "List the source globs this page answers for, such as src/billing/**.",
         )
+    elif scope and page_role in _page.CANON_ROLES:
+        bad(
+            f"a {page.type} page has no scope; its place in the wiki says what it covers",
+            "Remove scope (an empty list is fine); list modules in its Structure section instead.",
+        )
+    contracts = meta.get("contracts")
+    if contracts is not None:
+        if not isinstance(contracts, list) or not all(isinstance(c, str) and c.strip() for c in contracts):
+            bad(
+                "contracts must be a list of contract ids or globs",
+                "Write contracts as a YAML list such as ['http POST /orders', 'topic order-*'].",
+            )
+        elif page_role not in _page.CONTRACT_ROLES or not ws.hub:
+            bad(
+                f"a {page.type} page cannot claim contracts",
+                "Claim contracts on a Flow page or the hub's architecture.md; remove the key here.",
+            )
     revision = meta.get("revision")
     names = sorted(s.name for s in ws.sources)
     if not isinstance(revision, dict) or sorted(map(str, revision)) != names or not all(
@@ -519,7 +572,19 @@ def _locator_issues(ws, facts, page, readers) -> list[Issue]:
     return issues
 
 
-def _table_issues(page) -> list[Issue]:
+def _path_issues(ws, page) -> list[Issue]:
+    problem = _page.path_problem(ws, page)
+    if problem is None:
+        return []
+    return [
+        _issue(
+            page.path, 1, "page-path", problem,
+            "Move the page to the path named (git mv), or fix its type or scope; okf new derives the path.",
+        )
+    ]
+
+
+def _table_issues(ws, page) -> list[Issue]:
     issues = []
     for kind, tables in _page.tables(page).items():
         for table in tables:
@@ -534,6 +599,47 @@ def _table_issues(page) -> list[Issue]:
                         )
                     )
                 issues += _value_issues(page, kind, table, row)
+                if kind in ("contracts", "hops"):
+                    issues += _contract_value_issues(ws, page, kind, row)
+    return issues
+
+
+def _contract_value_issues(ws, page, kind, row) -> list[Issue]:
+    """Contracts and call chain rows name sources of the hub; the cells an agent acts
+    on are never empty."""
+    cells = [_plain(c) for c in row.cells] + [""] * 5
+    names = [source.name for source in ws.sources]
+    issues = []
+
+    def bad(message, fix):
+        issues.append(_issue(page, row.line, "table-values", message, fix))
+
+    if not ws.hub:
+        bad(f"a {kind} table only belongs in a hub", "Describe cross-module changes in a change guide table instead.")
+        return issues
+    if kind == "contracts":
+        if cells[1] not in names:
+            bad(f"Provider {cells[1]!r} is not a source", f"Name the providing source: one of {', '.join(names)}.")
+        consumers = [c.strip() for c in re.split(r"[,，、]", cells[2]) if c.strip()]
+        wrong = [c for c in consumers if c not in names]
+        if not consumers or wrong:
+            bad(
+                f"Consumers {cells[2]!r} are not sources",
+                f"List the consuming sources, comma separated, from: {', '.join(names)}.",
+            )
+        for index, name in ((0, "Contract"), (3, "Change order"), (4, "Verify")):
+            if not cells[index] or cells[index] in ("-", "—"):
+                bad(
+                    f"contracts row has no {name}: {cells[0][:60]!r}",
+                    {"Contract": "Name the contract id, as okf links --json prints it.",
+                     "Change order": "Say which side changes and ships first and what the other side relies on.",
+                     "Verify": "Name the tests or checks on both sides."}[name],
+                )
+    else:
+        if cells[1] not in names:
+            bad(f"Source {cells[1]!r} is not a source", f"Name the hop's source: one of {', '.join(names)}.")
+        if not cells[2] or cells[2] in ("-", "—"):
+            bad(f"call chain row has no Entry: {cells[0][:60]!r}", "Name the route, listener or function the hop enters at.")
     return issues
 
 
@@ -578,10 +684,10 @@ def _value_issues(page, kind, table, row) -> list[Issue]:
     return issues
 
 
-def _section_issues(page) -> list[Issue]:
+def _section_issues(ws, page) -> list[Issue]:
     titles = {" ".join(s.title.split()).casefold() for s in page.structure.sections}
     issues = []
-    for variants in _page.REQUIRED_SECTIONS.get(page.type, ()):
+    for variants in _page.REQUIRED_SECTIONS.get(_page.role(ws, page), ()):
         if not any(v.casefold() in titles for v in variants):
             en, zh = variants
             issues.append(
@@ -695,6 +801,8 @@ def _link_issues(ws, page) -> list[Issue]:
             rel = PurePosixPath(*parts) if parts else PurePosixPath(".")
         if not rel.as_posix().endswith(".md"):
             continue
+        if ws.hub and rel.as_posix() == _page.MAP:
+            continue  # written by okf stamp; linking it before the first stamp is fine
         if not (ws.wiki / rel).is_file():
             issues.append(
                 _issue(
@@ -751,10 +859,10 @@ def _hint_issues(page) -> list[Issue]:
     ]
 
 
-def _change_guide_issues(page) -> list[Issue]:
-    """A Module or Workflow page must tell an agent where to start a change and how
-    to check it; skipped while a todo block says the page is still being written."""
-    if page.type not in _page.CHANGE_GUIDE_TYPES or page.todos:
+def _change_guide_issues(ws, page) -> list[Issue]:
+    """A Module, Workflow or Flow page must tell an agent where to start a change and
+    how to check it; skipped while a todo block says the page is still being written."""
+    if _page.role(ws, page) not in _page.CHANGE_GUIDE_ROLES or page.todos:
         return []
     if any(t.rows for t in _page.tables(page).get("change_guide", [])):
         return []
@@ -765,6 +873,34 @@ def _change_guide_issues(page) -> list[Issue]:
              "for a change this scope really gets (git log on the scope shows them)."),
         )
     ]
+
+
+def _flow_issues(ws, page) -> list[Issue]:
+    """A Flow page shows its call chain: at least one call chain row and a mermaid
+    sequenceDiagram with the sources as participants; skipped while a todo block
+    says the page is still being written."""
+    if page.type != "Flow" or page.todos:
+        return []
+    issues = []
+    if not any(t.rows for t in _page.tables(page).get("hops", [])):
+        issues.append(
+            _issue(
+                page.path, None, "flow-hops", "Flow page has no call chain row",
+                "Under Call chain (跨仓调用链) add a Step | Source | Entry | Contract | Next row per hop.",
+            )
+        )
+    diagrams = [
+        fence for fence in page.structure.fences
+        if fence.language == "mermaid" and fence.content.lstrip().startswith("sequenceDiagram")
+    ]
+    if not diagrams:
+        issues.append(
+            _issue(
+                page.path, None, "flow-hops", "Flow page has no mermaid sequenceDiagram",
+                "Add a ```mermaid sequenceDiagram with the sources as participants, one arrow per cited hop.",
+            )
+        )
+    return issues
 
 
 def _aliases(pages) -> dict[str, tuple[str, re.Pattern]]:
@@ -900,19 +1036,20 @@ def _db_binding_issues(ws, pages) -> list[Issue]:
 def _canon_issues(ws, pages) -> list[Issue]:
     by_path = {page.path: page for page in pages}
     issues = []
-    required = {"Glossary": ("glossary",), "Conventions": ("commands", "rules"), "Architecture": ("not_covered",)}
-    for type, path in _page.CANON.items():
+    for path, (page_role, source) in _page.canon(ws).items():
+        type = _page.ROLE_TYPES[page_role]
         page = by_path.get(path)
         if page is None or page.error or page.type != type:
+            command = f"okf new --type {type}" + (f" --source {shlex.quote(source)}" if source else "")
             issues.append(
                 _issue(
                     path, None, "canon-missing", f"canon page {path} ({type}) is missing",
-                    f"Create it with okf new {shlex.quote(path)} --type {type} --description '...'.",
+                    f"Create it with {command}.",
                 )
             )
             continue
         found = _page.tables(page)
-        for kind in required[type]:
+        for kind in _page.CANON_TABLES[page_role]:
             label = kind.replace("_", " ")
             if kind not in found:
                 issues.append(
@@ -921,7 +1058,7 @@ def _canon_issues(ws, pages) -> list[Issue]:
                         "Keep the table header from the template (en or zh) exactly.",
                     )
                 )
-            elif kind != "not_covered" and not any(t.rows for t in found[kind]) and not page.todos:
+            elif kind not in ("not_covered", "contracts") and not any(t.rows for t in found[kind]) and not page.todos:
                 issues.append(
                     _issue(
                         path, None, "canon-empty", f"{label} table has no rows",
@@ -932,24 +1069,31 @@ def _canon_issues(ws, pages) -> list[Issue]:
     return issues
 
 
-def _coverage_issues(facts, pages) -> list[Issue]:
+def coverage_page(ws, path: str) -> str:
+    """The page that answers for a module or trigger file: the source's overview in a
+    hub, architecture.md in a single repository."""
+    if ws.hub:
+        return f"{_page.SOURCES_DIR}/{path.split('/', 1)[0]}/overview.md"
+    return "architecture.md"
+
+
+def _coverage_issues(ws, facts, pages) -> list[Issue]:
     issues = []
     covered = module_pages(facts, pages)
     excluded = module_exclusions(facts, pages)
-    arch = _page.CANON["Architecture"]
     for module in facts.modules:
         if covered[module.path] or module.path in excluded:
             continue
         issues.append(
             _issue(
-                arch, None, "coverage", f"module {module.path} is in no page scope",
+                coverage_page(ws, module.path), None, "coverage", f"module {module.path} is in no page scope",
                 f"Add {module.path}/** to a page scope, or add a Not covered row with a reason.",
             )
         )
     for path, kinds in unclaimed_triggers(facts, pages):
         issues.append(
             _issue(
-                arch, None, "trigger-coverage",
+                coverage_page(ws, path), None, "trigger-coverage",
                 f"trigger file {path} ({', '.join(kinds)}) is in no Workflow page scope",
                 f"Trace the flow {path} starts into a Workflow page and add the file to its scope, "
                 "or add a Not covered row (path or glob) saying why no workflow page is needed.",
@@ -963,25 +1107,168 @@ def _coverage_issues(facts, pages) -> list[Issue]:
                     "Fix the path or delete the row.",
                 )
             )
+        elif path and page.type == "Overview" and ws.hub:
+            source = _page.path_source(ws, page.path)
+            if source and not (path == source or path.startswith(source + "/")):
+                issues.append(
+                    _issue(
+                        page, row.line, "not-covered", f"Not covered path {path} is outside source {source}",
+                        f"Start the path with {source}/, or move the row to the overview of its source.",
+                    )
+                )
     return issues
 
 
-def _index_issues(ws, facts, pages) -> list[Issue]:
+def _contract_issues(ws, facts, pages) -> list[Issue]:
+    """Every contract is claimed (link-coverage); every claim names a contract; a page
+    without a todo block backs each claim with a contracts or call chain row
+    (contract-row); a row naming no contract is flagged (contract-unknown)."""
+    if not ws.hub:
+        return []
+    issues = []
+    ids = [c.id for c in facts.contracts]
+    for contract in unclaimed_contracts(ws, facts, pages):
+        sides = ", ".join(f"{s.source} {s.locator}" for s in contract.sites[:4])
+        issues.append(
+            _issue(
+                "architecture.md", None, "link-coverage",
+                f"contract {contract.id} ({sides}) is claimed by no page",
+                "Claim it in the contracts frontmatter of a Flow page that traces it or of architecture.md "
+                "(and describe it there), or add a Not covered row matching one of its site files.",
+            )
+        )
+    for page in pages:
+        if page.error or page.is_generated or not page.contracts:
+            continue
+        for claim in page.contracts:
+            if isinstance(claim, str) and claim.strip() and not any(_page.contract_match(claim, i) for i in ids):
+                issues.append(
+                    _issue(
+                        page.path, 1, "contract-claim", f"claimed contract {claim!r} matches no contract",
+                        "Fix the id or glob (okf links --json lists the contracts), or remove the claim.",
+                    )
+                )
+        kind = {"Flow": "hops", "Architecture": "contracts"}.get(page.type)
+        if kind is None:
+            continue
+        cells = _contract_cells(page, kind)
+        if not page.todos:
+            for contract in claimed_contracts(ws, facts, page):
+                if not any(_page.contract_match(cell, contract.id) for cell, _ in cells):
+                    table = "call chain" if kind == "hops" else "Contracts"
+                    issues.append(
+                        _issue(
+                            page.path, None, "contract-row",
+                            f"claimed contract {contract.id} has no row in the {table} table",
+                            f"Add a {table} row naming {contract.id} (cited), or drop it from contracts.",
+                        )
+                    )
+    for page in pages:
+        if page.error or page.is_generated:
+            continue
+        for kind in ("contracts", "hops"):
+            for cell, line in _contract_cells(page, kind):
+                if not any(_page.contract_match(cell, i) for i in ids):
+                    issues.append(
+                        _issue(
+                            page, line, "contract-unknown", f"{cell!r} names no contract between sources",
+                            "Use a contract id as okf links --json prints it ('http POST /orders', 'topic x').",
+                            severity="warning",
+                        )
+                    )
+    return issues
+
+
+def _contract_cells(page, kind: str) -> list[tuple[str, int]]:
+    """(contract id or glob, body line) named in the Contract cells of a contracts or
+    call chain table; several ids in one cell are separated by ';'."""
+    column = 0 if kind == "contracts" else 3
+    found = []
+    for table in _page.tables(page).get(kind, []):
+        for row in table.rows:
+            cells = row.cells + [""] * 5
+            for part in re.split(r";|<br\s*/?>", _plain(cells[column])):
+                part = part.strip()
+                if part and part not in ("-", "—"):
+                    found.append((part, row.line))
+    return found
+
+
+def _orphan_issues(ws, pages) -> list[Issue]:
+    """A Module, Workflow or Flow page no other author page links to: only the index
+    reaches it, so a reader following the pages never does."""
+    linked: set[str] = set()
+    for page in pages:
+        if page.error or page.is_generated:
+            continue
+        base = PurePosixPath(page.path).parent
+        for target, _ in page.structure.links:
+            path = target.strip("<>").split("#", 1)[0]
+            if not path or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", path):
+                continue
+            rel = path.lstrip("/") if path.startswith("/") else (base / path).as_posix()
+            rel = PurePosixPath(rel).as_posix()
+            if rel != page.path:
+                linked.add(_normalize_rel(rel))
+    return [
+        _issue(
+            page.path, None, "orphan", f"no other page links to {page.path}",
+            ("Link it from the page that explains where it fits (the source's overview.md, the "
+             "architecture page or a Flow page that crosses it)."),
+            severity="warning",
+        )
+        for page in pages
+        if not page.error and not page.is_generated and _page.role(ws, page) in _page.CHANGE_GUIDE_ROLES
+        and page.path not in linked
+    ]
+
+
+def _normalize_rel(path: str) -> str:
+    parts: list[str] = []
+    for part in path.split("/"):
+        if part == "..":
+            if parts:
+                parts.pop()
+        elif part not in ("", "."):
+            parts.append(part)
+    return "/".join(parts)
+
+
+def _derived_issues(ws, facts, pages) -> list[Issue]:
+    """index.md files, log.md and the System map equal their derivation once no page is
+    a draft; a stale index.md left in a directory is reported too."""
     if any(p.status == "draft" for p in pages if not p.is_generated) or any(p.error for p in pages):
         return []
     import _stamp
 
-    expected = _stamp.render_index(ws, pages, facts)
-    index = ws.wiki / "index.md"
-    actual = index.read_text(encoding="utf-8") if index.is_file() else None
-    if actual == expected:
-        return []
-    return [
-        _issue(
-            "index.md", None, "index", "index.md is missing or out of date",
-            "Run okf stamp --by <actor>; it rewrites index.md when no page is a draft.",
+    expected = _stamp.render_derived(ws, pages, facts)
+    issues = []
+    for path, text in expected.items():
+        lines = text.count("\n")
+        if PurePosixPath(path).name == "index.md" and lines > _stamp.INDEX_MAX_LINES:
+            issues.append(
+                _issue(
+                    path, None, "index-size", f"{path} has {lines} lines (budget {_stamp.INDEX_MAX_LINES})",
+                    "Merge pages that answer the same changes, or give modules that need no page a Not "
+                    "covered row; an agent reads an index whole.",
+                    severity="warning",
+                )
+            )
+    stale = sorted(set(_stamp.derived_on_disk(ws)) - set(expected))
+    for path in sorted(expected) + stale:
+        file = ws.wiki / path
+        actual = file.read_text(encoding="utf-8") if file.is_file() else None
+        if actual == expected.get(path):
+            continue
+        name = PurePosixPath(path).name
+        code = {"log.md": "log", _page.MAP: "map"}.get(name, "index")
+        issues.append(
+            _issue(
+                path, None, code, f"{path} is missing or out of date" if path in expected else f"{path} is stale",
+                "Run okf stamp --by <actor>; it rewrites the indexes, log.md and the System map when no page is a draft.",
+            )
         )
-    ]
+    return issues
 
 
 def counts(issues: list[Issue]) -> dict[str, int]:

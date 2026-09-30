@@ -158,12 +158,12 @@ def test_status_routes_a_missing_canon_page_to_research_with_the_exact_command(t
     assert status["phase"] == "research"
     assert status["issues"][0]["code"] == "canon-missing"
     action = status["next_actions"][0]
-    assert action.startswith("recreate the canon page: okf new architecture.md --type Architecture")
+    assert action == "recreate the canon page: okf new --type Architecture"
     # Running the named command works and unblocks update.
     monkeypatch.chdir(root)
-    argv = ["new", "architecture.md", "--type", "Architecture", "--title", "Architecture",
-            "--description", _page.canon_text("en", "Architecture")[1]]
-    assert okf.main(argv) == 0
+    assert okf.main(["new", "--type", "Architecture"]) == 0
+    page = _page.load_page(ws, "architecture.md")
+    assert (page.meta["title"], page.meta["description"]) == _page.canon_text("en", "architecture")
     capsys.readouterr()
     set_body(ws, "architecture.md", ARCH)
     assert _status.status(root)["phase"] != "update"  # a draft exists; coverage shows as structure
@@ -271,10 +271,10 @@ def test_impact_files_from_a_hub_subdirectory(tmp_path, capsys, monkeypatch):
     git_repo(hub / "web", {"src/b.py": "y = 1\n"})
     ws = _config.init(hub, hub_sources=["api", "web"])
     commit(hub, {}, "wiki")
-    _page.new_page(ws, "modules/api.md", "Module", "Read before api.", ["api/src/**"])
+    _page.new_page(ws, "Module", "api", "Read before api.", ["api/src/**"])
     monkeypatch.chdir(hub / "docs")
     assert okf.main(["impact", "--files", "../api/src/a.py", "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["files"]["api/src/a.py"]["read"] == ["modules/api.md"]
+    assert json.loads(capsys.readouterr().out)["files"]["api/src/a.py"]["read"] == ["sources/api/modules/api.md"]
     monkeypatch.chdir(api / "src")
     assert okf.main(["validate", "--json"]) == 1  # the hub wiki's own errors, not a config error
     assert "issues" in json.loads(capsys.readouterr().out)
@@ -334,7 +334,7 @@ def test_paths_with_spaces_validate_stamp_impact_and_eval(tmp_path):
         "| Return value | `core`[^core] | callers | `pytest -q` |\n\n"
         "[^core]: <my app/核心 a.py>#L1-L2 the core function\n"
     )
-    _page.new_page(ws, "modules/core.md", "Module", "Read before core.", ["my app/**"])
+    _page.new_page(ws, "Module", "core", "Read before core.", ["my app/**"])
     set_body(ws, "modules/core.md", body)
     issues = [i for i in _validate.validate(ws) if i.page == "modules/core.md" and i.severity == "error"]
     assert issues == []
@@ -442,9 +442,12 @@ def test_pointer_rg_command_quotes_a_wiki_path_with_spaces(tmp_path, lang):
 
 
 def test_zh_conventions_title_matches_its_index_section():
-    sections = dict(_stamp._SECTIONS["zh"])
-    assert _page.canon_text("zh", "Conventions")[0] == sections["Conventions"] == "开发规范"
-    assert _page.canon_text("zh", "Architecture")[0] == sections["Architecture"]
+    sections = _stamp._SECTIONS["zh"]
+    assert _page.canon_text("zh", "conventions")[0] == sections["Conventions"] == "开发规范"
+    assert _page.canon_text("zh", "system-conventions")[0] == sections["Conventions"]
+    assert _page.canon_text("zh", "architecture")[0] == sections["Architecture"]
+    assert _page.canon_text("zh", "conventions", "api") == (
+        "api 开发规范", _page.canon_text("zh", "conventions", "api")[1])
 
 
 # --- 12. confirmed low-severity review findings -------------------------------------------
@@ -460,7 +463,7 @@ def test_write_command_below_a_hub_source_names_the_hub_root(tmp_path, capsys, m
     commit(hub, {}, "wiki")
     monkeypatch.chdir(api / "src")
     for argv in (["scan"], ["stamp", "--by", "repo-wiki/t"], ["init"],
-                 ["new", "modules/a.md", "--type", "Module", "--description", "Read before a."]):
+                 ["new", "--type", "Module", "--name", "a", "--description", "Read before a."]):
         assert okf.main([*argv, "--json"]) == 2
         error = json.loads(capsys.readouterr().out)["error"]
         assert f"hub at {hub.resolve()}" in error and "run okf from the hub root" in error, argv
@@ -484,13 +487,12 @@ def test_paths_suggested_in_commands_are_shell_quoted(tmp_path):
     (ws.wiki / "architecture.md").unlink()
     fix = _status.status(root, "my docs/wiki")["next_actions"][0]
     argv = shlex.split(fix.split(": ", 1)[1])
-    assert argv[:5] == ["okf", "new", "architecture.md", "--type", "Architecture"]
-    assert argv[argv.index("--description") + 1] == _page.canon_text("en", "Architecture")[1]
+    assert argv == ["okf", "new", "--type", "Architecture"]
     import _validate
 
     fixes = [i.fix for i in _validate.validate(ws) if i.code == "canon-missing"]
-    assert fixes and all(shlex.split(f.removeprefix("Create it with ").rstrip("."))[:3]
-                         == ["okf", "new", "architecture.md"] for f in fixes)
+    assert fixes and all(shlex.split(f.removeprefix("Create it with ").rstrip("."))
+                         == ["okf", "new", "--type", "Architecture"] for f in fixes)
 
 
 def test_status_done_diff_command_quotes_the_wiki_path(tmp_path):

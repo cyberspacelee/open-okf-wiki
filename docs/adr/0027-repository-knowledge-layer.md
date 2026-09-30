@@ -1,6 +1,7 @@
 # Repository Knowledge Layer replaces the Run-based Domain Wiki pipeline
 
-Status: accepted. Supersedes ADRs 0003, 0005–0026. Amends 0001, 0002 and
+Status: accepted; amended by ADR 0028 (per-source layout, contracts, layered
+indexes and a derived log). Supersedes ADRs 0003, 0005–0026. Amends 0001, 0002 and
 0004. Design: [repository knowledge layer](../design/repository-knowledge-layer.md).
 Evidence: [research notes](../research/repository-knowledge-layer-evidence.md).
 

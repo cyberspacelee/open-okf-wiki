@@ -8,7 +8,11 @@
 Plays the host agent with fixed page text: init -> discover -> structure ->
 research -> write -> review -> stamp -> done, then changes the code (moved
 lines, changed invariant, new module, HEAD moved under a draft) and checks
-impact, update, status and a second stamp. Exits non-zero on the first failure.
+impact, update, status and a second stamp. A second run does the same for a hub
+of two sources that share a route, a topic and a library: derived page paths,
+contracts claimed and described, the assemble stage, layered indexes, the
+System map, the log, a per-source pointer, and a contract change that stales the
+Flow page from outside its scope. Exits non-zero on the first failure.
 """
 
 import json
@@ -267,7 +271,7 @@ def run(base: Path) -> None:
     expect(any(d["from"] == "src/billing" and d["to"] == "src/payments" for d in scan["deps"]),
            f"scan deps {scan['deps']}")
 
-    okf(repo, "new", "modules/billing.md", "--type", "Module", "--description",
+    okf(repo, "new", "--type", "Module", "--name", "billing", "--description",
         "Read before changing invoice posting or charge retries.", "--scope", "src/billing/**", "--json")
     status = phase(repo, "discover")  # a stub without a brief while the canon briefs are empty
     expect("modules/billing.md" in status["next_actions"][0], f"discover actions {status['next_actions']}")
@@ -280,7 +284,7 @@ def run(base: Path) -> None:
     status = phase(repo, "discover")  # the Celery task starts a flow no workflow page traces yet
     expect("1 trigger files" in status["next_actions"][0] and status["issues"][0]["code"] == "trigger-coverage",
            f"discover actions {json.dumps(status, indent=2)}")
-    okf(repo, "new", "workflows/nightly-billing.md", "--type", "Workflow", "--description",
+    okf(repo, "new", "--type", "Workflow", "--name", "nightly-billing", "--description",
         "Read before changing the nightly billing task.", "--scope", "src/billing/tasks.py", "--json")
     brief(wiki / "workflows/nightly-billing.md", "Trace: nightly_billing -> BillingRun.post src/billing/tasks.py#L6-L8")
     hints = [i for i in okf(repo, "validate", "--json", code=1)["issues"]  # coverage errors remain
@@ -325,7 +329,8 @@ def run(base: Path) -> None:
     phase(repo, "stamp")
     stamped = okf(repo, "stamp", "--by", "repo-wiki/e2e", "--json")
     expect(len(stamped["stamped"]) == 5 and stamped["verified_by"] == "repo-wiki-reviewer/e2e", f"stamp: {stamped}")
-    expect(isinstance(stamped["warnings"], list) and stamped["index_changed"] is True, f"stamp: {stamped}")
+    expect(isinstance(stamped["warnings"], list) and "docs/wiki/index.md" in stamped["derived"]
+           and "docs/wiki/log.md" in stamped["derived"], f"stamp: {stamped}")
     expect(not (wiki / "_review.json").exists(), "_review.json survived stamp")
     index = (wiki / "index.md").read_text(encoding="utf-8")
     expect("[Billing](modules/billing.md)" in index and "`third_party/` - Not covered" in index, f"index:\n{index}")
@@ -445,16 +450,320 @@ def run(base: Path) -> None:
     (wiki / "architecture.md").unlink()
     commit(repo, "lose architecture", {"jobs/cron.py": "def tick():\n    pass\n"})
     status = phase(repo, "research")
-    expect(status["next_actions"][0].startswith("recreate the canon page: okf new architecture.md"), f"{status}")
+    expect(status["next_actions"][0] == "recreate the canon page: okf new --type Architecture", f"{status}")
     update = okf(repo, "update", "--json")
     expect(any(u["reason"].startswith("unmapped-module jobs") for u in update["unplaced"]), f"unplaced: {update}")
     phase(repo, "research")
+
+
+# --- hub: two sources that share a route, a topic and a library -------------------------
+
+HUB_API = {
+    "pom.xml": (
+        "<project>\n  <groupId>com.acme</groupId>\n  <artifactId>order-api</artifactId>\n  <dependencies>\n"
+        "    <dependency>\n      <groupId>com.acme</groupId>\n      <artifactId>common</artifactId>\n"
+        "    </dependency>\n  </dependencies>\n</project>\n"
+    ),
+    "src/main/java/com/acme/order/OrderController.java": (
+        "package com.acme.order;\n\n@RestController\n@RequestMapping(\"/api/orders\")\n"
+        "public class OrderController {\n  @PostMapping\n  public Order create(Order order) {\n"
+        "    inventory.reserve(order.id);\n    kafka.send(\"order-created\", order);\n    return order;\n  }\n}\n"
+    ),
+    "src/main/java/com/acme/order/InventoryClient.java": (
+        "package com.acme.order;\n\n@FeignClient(name = \"worker\")\npublic interface InventoryClient {\n"
+        "  @PostMapping(\"/reservations/{orderId}\")\n  void reserve(@PathVariable long orderId);\n}\n"
+    ),
+}
+HUB_WORKER = {
+    "pom.xml": "<project>\n  <groupId>com.acme</groupId>\n  <artifactId>common</artifactId>\n</project>\n",
+    "src/main/java/com/acme/inv/ReservationController.java": (
+        "package com.acme.inv;\n\n@RestController\npublic class ReservationController {\n"
+        "  @PostMapping(\"/reservations/{id}\")\n  public void reserve(long id) {\n"
+        "    if (id <= 0) throw new IllegalArgumentException(\"id\");\n  }\n\n"
+        "  @KafkaListener(topics = \"order-created\")\n  public void onOrder(String message) {}\n}\n"
+    ),
+}
+ORDER = "api/src/main/java/com/acme/order/OrderController.java"
+CLIENT = "api/src/main/java/com/acme/order/InventoryClient.java"
+RESERVE = "worker/src/main/java/com/acme/inv/ReservationController.java"
+RESERVE_ID = "http POST /reservations/{}"
+
+HUB_BODIES = {
+    "glossary.md": f"""| Term | Meaning | Avoid | Where |
+|---|---|---|---|
+| Reservation | In worker, stock held for one order until it ships. | hold | `ReservationController`[^res] |
+
+[^res]: {RESERVE}#L4
+""",
+    "conventions.md": """## Rules
+
+| Area | Rule | Enforced by |
+|---|---|---|
+| dependencies | api builds against worker's `common` artifact; release common first.[^common] | review |
+
+[^common]: api/pom.xml#L5-L8
+""",
+    "sources/api/conventions.md": """## Commands
+
+| Purpose | Command | Status |
+|---|---|---|
+| Tests | `mvn -q test`[^pom] | not-run |
+
+## Rules
+
+| Area | Rule | Enforced by |
+|---|---|---|
+
+[^pom]: api/pom.xml#L1-L3
+""",
+    "sources/worker/conventions.md": """## Commands
+
+| Purpose | Command | Status |
+|---|---|---|
+
+## Rules
+
+| Area | Rule | Enforced by |
+|---|---|---|
+""",
+    "sources/api/modules/orders.md": f"""## Responsibility
+
+Orders owns order creation and the calls it makes to worker.
+
+## How it works
+
+`create` reserves stock through `InventoryClient`[^create] and publishes `order-created`.[^create]
+
+## Making changes
+
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Order creation | `OrderController.create`[^create] | - | `mvn -q test` |
+
+[^create]: {ORDER}#L7-L11
+""",
+    "sources/worker/modules/inventory.md": f"""## Responsibility
+
+Inventory owns reservations.
+
+## How it works
+
+`reserve` rejects ids that are not positive.[^guard]
+
+## Making changes
+
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Reservation rules | `ReservationController.reserve`[^guard] | - | `mvn -q test` |
+
+[^guard]: {RESERVE}#L5-L8
+""",
+    "flows/order-placement.md": f"""## Call chain
+
+| Step | Source | Entry | Contract | Next |
+|---|---|---|---|---|
+| 1 | api | `OrderController.create`[^create] | `{RESERVE_ID}` | worker reserves stock |
+| 2 | worker | `ReservationController.reserve`[^reserve] | - | api publishes the order |
+| 3 | api | `OrderController.create`[^create] | `topic order-created` | worker handles the event |
+| 4 | worker | `ReservationController.onOrder`[^listen] | - | - |
+
+```mermaid
+sequenceDiagram
+  participant api
+  participant worker
+  api->>worker: POST /reservations/{{id}}
+  api->>worker: order-created
+```
+
+## Making changes
+
+| Change | Start at | Also change | Verify |
+|---|---|---|---|
+| Reservation request | `InventoryClient.reserve`[^client] | `ReservationController.reserve` | `mvn -q test` in both |
+
+[^create]: {ORDER}#L7-L11
+[^reserve]: {RESERVE}#L5-L8
+[^listen]: {RESERVE}#L10-L11
+[^client]: {CLIENT}#L5-L6
+""",
+    "sources/api/overview.md": """## Structure
+
+One module, [orders](/sources/api/modules/orders.md); it calls worker as described in
+[order placement](/flows/order-placement.md).
+
+## Not covered
+
+| Path | Reason |
+|---|---|
+""",
+    "sources/worker/overview.md": """## Structure
+
+One module, [inventory](/sources/worker/modules/inventory.md).
+
+## Not covered
+
+| Path | Reason |
+|---|---|
+""",
+    "architecture.md": """## Structure
+
+api owns orders and calls worker, which owns inventory; see the
+[System map](/system-map.md), [api](/sources/api/overview.md), [worker](/sources/worker/overview.md)
+and [order placement](/flows/order-placement.md).
+
+## Contracts
+
+| Contract | Provider | Consumers | Change order | Verify |
+|---|---|---|---|---|
+| `library com.acme:common` | worker | api | Release common from worker first, then bump api.[^common] | `mvn -q verify` in both |
+
+## Not covered
+
+| Path | Reason |
+|---|---|
+
+[^common]: api/pom.xml#L5-L8
+""",
+}
+
+
+def hub_repo(path: Path, files: dict[str, str]) -> Path:
+    path.mkdir(parents=True)
+    git(path, "init", "-q", "-b", "main")
+    git(path, "config", "user.name", "E2E")
+    git(path, "config", "user.email", "e2e@example.com")
+    git(path, "config", "commit.gpgsign", "false")
+    commit(path, "init", files)
+    return path
+
+
+def claim(page: Path, contracts: list[str]) -> None:
+    """Add a contracts list to a page's frontmatter (what a tracer does by hand)."""
+    text = page.read_text(encoding="utf-8")
+    lines = "".join(f"- {c}\n" for c in contracts)
+    page.write_text(text.replace("\nscope: []\n", f"\nscope: []\ncontracts:\n{lines}", 1), encoding="utf-8")
+
+
+def run_hub(base: Path) -> None:
+    hub = hub_repo(base / "hub", {"README.md": "# Platform\n"})
+    hub_repo(hub / "api", HUB_API)
+    worker = hub_repo(hub / "worker", HUB_WORKER)
+    api = hub / "api"
+    init = okf(hub, "init", "--hub", "--source", "api", "--source", "worker", "--json")
+    expect(init["pages"] == [
+        "docs/wiki/glossary.md", "docs/wiki/conventions.md", "docs/wiki/architecture.md",
+        "docs/wiki/sources/api/conventions.md", "docs/wiki/sources/api/overview.md",
+        "docs/wiki/sources/worker/conventions.md", "docs/wiki/sources/worker/overview.md",
+    ], f"hub init: {init}")
+    commit(hub, "wiki stubs")
+    wiki = hub / "docs/wiki"
+    phase(hub, "discover")
+
+    scan = okf(hub, "scan")
+    ids = [c["id"] for c in json.loads(scan)["contracts"]]
+    expect(ids == ["http POST /reservations/{}", "library com.acme:common", "topic order-created"], f"contracts {ids}")
+    links = okf(hub, "links", "--file", CLIENT, "--json")
+    (link,) = links["contracts"]
+    expect(link["id"] == RESERVE_ID and link["providers"] == [{"source": "worker", "locator": f"{RESERVE}#L5"}],
+           f"links --file: {links}")
+
+    for path in ("glossary.md", "conventions.md", "architecture.md", "sources/api/conventions.md",
+                 "sources/api/overview.md", "sources/worker/conventions.md", "sources/worker/overview.md"):
+        brief(wiki / path, "Brief: from discovery")
+    okf(hub, "new", "--type", "Module", "--name", "orders", "--scope", "api/src/**",
+        "--description", "Read before changing order creation.", "--json")
+    out = okf(hub, "new", "--type", "Module", "--name", "inventory", "--scope", "worker/src/**",
+              "--description", "Read before changing reservations.", "--json")
+    expect(out["page"] == "docs/wiki/sources/worker/modules/inventory.md", f"derived path: {out}")
+    okf(hub, "new", "--type", "Module", "--name", "both", "--scope", "api/src/**", "--scope", "worker/src/**",
+        "--description", "d", code=2)
+    brief(wiki / "sources/api/modules/orders.md", "Entry: create")
+    brief(wiki / "sources/worker/modules/inventory.md", "Entry: reserve")
+    status = phase(hub, "discover")  # triggers and contracts are traced into no page yet
+    expect(any("3 contracts" in a for a in status["next_actions"]), f"discover: {status['next_actions']}")
+    out = okf(hub, "new", "--type", "Flow", "--name", "order-placement", "--scope", ORDER, "--scope", RESERVE,
+              "--contract", RESERVE_ID, "--contract", "topic order-created",
+              "--description", "Read before changing how an order reserves stock in worker.", "--json")
+    expect(out["page"] == "docs/wiki/flows/order-placement.md", f"flow path: {out}")
+    okf(hub, "new", "--type", "Flow", "--name", "x", "--scope", ORDER, "--scope", RESERVE,
+        "--contract", "topic nope", "--description", "d", code=2)
+    brief(wiki / "flows/order-placement.md", "Trace: create -> reserve")
+    status = phase(hub, "structure")  # the library contract is claimed by no page
+    codes = {i["code"] for i in status["issues"] if i["severity"] == "error"}
+    expect(codes == {"link-coverage"}, f"structure issues: {status['issues']}")
+    claim(wiki / "architecture.md", ["library com.acme:common"])
+    phase(hub, "research")
+    for path in ("glossary.md", "conventions.md", "sources/api/conventions.md", "sources/worker/conventions.md"):
+        set_body(wiki / path, HUB_BODIES[path])
+    phase(hub, "write")
+    for path in ("sources/api/modules/orders.md", "sources/worker/modules/inventory.md", "flows/order-placement.md"):
+        set_body(wiki / path, HUB_BODIES[path])
+    phase(hub, "assemble")
+    for path in ("sources/api/overview.md", "sources/worker/overview.md", "architecture.md"):
+        set_body(wiki / path, HUB_BODIES[path])
+    issues = okf(hub, "validate", "--json")
+    expect(issues["errors"] == 0 and issues["pending"] == 0, f"hub validate: {json.dumps(issues, indent=2)}")
+    phase(hub, "review")
+    approve(hub)
+    stamped = okf(hub, "stamp", "--by", "repo-wiki/e2e", "--json")
+    expect(len(stamped["stamped"]) == 10, f"hub stamp: {stamped}")
+    expect(set(stamped["derived"]) == {f"docs/wiki/{p}" for p in (
+        "index.md", "log.md", "system-map.md", "sources/api/index.md", "sources/worker/index.md")},
+        f"derived files: {stamped['derived']}")
+    root_index = (wiki / "index.md").read_text(encoding="utf-8")
+    expect("* [api](sources/api/) - Read before changing api" in root_index
+           and "[Order Placement](flows/order-placement.md)" in root_index
+           and "(reviewed " in root_index and "modules/orders.md" not in root_index, f"root index:\n{root_index}")
+    api_index = (wiki / "sources/api/index.md").read_text(encoding="utf-8")
+    expect(not api_index.startswith("---") and "[Orders](modules/orders.md)" in api_index
+           and "* `api/src/` - [Order Placement](/flows/order-placement.md), [Orders](modules/orders.md)"
+           in api_index, f"api index:\n{api_index}")
+    system_map = (wiki / "system-map.md").read_text(encoding="utf-8")
+    expect("type: Map" in system_map and f"| `{RESERVE_ID}` | worker `{RESERVE}#L5` |" in system_map
+           and "[Order Placement](/flows/order-placement.md)" in system_map, f"system map:\n{system_map}")
+    log = (wiki / "log.md").read_text(encoding="utf-8")
+    expect(log.count("**Creation**") == 10 and "reviewed by repo-wiki-reviewer/e2e" in log, f"log:\n{log}")
+    pointer = okf(hub, "pointer", "--source", "api")
+    expect("docs/wiki/sources/api/index.md" in pointer and "docs/wiki/sources/api/conventions.md" in pointer
+           and "docs/wiki/system-map.md" in pointer and len(pointer.splitlines()) <= 15, f"pointer:\n{pointer}")
+    commit(hub, "wiki v1")
+    status = phase(hub, "done")
+    expect(status["next_actions"] == ["nothing to do: the wiki is committed and current"], f"hub done: {status}")
+    entries = okf(hub, "log", "--files", RESERVE, "--json")["entries"]
+    expect({e["path"] for e in entries} == {"sources/worker/modules/inventory.md", "flows/order-placement.md",
+                                            "glossary.md"}, f"okf log --files: {entries}")
+
+    files = okf(hub, "impact", "--files", CLIENT, "--json")["files"][CLIENT]
+    (contract,) = files["contracts"]
+    expect(contract["id"] == RESERVE_ID and contract["role"] == "consumer"
+           and contract["counterparts"] == [f"worker {RESERVE}#L5"]
+           and contract["pages"] == ["flows/order-placement.md"], f"impact contracts: {files}")
+    expect(files["canon"] == ["glossary.md", "conventions.md", "sources/api/conventions.md",
+                              "sources/api/overview.md"], f"impact canon: {files['canon']}")
+    common = okf(hub, "impact", "--files", "worker/pom.xml", "--json")["files"]["worker/pom.xml"]["contracts"]
+    expect(common[0]["change_order"][0]["change_order"].startswith("Release common from worker first"),
+           f"change order row: {common}")
+
+    # A consumer-side change outside every Flow scope still stales the Flow page.
+    commit(api, "add quantity", {"src/main/java/com/acme/order/InventoryClient.java": HUB_API[
+        "src/main/java/com/acme/order/InventoryClient.java"].replace("long orderId)", "long orderId, int qty)")})
+    phase(hub, "update")
+    report = okf(hub, "impact", "--json")
+    kinds = {p["page"]: {r["kind"] for r in p["reasons"]} for p in report["pages"]}
+    expect(kinds == {"flows/order-placement.md": {"contract-changed", "cited-changed"},
+                     "sources/api/modules/orders.md": {"scope-modified"}}, f"hub impact: {kinds}")
+    update = okf(hub, "update", "--json")
+    flow = (wiki / "flows/order-placement.md").read_text(encoding="utf-8")
+    expect(f"contract-changed {RESERVE_ID} {CLIENT}" in flow and "flows/order-placement.md" in update["drafted"],
+           f"update: {update}")
+    del worker
 
 
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         try:
             run(Path(tmp))
+            run_hub(Path(tmp))
         except Failure as exc:
             print(f"FAIL: {exc}")
             return 1
